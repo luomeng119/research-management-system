@@ -197,7 +197,6 @@ from datetime import datetime
 from flask import Blueprint, render_template, request, jsonify, session, send_file, redirect, url_for
 
 from app.expense_db import (
-    init_db,
     get_reimbursement_by_id,
     get_reimbursement_documents,
     add_document_to_reimbursement,
@@ -212,8 +211,6 @@ from app.expense_db import (
 from app.document_engine import DocumentFiller, _cn_number
 
 bp = Blueprint('documents', __name__, url_prefix='/expense/documents')
-
-init_db()
 
 # ----------------------------------------------------------
 # 模板目录（相对于 app/）

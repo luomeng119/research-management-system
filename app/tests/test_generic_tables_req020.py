@@ -1,17 +1,27 @@
 """REQ-020 端到端测试：current 版本概念 + save_snapshot / rollback / 导入限制"""
 import sys
 import os
+import pytest
 import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from app.models_generic_tables import GenericTableModel, get_db
 
-BASE = 'http://127.0.0.1:5001'
+BASE = os.environ.get('TEST_BASE_URL', 'http://127.0.0.1:5001')
 
 
 def login():
+    username = os.environ.get('TEST_USERNAME')
+    password = os.environ.get('TEST_PASSWORD')
+    if not username or not password:
+        pytest.skip('TEST_USERNAME and TEST_PASSWORD are required for online service tests')
+
     s = requests.Session()
-    r = s.post(f'{BASE}/auth/login', data={'username': 'admin', 'password': 'admin123'}, allow_redirects=False)
+    r = s.post(
+        f'{BASE}/auth/login',
+        data={'username': username, 'password': password},
+        allow_redirects=False,
+    )
     assert r.status_code == 302, f'login failed: {r.status_code}'
     return s
 

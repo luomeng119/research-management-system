@@ -12,19 +12,16 @@ def login():
         
         user_model = UserModel()
         user = user_model.get_by_username(username)
-        print(f"DEBUG login: username={username}, user={user}, verify={user_model.verify(username, password) if user else 'no user'}")
         
         if user and user['status'] == 'pending':
             flash('账号正在审核中，请等待管理员批准', 'warning')
             return render_template('login.html')
         
         verify_result = user_model.verify(username, password)
-        print(f"DEBUG: username={username!r}, password={password!r}, user_status={user and user['status']}, verify_result={verify_result}")
         if verify_result:
             session['user'] = username
             session['name'] = user['name']  # 存name字段，页面显示友好名称
             session['role'] = user['role']
-            print(f"DEBUG: login success for {username}, session={dict(session)}")
             return redirect(url_for('index'))
         else:
             flash('用户名或密码错误', 'error')

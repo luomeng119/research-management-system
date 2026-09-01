@@ -15,7 +15,7 @@ from flask import Blueprint, render_template, request, jsonify, session, redirec
 from werkzeug.utils import secure_filename
 
 from app.expense_db import (
-    init_db, get_all_reimbursements, get_reimbursement_by_id,
+    get_all_reimbursements, get_reimbursement_by_id,
     create_reimbursement, update_reimbursement, delete_reimbursement,
     toggle_reimbursement_paid,
     add_invoice, get_invoices, get_invoice_by_id, update_invoice, delete_invoice,
@@ -27,9 +27,6 @@ from app.ocr.recognizer import recognize_file, recognize_payment
 from app.expense_utils import parse_amount
 
 bp = Blueprint('expense', __name__, url_prefix='/expense')
-
-# 确保初始化数据库
-init_db()
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'uploads', 'expense')
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'expense_templates')

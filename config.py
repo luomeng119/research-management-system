@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 import os
+import secrets
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Flask配置
-SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'dev-fallback-key-change-in-production')
+SECRET_KEY = os.environ.get('FLASK_SECRET_KEY') or secrets.token_hex(32)
 DEBUG = False
 
 # 路径配置
@@ -12,6 +13,7 @@ DATA_DIR = os.path.join(BASE_DIR, 'data')
 UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
 DOCUMENTS_DIR = os.path.join(BASE_DIR, 'documents')
 BACKUP_DIR = os.path.join(BASE_DIR, 'backups')
+SESSION_FILE_DIR = os.path.join(DATA_DIR, 'flask_sessions')
 
 # 文件上传配置
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'rar', 'png', 'jpg', 'jpeg'}

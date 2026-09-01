@@ -7,10 +7,6 @@ from io import BytesIO
 
 bp = Blueprint('expert_groups', __name__, url_prefix='/experts/groups')
 
-# 启动时创建表
-group_model = ExpertGroupModel()
-group_model.create_tables()
-
 @bp.route('/')
 def index():
     if 'user' not in session:
