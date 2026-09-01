@@ -20,7 +20,7 @@ def get_db():
 
 def init_db():
     """初始化数据库表"""
-    # REQ-016 安全加固：启动时自动检测/修复索引损坏
+    # REQ-016 安全加固：GenericTableModel 业务使用时检测/修复索引损坏
     # 防止 race condition 写入导致 sqlite_autoindex 索引条目数错位
     with get_db() as conn:
         c = conn.cursor()
@@ -875,5 +875,4 @@ class GenericTableModel:
         os.close(fd)
         wb.save(path)
         return path
-
 
