@@ -1,117 +1,192 @@
 # -*- coding: utf-8 -*-
-from flask import Flask, redirect, request, session, url_for
-import os
+from __future__ import annotations
 
-PUBLIC_ENDPOINTS = frozenset({'auth.login', 'healthz', 'static'})
+import os
+import time
+import uuid
+
+from flask import Flask, jsonify, redirect, request, session, url_for
+
+PUBLIC_ENDPOINTS = frozenset({"auth.login", "healthz", "static"})
+PASSWORD_CHANGE_ENDPOINTS = frozenset({"auth.logout", "users.change_password", "static"})
 
 
 def create_app(test_config=None):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    app = Flask(__name__,
-               template_folder=os.path.join(base_dir, 'templates'),
-               static_folder=os.path.join(base_dir, 'static'))
-    app.config.from_object('config')
+    app = Flask(
+        __name__,
+        template_folder=os.path.join(base_dir, "templates"),
+        static_folder=os.path.join(base_dir, "static"),
+    )
+    app.config.from_object("config")
     if test_config:
         app.config.update(test_config)
+        if "LOG_FILE" not in test_config:
+            app.config["LOG_FILE"] = os.path.join(app.config["DATA_DIR"], "logs", "app.jsonl")
 
-    if not app.config.get('TESTING'):
-        secret_key = os.environ.get('FLASK_SECRET_KEY')
+    if not app.config.get("TESTING"):
+        secret_key = os.environ.get("FLASK_SECRET_KEY")
         if not secret_key:
-            raise RuntimeError(
-                'FLASK_SECRET_KEY must be configured for non-testing environments'
-            )
-        app.config['SECRET_KEY'] = secret_key
+            raise RuntimeError("FLASK_SECRET_KEY must be configured for non-testing environments")
+        app.config["SECRET_KEY"] = secret_key
 
-    database_url = app.config.get('DATABASE_URL') or os.environ.get('DATABASE_URL')
-    if database_url and not app.config.get('TESTING'):
+    engine = app.config.get("DATABASE_ENGINE")
+    database_url = app.config.get("DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if engine is None and database_url and not app.config.get("TESTING"):
         from app.db import initialize_runtime_database
 
-        app.extensions['database_engine'] = initialize_runtime_database(database_url)
+        engine = initialize_runtime_database(database_url)
+    if engine is not None:
+        app.extensions["database_engine"] = engine
 
-    # [REQ-013-fix] 使用 Flask-Session filesystem session 替代 cookie session
-    # 原因：1200+ 条数据时 session['equipment_import_preview']['processed'] 太大，
-    # 超过 cookie 4KB 限制，导致 session 被截断 → 预览页找不到数据 → 302 redirect 回首页
-    from flask_session import Session
-    app.config['SESSION_TYPE'] = 'filesystem'
-    app.config.setdefault(
-        'SESSION_FILE_DIR',
-        os.path.join(app.config['DATA_DIR'], 'flask_sessions'),
+    app.config["SESSION_TYPE"] = "cachelib"
+    app.config.setdefault("SESSION_FILE_DIR", os.path.join(app.config["DATA_DIR"], "flask_sessions"))
+    app.config["SESSION_PERMANENT"] = True
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config.setdefault("SESSION_COOKIE_SAMESITE", "Lax")
+    app.config.setdefault("SESSION_COOKIE_SECURE", False)
+    app.config.setdefault("SESSION_REFRESH_EACH_REQUEST", True)
+    os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
+    from cachelib.file import FileSystemCache
+
+    app.config["SESSION_CACHELIB"] = FileSystemCache(
+        cache_dir=app.config["SESSION_FILE_DIR"],
+        threshold=int(app.config.get("SESSION_FILE_THRESHOLD", 500)),
     )
-    app.config['SESSION_PERMANENT'] = False
-    app.config['SESSION_USE_SIGNER'] = True
-    os.makedirs(app.config['SESSION_FILE_DIR'], exist_ok=True)
+    from flask_session import Session
+
     Session(app)
-    
-    # 直接导入所有蓝图
+
+    users_repository = app.config.get("USERS_REPOSITORY")
+    audit_service = app.config.get("AUDIT_SERVICE")
+    security_enabled = app.config.get("SECURITY_AUTH_ENABLED")
+    if security_enabled is None:
+        security_enabled = users_repository is not None or engine is not None
+    app.config["SECURITY_AUTH_ENABLED"] = bool(security_enabled)
+    configured_csrf = app.config.get("CSRF_ENABLED")
+    app.config["CSRF_ENABLED"] = (
+        app.config["SECURITY_AUTH_ENABLED"] if configured_csrf is None else bool(configured_csrf)
+    )
+
+    if app.config["SECURITY_AUTH_ENABLED"]:
+        if users_repository is None:
+            from app.repositories.users import UsersRepository
+
+            users_repository = UsersRepository(engine)
+        if audit_service is None:
+            from app.repositories.audit import AuditRepository
+            from app.services.audit import AuditService
+
+            audit_service = AuditService(AuditRepository(engine), app_version=app.config["VERSION"])
+        app.extensions["users_repository"] = users_repository
+        app.extensions["audit_service"] = audit_service
+        from app.security.auth import LoginRateLimiter
+
+        app.extensions["login_rate_limiter"] = LoginRateLimiter(
+            str(app.config["SECRET_KEY"]),
+            attempts=int(app.config["LOGIN_RATE_LIMIT_ATTEMPTS"]),
+            window_seconds=int(app.config["LOGIN_RATE_LIMIT_WINDOW_SECONDS"]),
+            max_entries=int(app.config["LOGIN_RATE_LIMIT_MAX_ENTRIES"]),
+        )
+
+    if app.config.get("LOG_FILE"):
+        from app.security.logging import configure_json_logging
+
+        configure_json_logging(app)
+
     from app.routes import api, auth, projects, equipment, standards, users, templates
     from app.routes import crypto_projects, security_projects, crypto_logs, security_logs
     from app.routes import experts, expert_groups, equipment_groups
-    from app.routes import utils
-    from app.routes import expense
-    from app.routes import documents
-    from app.routes import host_devices
-    from app.routes import research_units
+    from app.routes import utils, expense, documents, host_devices, research_units
     from app.routes.generic_tables import bp as generic_tables_bp
     from app.routes.generic_tables import bp2 as generic_tables_api_bp
     from app.routes.preview import bp as preview_bp
-    
-    # 方案论证模块
     from app.routes.argumentation import argumentation_bp
     from app.routes.argumentation.template_routes import template_bp
-    
-    # 注册所有蓝图
-    app.register_blueprint(api.bp)
-    app.register_blueprint(auth.bp)
-    app.register_blueprint(projects.bp)
-    app.register_blueprint(equipment.bp)
-    app.register_blueprint(standards.bp)
-    app.register_blueprint(users.bp)
-    app.register_blueprint(templates.bp)
-    app.register_blueprint(security_projects.bp)
-    app.register_blueprint(crypto_projects.bp)
-    app.register_blueprint(crypto_logs.bp)
-    app.register_blueprint(security_logs.bp)
-    app.register_blueprint(experts.bp)
-    app.register_blueprint(expert_groups.bp)
-    app.register_blueprint(equipment_groups.bp)
-    app.register_blueprint(preview_bp)
-    app.register_blueprint(utils.bp)
-    app.register_blueprint(expense.bp)
-    app.register_blueprint(documents.bp)
-    app.register_blueprint(host_devices.bp)
-    app.register_blueprint(research_units.bp)
-    app.register_blueprint(generic_tables_bp)
-    app.register_blueprint(generic_tables_api_bp)
-    
-    app.register_blueprint(argumentation_bp, url_prefix='/argumentation')
+
+    for blueprint in (
+        api.bp, auth.bp, projects.bp, equipment.bp, standards.bp, users.bp,
+        templates.bp, security_projects.bp, crypto_projects.bp, crypto_logs.bp,
+        security_logs.bp, experts.bp, expert_groups.bp, equipment_groups.bp,
+        preview_bp, utils.bp, expense.bp, documents.bp, host_devices.bp,
+        research_units.bp, generic_tables_bp, generic_tables_api_bp,
+    ):
+        app.register_blueprint(blueprint)
+    app.register_blueprint(argumentation_bp, url_prefix="/argumentation")
     app.register_blueprint(template_bp)
 
-    @app.route('/healthz')
+    @app.route("/healthz")
     def healthz():
-        return {'status': 'ok'}
+        return {"status": "ok"}
+
+    @app.before_request
+    def establish_request_context():
+        request.request_id = f"req_{uuid.uuid4().hex}"
+        request.started_at = time.monotonic()
+
+    @app.before_request
+    def verify_csrf():
+        from app.security.csrf import protect_request
+
+        return protect_request()
 
     @app.before_request
     def require_authenticated_user():
-        if request.endpoint not in PUBLIC_ENDPOINTS and 'user' not in session:
-            return redirect(url_for('auth.login'))
-    
-    # 路由
-    @app.route('/')
+        if request.endpoint in PUBLIC_ENDPOINTS:
+            return None
+        if app.config["SECURITY_AUTH_ENABLED"]:
+            from app.security.auth import current_identity
+
+            if current_identity() is None:
+                if request.path.startswith("/api/"):
+                    return jsonify({"error": {"code": "AUTH_REQUIRED", "message": "请先登录", "requestId": request.request_id}}), 401
+                return redirect(url_for("auth.login"))
+        elif "user" not in session:
+            return redirect(url_for("auth.login"))
+        return None
+
+    @app.before_request
+    def require_initial_password_change():
+        if (
+            app.config["SECURITY_AUTH_ENABLED"]
+            and session.get("must_change_password")
+            and request.endpoint not in PASSWORD_CHANGE_ENDPOINTS
+        ):
+            return redirect(url_for("users.change_password"))
+        return None
+
+    @app.after_request
+    def log_request(response):
+        if app.config.get("LOG_FILE"):
+            duration = max(0, int((time.monotonic() - getattr(request, "started_at", time.monotonic())) * 1000))
+            app.logger.info(
+                "request completed",
+                extra={
+                    "request_id": getattr(request, "request_id", None),
+                    "user_id": session.get("user_id"),
+                    "app_module": request.blueprint or "application",
+                    "action": request.endpoint or "unmatched_route",
+                    "object_id": None,
+                    "duration_ms": duration,
+                    "result": "SUCCESS" if response.status_code < 400 else "FAILURE",
+                    "error_code": None if response.status_code < 400 else f"HTTP_{response.status_code}",
+                },
+            )
+        if getattr(request, "request_id", None):
+            response.headers["X-Request-ID"] = request.request_id
+        return response
+
+    @app.context_processor
+    def security_context():
+        from app.security.csrf import csrf_token
+
+        return {"csrf_token": csrf_token}
+
+    @app.route("/")
     def index():
-        from flask import render_template, session, redirect, url_for
-        if 'user' not in session:
-            return redirect(url_for('auth.login'))
-        
-        from app.models import UserModel, DIRECTORIES
-        user_model = UserModel()
-        role = session.get('role')
-        
-        if role == '管理员':
-            visible_directories = DIRECTORIES
-        else:
-            perms = user_model.get_directory_permissions(session.get('user'))
-            visible_directories = [d for d, v in perms.items() if v == 'visible']
-        
-        return render_template('index.html', visible_directories=visible_directories)
-    
+        from flask import render_template
+        from app.models import DIRECTORIES
+
+        return render_template("index.html", visible_directories=DIRECTORIES)
+
     return app

@@ -86,9 +86,7 @@
                                     <td><span class="badge bg-{{ 'success' if p['status']=='结题上报' else 'info' if p['status']=='通过机关评审' else 'warning' if p['status']=='通过院内评审' else 'primary' }}">{{ p['status'] }}</span></td>
                                     <td>
                                         <a href="{{ url_for(project_type + '.detail', project_id=p['project_id']) }}" class="btn btn-sm btn-outline-primary">查看</a>
-                                        {% if session.get('role') == '管理员' or p['leader'] == session.get('user') %}
                                         <button class="btn btn-sm btn-outline-danger" onclick="deleteProject('{{ p['project_id'] }}')">删除</button>
-                                        {% endif %}
                                     </td>
                                 </tr>
                                 {% endfor %}

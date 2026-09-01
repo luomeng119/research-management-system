@@ -28,9 +28,6 @@ def manage():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    if session.get('role') != '管理员':
-        return "权限不足", 403
-    
     templates = get_all_templates()
     
     # 解析 chapter_tree JSON
@@ -60,9 +57,6 @@ def edit(category):
     """编辑指定分类的模板"""
     if 'user' not in session:
         return redirect(url_for('auth.login'))
-    
-    if session.get('role') != '管理员':
-        return "权限不足", 403
     
     template = get_template_by_category(category)
     
@@ -95,8 +89,8 @@ def edit(category):
 @template_bp.route('/api/save', methods=['POST'])
 def api_save():
     """保存模板API"""
-    if 'user' not in session or session.get('role') != '管理员':
-        return jsonify({'success': False, 'message': '权限不足'})
+    if 'user' not in session:
+        return jsonify({'success': False, 'message': '请先登录'}), 401
     
     data = request.json
     category = data.get('category')

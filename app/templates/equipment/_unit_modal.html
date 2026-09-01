@@ -43,7 +43,6 @@
 
 <script>
 var unitModal;
-var currentRole = '{{ session.get("role", "") }}';
 
 document.addEventListener('DOMContentLoaded', function() {
     unitModal = new bootstrap.Modal(document.getElementById('unitModal'));
@@ -51,10 +50,6 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 function openUnitModal() {
-    if (currentRole !== '管理员') {
-        alert('只有管理员才能管理研制单位');
-        return;
-    }
     hideUnitForm();
     unitModal.show();
 }

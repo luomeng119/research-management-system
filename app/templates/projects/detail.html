@@ -82,7 +82,6 @@
         </div>
         <!-- 工具栏移到折叠区外部 -->
         <div class="card-header bg-light py-1 px-3 border-bottom">
-            {% if session.get('role') == '管理员' or project['leader'] == session.get('user') %}
             <button class="btn btn-primary btn-sm me-1" onclick="showLinkEquipment()">
                 <i class="bi bi-plus-circle"></i> 添加设备
             </button>
@@ -95,7 +94,6 @@
             <button class="btn btn-info btn-sm me-1" onclick="showRequirement('tech')">
                 <i class="bi bi-gear"></i> 指标要求
             </button>
-            {% endif %}
             <button class="btn btn-success btn-sm" onclick="exportEquipment('{{ project['project_id'] }}')">
                 <i class="bi bi-file-earmark-excel"></i> 导出Excel
             </button>
@@ -134,11 +132,9 @@
                             <textarea class="form-control form-control-sm" rows="2" style="resize:vertical;" placeholder="使用位置" onblur="updateEquipment('{{ project['project_id'] }}', '{{ e['group_id'] }}', '{{ e['id'] }}', this)">{{ e['location'] or '' }}</textarea>
                         </td>
                         <td class="align-middle text-center">
-                        {% if session.get('role') == '管理员' or project['leader'] == session.get('user') %}
                         <button class="btn btn-outline-danger btn-sm" title="移除" onclick="unlinkEquipment('{{ project['project_id'] }}', '{{ e['group_id'] }}', '{{ e['id'] }}')">
                             <i class="bi bi-trash"></i>
                         </button>
-                        {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
@@ -589,10 +585,8 @@ function buildNode(node) {
             html += '<span class="me-2">' + f.name + '</span>';
             html += '</a>';
             html += '<span class="text-muted me-2" style="font-size:0.8em">(' + (f.size/1024).toFixed(1) + ' KB)</span>';
-            {% if session.get('role') == '管理员' or project['leader'] == session.get('user') %}
-            // 预览按钮改为下载（仅管理员）
+            // 下载项目文件
             html += '<a href="/projects/download/{{ proj_id }}/' + encodeURIComponent(f.path) + '" class="btn btn-outline-info btn-sm" title="下载"><i class="bi bi-download"></i></a>';
-            {% endif %}
             // 重命名和删除对所有用户开放
             html += '<button class="btn btn-outline-primary btn-sm btn-rename" data-path="' + f.path + '" data-name="' + f.name + '"><i class="bi bi-pencil"></i></button>';
             html += '<button class="btn btn-outline-danger btn-sm btn-del" data-path="' + f.path + '"><i class="bi bi-trash"></i></button>';

@@ -36,13 +36,6 @@ def index():
     
     all_projects = project_model.get_all()
     
-    # 项目级数据权限：普通用户只能看到自己负责的项目
-    current_user = session.get('user')
-    user_role = session.get('role')
-    if user_role != '管理员':
-        # 过滤：只显示当前用户负责的项目
-        all_projects = [p for p in all_projects if p['leader'] == current_user]
-    
     if status_filter:
         projects = [p for p in all_projects if p['status'] == status_filter]
     else:
@@ -120,14 +113,6 @@ def detail(project_id):
     project = project_model.get_by_id(project_id)
     if not project:
         flash('项目不存在', 'error')
-        return redirect(url_for('projects.index'))
-    
-    # 项目级数据权限：普通用户只能查看自己负责的项目，管理员可以查看所有
-    current_user = session.get('user')
-    user_role = session.get('role')
-    # 允许 admin 用户名或 role 为管理员的用户访问所有项目
-    if user_role != '管理员' and current_user != 'admin' and project['leader'] != current_user:
-        flash('您无权查看此项目', 'error')
         return redirect(url_for('projects.index'))
     
     equipment_model = EquipmentModel()
@@ -422,12 +407,9 @@ def link_equipment(project_id):
     """添加设备到项目（通过设备组）"""
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-    role = session.get('role')
     leader = session.get('user')
     project_model = CryptoProjectModel()
     project = project_model.get_by_id(project_id)
-    if role != '管理员' and project['leader'] != leader:
-        return jsonify({'success': False, 'message': '无权限'})
     equipment_id = request.form.get('equipment_id', '').strip()
     quantity = request.form.get('quantity', '1').strip()
     location = request.form.get('location', '').strip()
@@ -447,12 +429,9 @@ def unlink_equipment(project_id, group_id, equipment_id):
     """从项目设备组中移除设备"""
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-    role = session.get('role')
     leader = session.get('user')
     project_model = CryptoProjectModel()
     project = project_model.get_by_id(project_id)
-    if role != '管理员' and project['leader'] != leader:
-        return jsonify({'success': False, 'message': '无权限'})
     equipment_group_model = EquipmentGroupModel()
     equipment_group_model.remove_member(group_id, equipment_id)
     return jsonify({'success': True, 'message': '取消关联成功'})
@@ -516,11 +495,7 @@ def update_equipment(project_id, group_id, equipment_id):
     """更新设备组中的设备数量"""
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-    role = session.get('role')
-    leader = session.get('user')
     project = CryptoProjectModel().get_by_id(project_id)
-    if role != '管理员' and project['leader'] != leader:
-        return jsonify({'success': False, 'message': '无权限'})
     quantity = request.form.get('quantity', '').strip()
     location = request.form.get('location', '').strip()
     equipment_group_model = EquipmentGroupModel()
@@ -546,14 +521,9 @@ def update_project_field(project_id):
     if field not in field_map:
         return jsonify({'success': False, 'message': '无效字段'})
     
-    # 只有管理员或项目负责人可以修改
     project = CryptoProjectModel().get_by_id(project_id)
     if not project:
         return jsonify({'success': False, 'message': '项目不存在'})
-    
-    role = session.get('role')
-    if role != '管理员' and project[2] != session.get('user'):
-        return jsonify({'success': False, 'message': '无权限修改'})
     
     CryptoProjectModel().update(project_id, **{field_map[field]: value})
     return jsonify({'success': True, 'message': '更新成功'})
@@ -571,14 +541,10 @@ def batch_update_status():
         return jsonify({'success': False, 'message': '无效状态值'})
     if not project_ids:
         return jsonify({'success': False, 'message': '请先选择项目'})
-    role = session.get('role')
-    user = session.get('user')
     updated = 0
     for pid in project_ids:
         project = CryptoProjectModel().get_by_id(pid)
         if not project:
-            continue
-        if role != '管理员' and project['leader'] != user:
             continue
         CryptoProjectModel().update(pid, **{'状态': new_status})
         updated += 1
@@ -657,9 +623,6 @@ def delete(project_id):
     project = CryptoProjectModel().get_by_id(project_id)
     if not project:
         return jsonify({'success': False, 'message': '项目不存在'})
-    role = session.get('role')
-    if role != '管理员' and project[2] != session.get('user'):
-        return jsonify({'success': False, 'message': '无权限删除'})
     CryptoProjectModel().delete(project_id)
     return jsonify({'success': True, 'message': '删除成功'})
 

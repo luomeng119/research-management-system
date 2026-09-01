@@ -5,21 +5,9 @@
 """
 from flask import Blueprint, jsonify, request, session
 from app.models import ResearchUnitModel
+from app.security.auth import business_required
 
 bp = Blueprint('research_units', __name__, url_prefix='/research-units')
-
-
-def require_admin(f):
-    """管理员权限验证"""
-    from functools import wraps
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user' not in session:
-            return jsonify({'error': '未登录'}), 401
-        if session.get('role') != '管理员':
-            return jsonify({'error': '需要管理员权限'}), 403
-        return f(*args, **kwargs)
-    return decorated
 
 
 # ---------- API 路由 ----------
@@ -46,7 +34,7 @@ def api_match():
 
 
 @bp.route('/api', methods=['POST'])
-@require_admin
+@business_required
 def api_create():
     """新增研制单位"""
     data = request.get_json()
@@ -64,7 +52,7 @@ def api_create():
 
 
 @bp.route('/api/<unit_id>', methods=['PUT'])
-@require_admin
+@business_required
 def api_update(unit_id):
     """更新研制单位"""
     data = request.get_json()
@@ -82,7 +70,7 @@ def api_update(unit_id):
 
 
 @bp.route('/api/<unit_id>', methods=['DELETE'])
-@require_admin
+@business_required
 def api_delete(unit_id):
     """删除研制单位"""
     model = ResearchUnitModel()

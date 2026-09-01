@@ -1,29 +1,15 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, jsonify, session, current_app, request
-from app.models import ProjectModel, EquipmentModel, StandardModel, UserModel, DIRECTORIES, OperationLogModel, SecurityProjectModel, CryptoProjectModel, ExpertModel
+from app.models import ProjectModel, EquipmentModel, StandardModel, DIRECTORIES, OperationLogModel, SecurityProjectModel, CryptoProjectModel, ExpertModel
 from config import VERSION
+from app.security.auth import maintenance_required
 import os
 
 bp = Blueprint('api', __name__, url_prefix='/api')
 
 def get_user_directories():
-    """获取当前用户可见的目录列表"""
-    if 'user' not in session:
-        return DIRECTORIES  # 未登录返回全部
-    
-    username = session.get('user')
-    role = session.get('role')
-    
-    # 管理员可见全部目录
-    if role == '管理员':
-        return DIRECTORIES
-    
-    # 普通用户获取权限设置
-    user_model = UserModel()
-    perms = user_model.get_directory_permissions(username)
-    
-    # 返回可见的目录
-    return [d for d, v in perms.items() if v == 'visible']
+    """All authenticated V1 business accounts receive the same navigation."""
+    return DIRECTORIES
 
 @bp.route('/tree')
 def tree():
@@ -38,14 +24,6 @@ def tree():
     
     # 获取用户可见的目录
     visible_dirs = get_user_directories()
-    
-    # 获取当前用户信息
-    current_user = session.get('user')
-    user_role = session.get('role')
-    
-    # 项目级数据权限：普通用户只能看到自己负责的项目
-    if user_role != '管理员' and current_user:
-        projects = [p for p in projects if p['leader'] == current_user]
     
     # 按状态分组项目
     status_groups = {}
@@ -469,6 +447,7 @@ def get_module_logs(module_name):
 # ============ LLM / AI 功能接口 ============
 
 @bp.route('/llm/status')
+@maintenance_required
 def llm_status():
     """查询模型加载状态"""
     if 'user' not in session:
@@ -482,6 +461,7 @@ def llm_status():
 
 
 @bp.route('/llm/reload', methods=['POST'])
+@maintenance_required
 def llm_reload():
     """重新加载指定模型"""
     if 'user' not in session:

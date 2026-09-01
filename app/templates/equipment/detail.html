@@ -13,13 +13,11 @@
     
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h2>{{ equipment['name'] }}</h2>
-        {% if session.get('role') == '管理员' %}
         <div>
             <a href="{{ url_for('equipment.edit', equipment_id=equipment['equipment_id']) }}" class="btn btn-outline-primary">
                 <i class="bi bi-pencil"></i> 编辑
             </a>
         </div>
-        {% endif %}
     </div>
     
     <div class="row">

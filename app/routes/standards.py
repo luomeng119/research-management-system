@@ -90,10 +90,6 @@ def delete(doc_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     
-    role = session.get('role')
-    if role != '管理员':
-        return jsonify({'success': False, 'message': '仅管理员可删除'})
-    
     standard_model = StandardModel()
     standard = standard_model.get_by_id(doc_id)
     standard_name = standard['name'] if standard else doc_id

@@ -128,10 +128,6 @@ def delete(group_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     
-    role = session.get('role')
-    if role != '管理员':
-        return jsonify({'success': False, 'message': '无权限'})
-    
     model = ExpertGroupModel()
     model.delete_group(group_id)
     return jsonify({'success': True, 'message': '删除成功'})

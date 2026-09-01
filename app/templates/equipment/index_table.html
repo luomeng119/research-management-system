@@ -31,10 +31,8 @@
                     <td>{{ e[9] }}</td>
                     <td>
                         <a href="{{ url_for('equipment.detail', equipment_id=e[1]) }}" class="btn btn-sm btn-outline-primary" title="查看"><i class="bi bi-eye"></i></a>
-                        {% if session.get('role') == '管理员' %}
                         <a href="{{ url_for('equipment.edit', equipment_id=e[1]) }}" class="btn btn-sm btn-outline-secondary" title="编辑"><i class="bi bi-pencil"></i></a>
                         <button class="btn btn-sm btn-outline-danger" onclick="deleteEquipment('{{ e[1] }}')" title="删除"><i class="bi bi-trash"></i></button>
-                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}

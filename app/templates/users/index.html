@@ -70,7 +70,7 @@
                     <tr>
                         <td>{{ u['username'] }}</td>
                         <td>{{ u['name'] }}</td>
-                        <td><span class="badge bg-{{ 'primary' if u['role']=='管理员' else 'secondary' }}">{{ u['role'] }}</span></td>
+                        <td><span class="badge bg-{{ 'primary' if u['role']=='SYSTEM_MAINTAINER' else 'secondary' }}">{{ u['role'] }}</span></td>
                         <td>
                             <a href="{{ url_for('users.permissions', username=u['username']) }}" class="btn btn-sm btn-outline-primary">
                                 <i class="bi bi-gear"></i> 设置

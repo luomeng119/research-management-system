@@ -306,10 +306,6 @@ def delete(equipment_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
 
-    role = session.get('role')
-    if role != '管理员':
-        return jsonify({'success': False, 'message': '仅管理员可删除'})
-
     equipment_model = EquipmentModel()
     equipment = equipment_model.get_by_id(equipment_id)
     equipment_name = equipment['name'] if equipment else equipment_id
@@ -436,10 +432,6 @@ def import_preview():
     """
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-
-    role = session.get('role')
-    if role != '管理员':
-        return jsonify({'success': False, 'message': '仅管理员可导入'})
 
     from io import BytesIO
     import openpyxl
@@ -823,10 +815,6 @@ def import_commit():
     """
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录', 'redirect': url_for('auth.login')}), 401
-    role = session.get('role')
-    if role != '管理员':
-        return jsonify({'success': False, 'message': '仅管理员可导入'}), 403
-
     preview_data = session.get('equipment_import_preview')
     if not preview_data:
         return jsonify({'success': False, 'message': '会话过期，请重新上传'}), 400
@@ -1138,9 +1126,6 @@ def import_csv():
     """旧的 CSV 导入（兼容现有调用）"""
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-    role = session.get('role')
-    if role != '管理员':
-        return jsonify({'success': False, 'message': '仅管理员可导入'})
     if 'file' not in request.files:
         return jsonify({'success': False, 'message': '请选择文件'})
     file = request.files['file']

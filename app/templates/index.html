@@ -139,7 +139,7 @@
             {% endif %}
         </div>
         
-        {% if session.get('role') == '管理员' %}
+        {% if session.get('role') == 'SYSTEM_MAINTAINER' %}
         <div class="row g-4 mt-2">
             <div class="col-md-4">
                 <div class="card glass-card h-100 border-primary">

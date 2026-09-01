@@ -37,9 +37,7 @@
                             <td><span class="badge bg-{% if p['status']=='进行中' %}primary{% elif p['status']=='已完成' %}success{% else %}secondary{% endif %}">{{ p['status'] }}</span></td>
                             <td>
                                 <a href="{{ url_for(project_type + '.detail', project_id=p['project_id']) }}" class="btn btn-sm btn-outline-primary">详情</a>
-                                {% if session.get('role') == '管理员' %}
                                 <a href="{{ url_for(project_type + '.delete', project_id=p['project_id']) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('确定删除？')">删除</a>
-                                {% endif %}
                             </td>
                         </tr>
                         {% endfor %}

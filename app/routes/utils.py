@@ -11,6 +11,7 @@ import urllib.error
 import json
 from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for
 from werkzeug.utils import secure_filename
+from app.security.auth import maintenance_required
 
 bp = Blueprint('utils', __name__, url_prefix='/utils')
 
@@ -42,6 +43,7 @@ def document_correction():
 
 # ============ 模型配置页面 ============
 @bp.route('/model_config')
+@maintenance_required
 def model_config():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
@@ -49,6 +51,7 @@ def model_config():
 
 
 @bp.route('/api/models', methods=['GET'])
+@maintenance_required
 def api_models_list():
     """获取所有模型配置"""
     if 'user' not in session:
@@ -59,10 +62,11 @@ def api_models_list():
         return jsonify({'success': True, 'models': models})
     except Exception as e:
         logging.error(f"[Utils] 获取模型列表失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': '模型配置读取失败'}), 500
 
 
 @bp.route('/api/models', methods=['POST'])
+@maintenance_required
 def api_models_create():
     """新建模型配置"""
     if 'user' not in session:
@@ -89,10 +93,11 @@ def api_models_create():
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Utils] 创建模型失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': '模型配置创建失败'}), 500
 
 
 @bp.route('/api/models/<int:id>', methods=['PUT'])
+@maintenance_required
 def api_models_update(id):
     """更新模型配置"""
     if 'user' not in session:
@@ -109,10 +114,11 @@ def api_models_update(id):
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Utils] 更新模型失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': '模型配置更新失败'}), 500
 
 
 @bp.route('/api/models/<int:id>', methods=['DELETE'])
+@maintenance_required
 def api_models_delete(id):
     """删除模型配置"""
     if 'user' not in session:
@@ -123,10 +129,11 @@ def api_models_delete(id):
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Utils] 删除模型失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': '模型配置删除失败'}), 500
 
 
 @bp.route('/api/models/activate/<int:id>', methods=['POST'])
+@maintenance_required
 def api_models_activate(id):
     """激活指定模型"""
     if 'user' not in session:
@@ -147,11 +154,12 @@ def api_models_activate(id):
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Utils] 激活模型失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': '模型激活失败'}), 500
 
 
 # ============ 状态监控页面 ============
 @bp.route('/monitor')
+@maintenance_required
 def monitor():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
@@ -159,6 +167,7 @@ def monitor():
 
 
 @bp.route('/api/monitor/status', methods=['GET'])
+@maintenance_required
 def api_monitor_status():
     """获取推理服务器状态"""
     if 'user' not in session:
@@ -190,7 +199,7 @@ def api_monitor_status():
             error_message = '推理服务器未启动'
         except Exception as e:
             server_status = 'error'
-            error_message = str(e)
+            error_message = '推理服务状态异常'
 
         # 获取系统资源
         mem = psutil.virtual_memory()
@@ -214,10 +223,11 @@ def api_monitor_status():
         })
     except Exception as e:
         logging.error(f"[Utils] 获取监控状态失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': '状态读取失败'}), 500
 
 
 @bp.route('/api/monitor/restart', methods=['POST'])
+@maintenance_required
 def api_monitor_restart():
     """重启推理服务器"""
     if 'user' not in session:
@@ -239,7 +249,7 @@ def api_monitor_restart():
         return jsonify({'success': True, 'message': '推理服务器重启中，约需3-5分钟加载模型'})
     except Exception as e:
         logging.error(f"[Utils] 重启推理服务器失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': '重启请求未完成'}), 500
 
 
 # ============ 文档校对 API ============

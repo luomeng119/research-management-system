@@ -42,9 +42,7 @@
                     <td>
                         <a href="{{ url_for('equipment.detail', equipment_id=e['equipment_id']) }}" class="btn btn-sm btn-outline-primary">详情</a>
                         <a href="{{ url_for('equipment.edit', equipment_id=e['equipment_id']) }}" class="btn btn-sm btn-outline-secondary">编辑</a>
-                        {% if session.get('role') == '管理员' %}
                         <a href="{{ url_for('equipment.delete', equipment_id=e['equipment_id']) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('确定删除？')">删除</a>
-                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}

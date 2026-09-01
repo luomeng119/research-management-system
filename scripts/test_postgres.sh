@@ -8,9 +8,13 @@ fi
 
 t02_admin_hint=${1%%\?*}
 t02_database_name=${t02_admin_hint##*/}
-if [[ ! "$t02_database_name" =~ (^|_)t02($|_) ]]; then
-  echo "refusing non-T02 database identifier: $t02_database_name" >&2
+if [[ ! "$t02_database_name" =~ (^|_)t0(2|3)($|_) ]]; then
+  echo "refusing database identifier outside the T02/T03 contract: $t02_database_name" >&2
   exit 65
+fi
+t03_contract=0
+if [[ "$t02_database_name" =~ (^|_)t03($|_) ]]; then
+  t03_contract=1
 fi
 
 for t02_command in initdb pg_ctl psql createdb; do
@@ -213,5 +217,8 @@ echo "ACL failure injection rollback: direct=0 default=0 existing=$t02_rolled_ba
 
 show_catalog
 "$t02_python" -m pytest app/tests/test_db_contract.py -q
+if [[ "$t03_contract" -eq 1 ]]; then
+  "$t02_python" -m pytest app/tests/test_auth_audit_postgres.py -q
+fi
 
 echo "T02 PostgreSQL contract completed; temporary cluster will be removed"

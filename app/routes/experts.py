@@ -112,11 +112,7 @@ def edit(expert_id):
 def delete(expert_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-    
-    role = session.get('role')
-    if role != '管理员':
-        return jsonify({'success': False, 'message': '仅管理员���删除'})
-    
+
     expert_model = ExpertModel()
     expert_model.delete(expert_id)
     

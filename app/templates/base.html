@@ -53,7 +53,7 @@
                     <i class="bi bi-person-circle"></i> {{ session.get('user') }}
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end">
-                    {% if session.get('role') == '管理员' %}
+                    {% if session.get('role') == 'SYSTEM_MAINTAINER' %}
                     <li><a class="dropdown-item" href="{{ url_for('users.index') }}"><i class="bi bi-people"></i> 用户管理</a></li>
                     <li><hr class="dropdown-divider"></li>
                     {% endif %}
@@ -61,7 +61,12 @@
                     <li><hr class="dropdown-divider"></li>
                     <li><span class="dropdown-item-text">角色: {{ session.get('role') }}</span></li>
                     <li><hr class="dropdown-divider"></li>
-                    <li><a class="dropdown-item" href="{{ url_for('auth.logout') }}">退出登录</a></li>
+                    <li>
+                        <form method="post" action="{{ url_for('auth.logout') }}" class="m-0">
+                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                            <button class="dropdown-item" type="submit">退出登录</button>
+                        </form>
+                    </li>
                 </ul>
             </div>
             {% endif %}
@@ -105,6 +110,34 @@
     {% endif %}
     
     <script src="/static/js/ui-enhance.js"></script>
+    <script>
+    window.APP_CSRF_TOKEN = {{ csrf_token()|tojson }};
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('form').forEach(function (form) {
+            var method = (form.getAttribute('method') || 'get').toLowerCase();
+            if (method !== 'get' && !form.querySelector('input[name="_csrf_token"]')) {
+                var input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = '_csrf_token';
+                input.value = window.APP_CSRF_TOKEN;
+                form.appendChild(input);
+            }
+        });
+        if (window.jQuery) {
+            $.ajaxSetup({headers: {'X-CSRF-Token': window.APP_CSRF_TOKEN}});
+        }
+        var originalFetch = window.fetch;
+        window.fetch = function (input, init) {
+            init = init || {};
+            var method = (init.method || 'GET').toUpperCase();
+            if (['POST', 'PUT', 'PATCH', 'DELETE'].indexOf(method) !== -1) {
+                init.headers = new Headers(init.headers || {});
+                init.headers.set('X-CSRF-Token', window.APP_CSRF_TOKEN);
+            }
+            return originalFetch(input, init);
+        };
+    });
+    </script>
     <script>
     (function() {
         var treeData = null;

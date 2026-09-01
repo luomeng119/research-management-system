@@ -19,11 +19,9 @@
             <a href="{{ url_for('equipment_groups.index') }}" class="btn btn-info btn-sm">
                 <i class="bi bi-box-seam"></i> 选型设备
             </a>
-            {% if session.get('role') == '管理员' %}
             <button class="btn btn-warning btn-sm" onclick="openUnitModal()">
                 <i class="bi bi-building"></i> 研制单位管理
             </button>
-            {% endif %}
         </div>
     </div>
     

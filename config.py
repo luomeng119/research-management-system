@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+from datetime import timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -13,6 +14,21 @@ UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
 DOCUMENTS_DIR = os.path.join(BASE_DIR, 'documents')
 BACKUP_DIR = os.path.join(BASE_DIR, 'backups')
 SESSION_FILE_DIR = os.path.join(DATA_DIR, 'flask_sessions')
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', '').lower() in {'1', 'true', 'yes'}
+PERMANENT_SESSION_LIFETIME = timedelta(minutes=30)
+SESSION_REFRESH_EACH_REQUEST = True
+
+# Security defaults. The in-process limiter resets when this single-process V1 restarts.
+SECURITY_AUTH_ENABLED = None
+CSRF_ENABLED = None
+LOGIN_RATE_LIMIT_ATTEMPTS = 5
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
+LOGIN_RATE_LIMIT_MAX_ENTRIES = 2048
+LOG_FILE = os.path.join(DATA_DIR, 'logs', 'app.jsonl')
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 5
 
 # 文件上传配置
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'rar', 'png', 'jpg', 'jpeg'}

@@ -61,13 +61,7 @@ def new():
     # 获取所有类型的项目列表
     all_projects = get_all_projects()
     
-    # admin 或 管理员角色可以看到所有项目，其他用户只能看自己负责的
-    current_user = session.get('user')
-    current_role = session.get('role')
-    if current_role == '管理员' or current_user == 'admin':
-        my_projects = all_projects
-    else:
-        my_projects = [p for p in all_projects if p['leader'] == current_user]
+    my_projects = all_projects
     
     if request.method == 'POST':
         project_id_raw = request.form.get('project_id', '').strip()
@@ -185,9 +179,6 @@ def edit(group_id):
 def delete(group_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-    
-    if session.get('role') != '管理员':
-        return jsonify({'success': False, 'message': '无权限'})
     
     model = EquipmentGroupModel()
     model.delete_group(group_id)
