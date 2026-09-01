@@ -22,6 +22,12 @@ def create_app(test_config=None):
             )
         app.config['SECRET_KEY'] = secret_key
 
+    database_url = app.config.get('DATABASE_URL') or os.environ.get('DATABASE_URL')
+    if database_url and not app.config.get('TESTING'):
+        from app.db import initialize_runtime_database
+
+        app.extensions['database_engine'] = initialize_runtime_database(database_url)
+
     # [REQ-013-fix] 使用 Flask-Session filesystem session 替代 cookie session
     # 原因：1200+ 条数据时 session['equipment_import_preview']['processed'] 太大，
     # 超过 cookie 4KB 限制，导致 session 被截断 → 预览页找不到数据 → 302 redirect 回首页
