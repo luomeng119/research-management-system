@@ -83,10 +83,17 @@ def upgrade() -> None:
         sa.Column("business_id", sa.Text(), nullable=False, unique=True),
         sa.Column("title", sa.Text(), nullable=False),
         sa.Column("source_type", sa.Text()),
-        sa.Column("summary", sa.Text()),
-        sa.Column("background", sa.Text()),
+        sa.Column("source_summary", sa.Text()),
+        sa.Column("research_problem", sa.Text()),
         sa.Column("objectives", sa.Text()),
+        sa.Column("research_content", sa.Text()),
+        sa.Column("expected_outcomes", sa.Text()),
         sa.Column("status", sa.Text(), nullable=False, server_default="DRAFT"),
+        sa.CheckConstraint(
+            "source_type IS NULL OR source_type IN "
+            "('IDEA','CREATIVE','MEETING_CONCLUSION','FINISHED_MATERIAL','OTHER')",
+            name="ck_proposals_source_type",
+        ),
         sa.CheckConstraint(
             "status IN ('DRAFT','ARGUMENTATION','ESTABLISHED','DEFERRED','REJECTED')",
             name="ck_proposals_status",
@@ -115,10 +122,12 @@ def upgrade() -> None:
         *_mainline_columns(),
         sa.Column("proposal_id", UUID, sa.ForeignKey("proposals.id"), nullable=False),
         sa.Column("decision", sa.Text(), nullable=False),
-        sa.Column("rationale", sa.Text()),
+        sa.Column("decision_date", sa.Date(), nullable=False),
+        sa.Column("conclusion", sa.Text(), nullable=False),
+        sa.Column("basis", sa.Text(), nullable=False),
         sa.Column("idempotency_key", sa.Text(), nullable=False, unique=True),
         sa.CheckConstraint(
-            "decision IN ('ESTABLISHED','DEFERRED','REJECTED')",
+            "decision IN ('ESTABLISH','DEFER','REJECT')",
             name="ck_proposal_decisions_decision",
         ),
     )
@@ -132,11 +141,19 @@ def upgrade() -> None:
         "proposal_ai_drafts",
         *_mainline_columns(),
         sa.Column("proposal_id", UUID, sa.ForeignKey("proposals.id", ondelete="CASCADE")),
-        sa.Column("adapter", sa.Text(), nullable=False),
-        sa.Column("model_version", sa.Text()),
+        sa.Column("status", sa.Text(), nullable=False, server_default="READY"),
+        sa.Column("provider_kind", sa.Text(), nullable=False),
+        sa.Column("model_version", sa.Text(), nullable=False),
+        sa.Column("prompt_version", sa.Text(), nullable=False),
         sa.Column("input_hash", sa.Text()),
-        sa.Column("output", JSONB, nullable=False),
+        sa.Column("content", JSONB, nullable=False),
         sa.Column("accepted_fields", JSONB, nullable=False, server_default="[]"),
+        sa.CheckConstraint(
+            "status IN ('READY','APPLIED')", name="ck_proposal_ai_drafts_status"
+        ),
+        sa.CheckConstraint(
+            "provider_kind = 'LOCAL'", name="ck_proposal_ai_drafts_provider_kind"
+        ),
     )
 
     op.create_table(
@@ -148,7 +165,8 @@ def upgrade() -> None:
         sa.Column("status", sa.Text(), nullable=False, server_default="PENDING"),
         sa.UniqueConstraint("category", "business_id", name="uq_project_registry_category_business"),
         sa.CheckConstraint(
-            "category IN ('GENERAL','SECURITY','CRYPTO')",
+            "category IN "
+            "('GENERAL_RESEARCH','SECURITY_CONFIDENTIALITY','CRYPTO_APPLICATION')",
             name="ck_project_registry_category",
         ),
         sa.CheckConstraint(

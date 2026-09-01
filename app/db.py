@@ -3,12 +3,14 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import sqlalchemy as sa
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy.engine import Connection, Engine
 
-
-HEAD_REVISION = "0001_v1_core"
+DEFAULT_ALEMBIC_CONFIG = Path(__file__).resolve().parents[1] / "alembic.ini"
 
 
 def get_runtime_database_url() -> str:
@@ -54,19 +56,36 @@ def transaction(engine: Engine) -> Iterator[Connection]:
 def check_schema_version(
     engine: Engine,
     *,
-    expected_revision: str = HEAD_REVISION,
+    alembic_config_path: str | Path = DEFAULT_ALEMBIC_CONFIG,
 ) -> str:
+    config = Config(str(alembic_config_path))
+    code_heads = set(ScriptDirectory.from_config(config).get_heads())
+    if len(code_heads) != 1:
+        raise RuntimeError(
+            f"expected exactly one code head, found {sorted(code_heads)!r}"
+        )
     try:
         with engine.connect() as connection:
-            revision = connection.scalar(sa.text("SELECT version_num FROM alembic_version"))
+            database_revisions = tuple(
+                connection.scalars(
+                    sa.text("SELECT version_num FROM alembic_version")
+                ).all()
+            )
     except sa.exc.SQLAlchemyError as exc:
         raise RuntimeError("PostgreSQL is unavailable or has no Alembic schema") from exc
-    if revision != expected_revision:
+    if len(database_revisions) != 1:
         raise RuntimeError(
-            f"database schema revision {revision!r} does not match code head "
-            f"{expected_revision!r}"
+            "expected exactly one database revision, "
+            f"found {sorted(database_revisions)!r}"
         )
-    return revision
+    database_revision = database_revisions[0]
+    if {database_revision} != code_heads:
+        code_head = next(iter(code_heads))
+        raise RuntimeError(
+            f"database schema revision {database_revision!r} does not match "
+            f"code head {code_head!r}"
+        )
+    return database_revision
 
 
 def initialize_runtime_database(database_url: str | None = None) -> Engine:

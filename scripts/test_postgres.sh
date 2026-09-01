@@ -20,19 +20,19 @@ for t02_command in initdb pg_ctl psql createdb; do
   fi
 done
 
-if [[ -x .venv/bin/python ]]; then
-  t02_python=.venv/bin/python
-else
-  t02_python=$(command -v python)
+if [[ ! -x .venv/bin/python ]]; then
+  echo "project interpreter is unavailable: .venv/bin/python" >&2
+  exit 69
 fi
+t02_python=.venv/bin/python
 
 t02_root=$(mktemp -d "${TMPDIR:-/tmp}/rm-v1-t02-postgres.XXXXXX")
 t02_data="$t02_root/data"
 t02_socket="$t02_root/socket"
 t02_log="$t02_root/postgres.log"
 t02_port=$("$t02_python" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
-t02_migration_role=rm_v1_t02_migration
-t02_runtime_role=rm_v1_t02_runtime
+t02_migration_role="rm_v1_t02_migration_${t02_port}"
+t02_runtime_role="rm_v1_t02_runtime_${t02_port}"
 t02_database=rm_v1_t02
 t02_started=0
 
@@ -49,33 +49,25 @@ initdb -D "$t02_data" --auth=trust --no-locale --encoding=UTF8 >/dev/null
 pg_ctl -D "$t02_data" -l "$t02_log" \
   -o "-F -p $t02_port -k $t02_socket -h 127.0.0.1" start >/dev/null
 t02_started=1
+echo "T02 temporary PostgreSQL: isolated cluster=$t02_root port=$t02_port database=$t02_database"
+echo "T02 caller URL is used only as a safety identifier; no caller database is contacted"
+
+if [[ "${T02_TEST_FAIL_AT:-}" == "after_cluster_start" ]]; then
+  echo "injected failure after_cluster_start" >&2
+  exit 70
+fi
 
 psql -h 127.0.0.1 -p "$t02_port" -d postgres -v ON_ERROR_STOP=1 \
   -c "CREATE ROLE $t02_migration_role LOGIN;" \
   -c "CREATE ROLE $t02_runtime_role LOGIN;" >/dev/null
 createdb -h 127.0.0.1 -p "$t02_port" -O "$t02_migration_role" "$t02_database"
+psql -h 127.0.0.1 -p "$t02_port" -d "$t02_database" -v ON_ERROR_STOP=1 \
+  -c "ALTER SCHEMA public OWNER TO $t02_migration_role;" >/dev/null
 
 export MIGRATION_DATABASE_URL="postgresql+psycopg://$t02_migration_role@127.0.0.1:$t02_port/$t02_database"
 export DATABASE_URL="postgresql+psycopg://$t02_runtime_role@127.0.0.1:$t02_port/$t02_database"
 export TEST_DATABASE_URL="$DATABASE_URL"
-
-grant_runtime_permissions() {
-  psql -h 127.0.0.1 -p "$t02_port" \
-    -d "$t02_database" -v ON_ERROR_STOP=1 <<SQL
-ALTER SCHEMA public OWNER TO $t02_migration_role;
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-REVOKE CREATE, TEMPORARY ON DATABASE $t02_database FROM PUBLIC;
-REVOKE CREATE, TEMPORARY ON DATABASE $t02_database FROM $t02_runtime_role;
-REVOKE ALL ON SCHEMA public FROM $t02_runtime_role;
-REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
-REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;
-GRANT CONNECT ON DATABASE $t02_database TO $t02_runtime_role;
-GRANT USAGE ON SCHEMA public TO $t02_runtime_role;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO $t02_runtime_role;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO $t02_runtime_role;
-REVOKE UPDATE, DELETE, TRUNCATE ON TABLE audit_events FROM $t02_runtime_role;
-SQL
-}
+export T02_RUNTIME_ROLE="$t02_runtime_role"
 
 show_revision() {
   psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
@@ -98,9 +90,6 @@ show_catalog() {
   echo "schema checks/FKs/uniques: $t02_constraint_names"
 }
 
-echo "T02 temporary PostgreSQL: isolated cluster=$t02_root port=$t02_port database=$t02_database"
-echo "T02 caller URL is used only as a safety identifier; no caller database is contacted"
-
 "$t02_python" -m alembic -c alembic.ini upgrade head
 echo "migration roundtrip: upgrade=$(show_revision)"
 "$t02_python" -m alembic -c alembic.ini downgrade base
@@ -108,7 +97,9 @@ echo "migration roundtrip: downgrade=$(show_revision)"
 "$t02_python" -m alembic -c alembic.ini upgrade head
 echo "migration roundtrip: re-upgrade=$(show_revision)"
 
-grant_runtime_permissions
+"$t02_python" scripts/provision_postgres.py \
+  --migration-url "$MIGRATION_DATABASE_URL" \
+  --runtime-role "$t02_runtime_role"
 show_catalog
 "$t02_python" -m pytest app/tests/test_db_contract.py -q
 

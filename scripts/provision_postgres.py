@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import argparse
+
+import psycopg
+from psycopg import sql
+from sqlalchemy.engine import make_url
+
+
+def _psycopg_url(value: str) -> str:
+    url = make_url(value)
+    if not url.drivername.startswith("postgresql"):
+        raise ValueError("migration URL must use PostgreSQL")
+    return url.set(drivername="postgresql").render_as_string(hide_password=False)
+
+
+def provision(migration_url: str, runtime_role: str) -> tuple[str, str]:
+    with psycopg.connect(_psycopg_url(migration_url)) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT current_user, current_database(), "
+                "pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()"
+            )
+            migration_owner, database_name, database_owner = cursor.fetchone()
+            if migration_owner != database_owner:
+                raise RuntimeError(
+                    "migration URL must connect as the existing database owner"
+                )
+            cursor.execute(
+                "SELECT pg_get_userbyid(nspowner) FROM pg_namespace "
+                "WHERE nspname = 'public'"
+            )
+            if cursor.fetchone() != (migration_owner,):
+                raise RuntimeError(
+                    "migration owner must already own the public schema"
+                )
+            cursor.execute(
+                "SELECT rolsuper, rolcreaterole, rolcreatedb, rolbypassrls "
+                "FROM pg_roles WHERE rolname = %s",
+                (runtime_role,),
+            )
+            runtime_attributes = cursor.fetchone()
+            if runtime_attributes is None:
+                raise RuntimeError(f"runtime role does not exist: {runtime_role}")
+            if runtime_role == migration_owner:
+                raise RuntimeError("runtime role must differ from the migration owner")
+            if any(runtime_attributes):
+                raise RuntimeError(
+                    "runtime role must not have superuser, role creation, database "
+                    "creation, or row-security bypass attributes"
+                )
+            cursor.execute(
+                "SELECT pg_has_role(%s::name, %s::name, 'MEMBER')",
+                (runtime_role, migration_owner),
+            )
+            if cursor.fetchone() == (True,):
+                raise RuntimeError("runtime role must not be a member of the migration owner")
+
+            owner = sql.Identifier(migration_owner)
+            database = sql.Identifier(database_name)
+            runtime = sql.Identifier(runtime_role)
+            statements = (
+                sql.SQL("REVOKE CREATE, TEMPORARY ON DATABASE {} FROM PUBLIC;").format(database),
+                sql.SQL("REVOKE CREATE, TEMPORARY ON DATABASE {} FROM {};").format(database, runtime),
+                sql.SQL("REVOKE CREATE ON SCHEMA public FROM PUBLIC;"),
+                sql.SQL("REVOKE ALL ON SCHEMA public FROM {};").format(runtime),
+                sql.SQL("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;"),
+                sql.SQL("REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;"),
+                sql.SQL("GRANT CONNECT ON DATABASE {} TO {};").format(database, runtime),
+                sql.SQL("GRANT USAGE ON SCHEMA public TO {};").format(runtime),
+                sql.SQL(
+                    "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
+                    "IN SCHEMA public TO {};"
+                ).format(runtime),
+                sql.SQL(
+                    "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {};"
+                ).format(runtime),
+                sql.SQL("REVOKE ALL ON TABLE audit_events FROM {};").format(runtime),
+                sql.SQL("GRANT INSERT, SELECT ON TABLE audit_events TO {};").format(runtime),
+                sql.SQL(
+                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+                    "REVOKE ALL ON TABLES FROM PUBLIC;"
+                ).format(owner),
+                sql.SQL(
+                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+                    "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {};"
+                ).format(owner, runtime),
+                sql.SQL(
+                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+                    "REVOKE ALL ON SEQUENCES FROM PUBLIC;"
+                ).format(owner),
+                sql.SQL(
+                    "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+                    "GRANT USAGE, SELECT ON SEQUENCES TO {};"
+                ).format(owner, runtime),
+            )
+            for statement in statements:
+                cursor.execute(statement)
+    return migration_owner, database_name
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Apply the production PostgreSQL migration/runtime role boundary."
+    )
+    parser.add_argument("--migration-url", required=True)
+    parser.add_argument("--runtime-role", required=True)
+    args = parser.parse_args()
+    owner, database = provision(args.migration_url, args.runtime_role)
+    print(
+        f"PostgreSQL privileges provisioned: database={database} "
+        f"migration_owner={owner} runtime_role={args.runtime_role}"
+    )
+
+
+if __name__ == "__main__":
+    main()

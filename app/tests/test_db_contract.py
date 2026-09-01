@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -163,6 +164,88 @@ def test_schema_revision_matches_code_head(runtime_engine):
     assert db.check_schema_version(runtime_engine) == HEAD_REVISION
 
 
+def test_schema_revision_rejects_missing_version_table(migration_engine, runtime_engine):
+    db = _db_module()
+    with migration_engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE alembic_version RENAME TO alembic_version_hidden")
+    try:
+        with pytest.raises(RuntimeError, match="no Alembic schema"):
+            db.check_schema_version(runtime_engine)
+    finally:
+        with migration_engine.begin() as connection:
+            connection.exec_driver_sql("ALTER TABLE alembic_version_hidden RENAME TO alembic_version")
+
+
+def test_schema_revision_rejects_empty_version_table(migration_engine, runtime_engine):
+    db = _db_module()
+    with migration_engine.begin() as connection:
+        connection.execute(sa.text("DELETE FROM alembic_version"))
+    try:
+        with pytest.raises(RuntimeError, match="exactly one database revision"):
+            db.check_schema_version(runtime_engine)
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("INSERT INTO alembic_version (version_num) VALUES (:revision)"),
+                {"revision": HEAD_REVISION},
+            )
+
+
+def test_schema_revision_rejects_wrong_single_revision(migration_engine, runtime_engine):
+    db = _db_module()
+    with migration_engine.begin() as connection:
+        connection.execute(sa.text("UPDATE alembic_version SET version_num = 'wrong_head'"))
+    try:
+        with pytest.raises(RuntimeError, match="does not match code head"):
+            db.check_schema_version(runtime_engine)
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("UPDATE alembic_version SET version_num = :revision"),
+                {"revision": HEAD_REVISION},
+            )
+
+
+def test_schema_revision_rejects_multiple_database_revisions(
+    migration_engine, runtime_engine
+):
+    db = _db_module()
+    with migration_engine.begin() as connection:
+        connection.execute(
+            sa.text("INSERT INTO alembic_version (version_num) VALUES ('other_head')")
+        )
+    try:
+        with pytest.raises(RuntimeError, match="exactly one database revision"):
+            db.check_schema_version(runtime_engine)
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM alembic_version WHERE version_num = 'other_head'")
+            )
+
+
+def test_schema_revision_rejects_multiple_code_heads(
+    tmp_path: Path, runtime_engine
+):
+    db = _db_module()
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    (tmp_path / "env.py").write_text("", encoding="utf-8")
+    for revision in ("head_a", "head_b"):
+        (versions / f"{revision}.py").write_text(
+            f"revision = {revision!r}\ndown_revision = None\n",
+            encoding="utf-8",
+        )
+    config_path = tmp_path / "alembic.ini"
+    config_path.write_text(
+        "[alembic]\nscript_location = " + str(tmp_path) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="exactly one code head"):
+        db.check_schema_version(runtime_engine, alembic_config_path=config_path)
+
+
 def test_runtime_initialization_rejects_database_revision_drift(
     migration_engine, runtime_url
 ):
@@ -215,6 +298,164 @@ def test_mainline_tables_use_uuid_timestamptz_audit_and_version(migration_engine
         assert columns["updated_at"]["type"].timezone is True
         assert isinstance(columns["version"]["type"], sa.Integer)
         assert {"created_by", "updated_by"} <= columns.keys()
+
+
+def test_proposal_decision_ai_draft_and_project_category_columns_match_api_contract(
+    migration_engine,
+):
+    inspector = sa.inspect(migration_engine)
+    expected_columns = {
+        "proposals": {
+            "source_summary",
+            "research_problem",
+            "objectives",
+            "research_content",
+            "expected_outcomes",
+        },
+        "proposal_decisions": {"decision", "decision_date", "conclusion", "basis"},
+        "proposal_ai_drafts": {
+            "status",
+            "provider_kind",
+            "model_version",
+            "prompt_version",
+            "content",
+            "accepted_fields",
+        },
+    }
+    for table_name, required in expected_columns.items():
+        actual = {column["name"] for column in inspector.get_columns(table_name)}
+        assert required <= actual
+
+
+def test_api_contract_samples_insert_and_invalid_enums_are_rejected(runtime_engine):
+    metadata = sa.MetaData()
+    proposals = sa.Table("proposals", metadata, autoload_with=runtime_engine)
+    decisions = sa.Table("proposal_decisions", metadata, autoload_with=runtime_engine)
+    drafts = sa.Table("proposal_ai_drafts", metadata, autoload_with=runtime_engine)
+    registry = sa.Table("project_registry", metadata, autoload_with=runtime_engine)
+    marker = str(uuid.uuid4())
+
+    with runtime_engine.begin() as connection:
+        proposal_id = connection.scalar(
+            proposals.insert()
+            .values(
+                business_id=f"TP-{marker}",
+                title="便携式保障设备适配研究",
+                source_type="IDEA",
+                source_summary="主动提出的研究设想",
+                research_problem="现有设备不适配",
+                objectives="形成适配方案",
+                research_content="开展现场验证",
+                expected_outcomes="形成研究报告",
+            )
+            .returning(proposals.c.id)
+        )
+        for source_type in (
+            "CREATIVE",
+            "MEETING_CONCLUSION",
+            "FINISHED_MATERIAL",
+            "OTHER",
+        ):
+            connection.execute(
+                proposals.insert().values(
+                    business_id=f"TP-{source_type}-{marker}",
+                    title=f"{source_type} 来源提案",
+                    source_type=source_type,
+                )
+            )
+        for decision in ("ESTABLISH", "DEFER", "REJECT"):
+            connection.execute(
+                decisions.insert().values(
+                    proposal_id=proposal_id,
+                    decision=decision,
+                    decision_date=sa.text("DATE '2026-09-01'"),
+                    conclusion=f"{decision} 结论",
+                    basis="论证材料完整",
+                    idempotency_key=f"decision-{decision}-{marker}",
+                )
+            )
+        draft_ids = []
+        for status in ("READY", "APPLIED"):
+            draft_ids.append(
+                connection.scalar(
+                    drafts.insert()
+                    .values(
+                        proposal_id=proposal_id,
+                        status=status,
+                        provider_kind="LOCAL",
+                        model_version="local-v1",
+                        prompt_version="proposal-v1",
+                        content={
+                            "title": "建议标题",
+                            "researchProblem": "待解决问题",
+                            "objectives": ["目标一"],
+                            "researchContent": ["内容一"],
+                            "expectedOutcomes": ["成果一"],
+                            "missingInformation": [],
+                        },
+                        accepted_fields=(
+                            ["title", "researchProblem"] if status == "APPLIED" else []
+                        ),
+                    )
+                    .returning(drafts.c.id)
+                )
+            )
+        for category in (
+            "GENERAL_RESEARCH",
+            "SECURITY_CONFIDENTIALITY",
+            "CRYPTO_APPLICATION",
+        ):
+            connection.execute(
+                registry.insert().values(
+                    category=category,
+                    business_id=f"{category}-{marker}",
+                    proposal_id=proposal_id if category == "GENERAL_RESEARCH" else None,
+                )
+            )
+
+    with runtime_engine.connect() as connection:
+        stored = connection.execute(
+            sa.select(drafts.c.content, drafts.c.accepted_fields).where(
+                drafts.c.id == draft_ids[-1]
+            )
+        ).one()
+    assert stored.content["researchProblem"] == "待解决问题"
+    assert stored.accepted_fields == ["title", "researchProblem"]
+
+    invalid_cases = (
+        proposals.insert().values(
+            business_id=f"INVALID-SOURCE-{marker}", title="invalid", source_type="MEETING"
+        ),
+        decisions.insert().values(
+            proposal_id=proposal_id,
+            decision="ESTABLISHED",
+            decision_date=sa.text("DATE '2026-09-01'"),
+            conclusion="invalid",
+            basis="invalid",
+            idempotency_key=f"invalid-decision-{marker}",
+        ),
+        registry.insert().values(category="GENERAL", business_id=f"INVALID-CATEGORY-{marker}"),
+        drafts.insert().values(
+            proposal_id=proposal_id,
+            status="FAILED",
+            provider_kind="LOCAL",
+            model_version="invalid",
+            prompt_version="invalid",
+            content={},
+        ),
+        drafts.insert().values(
+            proposal_id=proposal_id,
+            status="READY",
+            provider_kind="REMOTE",
+            model_version="invalid",
+            prompt_version="invalid",
+            content={},
+        ),
+    )
+    for statement in invalid_cases:
+        with pytest.raises(DBAPIError):
+            with runtime_engine.begin() as connection:
+                connection.execute(statement)
 
 
 def test_three_legacy_project_tables_keep_business_id_and_registry_fk(migration_engine):
@@ -349,7 +590,7 @@ def test_runtime_role_cannot_create_schema_objects(runtime_engine):
                 "has_database_privilege(current_user, current_database(), 'TEMPORARY')"
             )
         ).one()
-    assert privileges == ("rm_v1_t02_runtime", False, False, False)
+    assert privileges == (os.environ["T02_RUNTIME_ROLE"], False, False, False)
     with pytest.raises(DBAPIError):
         with runtime_engine.begin() as connection:
             connection.exec_driver_sql("CREATE TABLE forbidden_runtime_ddl (id integer)")
@@ -400,3 +641,30 @@ def test_runtime_role_cannot_rewrite_audit_history(runtime_engine, operation):
     with pytest.raises(DBAPIError):
         with runtime_engine.begin() as connection:
             connection.execute(statement)
+
+
+def test_default_privileges_cover_future_tables_and_sequences(
+    migration_engine, runtime_engine
+):
+    table_name = f"future_permissions_{uuid.uuid4().hex}"
+    sequence_name = f"future_sequence_{uuid.uuid4().hex}"
+    with migration_engine.begin() as connection:
+        connection.exec_driver_sql(
+            f'CREATE TABLE "{table_name}" (id integer PRIMARY KEY, value text)'
+        )
+        connection.exec_driver_sql(f'CREATE SEQUENCE "{sequence_name}"')
+    try:
+        with runtime_engine.begin() as connection:
+            connection.exec_driver_sql(
+                f'INSERT INTO "{table_name}" (id, value) VALUES (1, \'ok\')'
+            )
+            assert connection.exec_driver_sql(
+                f'SELECT value FROM "{table_name}" WHERE id = 1'
+            ).scalar_one() == "ok"
+            assert connection.exec_driver_sql(
+                f'SELECT nextval(\'"{sequence_name}"\')'
+            ).scalar_one() == 1
+    finally:
+        with migration_engine.begin() as connection:
+            connection.exec_driver_sql(f'DROP TABLE "{table_name}"')
+            connection.exec_driver_sql(f'DROP SEQUENCE "{sequence_name}"')
