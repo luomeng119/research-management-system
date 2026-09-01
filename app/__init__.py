@@ -14,6 +14,14 @@ def create_app(test_config=None):
     if test_config:
         app.config.update(test_config)
 
+    if not app.config.get('TESTING'):
+        secret_key = os.environ.get('FLASK_SECRET_KEY')
+        if not secret_key:
+            raise RuntimeError(
+                'FLASK_SECRET_KEY must be configured for non-testing environments'
+            )
+        app.config['SECRET_KEY'] = secret_key
+
     # [REQ-013-fix] 使用 Flask-Session filesystem session 替代 cookie session
     # 原因：1200+ 条数据时 session['equipment_import_preview']['processed'] 太大，
     # 超过 cookie 4KB 限制，导致 session 被截断 → 预览页找不到数据 → 302 redirect 回首页

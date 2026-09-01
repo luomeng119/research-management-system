@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 import os
-import secrets
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Flask配置
-SECRET_KEY = os.environ.get('FLASK_SECRET_KEY') or secrets.token_hex(32)
+SECRET_KEY = None
 DEBUG = False
 
 # 路径配置
