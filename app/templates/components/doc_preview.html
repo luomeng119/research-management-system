@@ -1,0 +1,206 @@
+<!-- 文档预览模态框 -->
+<div class="modal fade" id="docPreviewModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-file-earmark-preview"></i> 文档预览
+                </h5>
+                <div class="btn-group btn-group-sm me-2" role="group">
+                    <button type="button" class="btn btn-outline-secondary" onclick="pdfZoomOut()" title="缩小">
+                        <i class="bi bi-dash-lg"></i>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" id="pdfZoomLabel" style="min-width: 52px; cursor: default;">120%</button>
+                    <button type="button" class="btn btn-outline-secondary" onclick="pdfZoomIn()" title="放大">
+                        <i class="bi bi-plus-lg"></i>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" onclick="pdfZoomReset()" title="重置">
+                        <i class="bi bi-arrow-counterclockwise"></i>
+                    </button>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="docPreviewContent" style="min-height: 500px; background: #f5f5f5; padding: 20px; overflow: auto;">
+                <p class="text-center text-muted"><i class="bi bi-spinner bi-spin"></i> 加载中...</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <a href="#" id="docDownloadLink" class="btn btn-primary" download>
+                    <i class="bi bi-download"></i> 下载
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- PDF.js (离线本地) -->
+<script src="/static/js/pdf.js"></script>
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '/static/js/pdf.worker.js';
+</script>
+
+<!-- Mammoth.js for Word (离线本地) -->
+<script src="/static/js/mammoth.min.js"></script>
+
+<!-- 文档预览公共函数 -->
+<script>
+function previewDocument(url, filename) {
+    const modal = new bootstrap.Modal(document.getElementById('docPreviewModal'));
+    const container = document.getElementById('docPreviewContent');
+    const downloadLink = document.getElementById('docDownloadLink');
+    
+    // 设置下载链接
+    downloadLink.href = url;
+    downloadLink.download = filename;
+    
+    modal.show();
+    
+    container.innerHTML = '<p class="text-center"><i class="bi bi-spinner bi-spin"></i> 加载中...</p>';
+    
+    // 判断文件类型
+    const ext = filename.split('.').pop().toLowerCase();
+    
+    if (ext === 'pdf') {
+        renderPDF(url, container);
+    } else if (ext === 'docx' || ext === 'doc') {
+        renderWord(url, container);
+    } else if (ext === 'xlsx' || ext === 'xls') {
+        container.innerHTML = '<div class="alert alert-warning">Excel文件暂不支持预览，请下载后查看</div>';
+    } else {
+        container.innerHTML = '<div class="alert alert-warning">暂不支持此格式预览，请下载后查看</div>';
+    }
+}
+
+function renderPDF(url, container) {
+    const loadingTask = pdfjsLib.getDocument(url);
+
+    loadingTask.promise.then(function(pdf) {
+        console.log('PDF loaded, pages:', pdf.numPages);
+
+        let html = '<div id="pdf-content" style="text-align: center;"></div>';
+        container.innerHTML = html;
+
+        // 最多渲染10页
+        const numPages = Math.min(pdf.numPages, 10);
+
+        for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+            pdf.getPage(pageNum).then(function(page) {
+                const viewport = page.getViewport({scale: window._pdfScale || 1.2});
+
+                const canvas = document.createElement('canvas');
+                canvas.style.margin = '10px';
+                canvas.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
+                const context = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: viewport
+                };
+
+                page.render(renderContext).promise.then(function() {
+                    document.getElementById('pdf-content').appendChild(canvas);
+                });
+            });
+        }
+
+        if (pdf.numPages > 10) {
+            container.innerHTML += '<p class="text-muted text-center mt-3">仅显示前10页（共' + pdf.numPages + '页）</p>';
+        }
+    }).catch(function(error) {
+        console.error('Error loading PDF:', error);
+        container.innerHTML = '<div class="alert alert-danger">PDF加载失败: ' + error.message + '</div>';
+    });
+}
+
+function renderWord(url, container) {
+    fetch(url)
+        .then(function(response) {
+            return response.arrayBuffer();
+        })
+        .then(function(arrayBuffer) {
+            mammoth.convertToHtml({arrayBuffer: arrayBuffer})
+                .then(function(result) {
+                    container.innerHTML = '<div style="background: white; padding: 30px; border: 1px solid #ddd; max-width: 800px; margin: 0 auto; min-height: 400px;">' + result.value + '</div>';
+                })
+                .catch(function(err) {
+                    container.innerHTML = '<div class="alert alert-danger">Word转换失败: ' + err.message + '</div>';
+                });
+        })
+        .catch(function(error) {
+            container.innerHTML = '<div class="alert alert-danger">文件加载失败: ' + error.message + '</div>';
+        });
+}
+
+// 文档预览辅助函数 - 从链接或按钮调用
+function previewDoc(url, filename) {
+    previewDocument(url, filename || url.split('/').pop());
+}
+
+// PDF 缩放控制
+var _pdfScale = 1.2;
+
+function pdfZoomIn() {
+    _pdfScale = Math.min(_pdfScale + 0.2, 3.0);
+    document.getElementById('pdfZoomLabel').textContent = Math.round(_pdfScale * 100) + '%';
+    reRenderPDF();
+}
+
+function pdfZoomOut() {
+    _pdfScale = Math.max(_pdfScale - 0.2, 0.4);
+    document.getElementById('pdfZoomLabel').textContent = Math.round(_pdfScale * 100) + '%';
+    reRenderPDF();
+}
+
+function pdfZoomReset() {
+    _pdfScale = 1.2;
+    document.getElementById('pdfZoomLabel').textContent = '120%';
+    reRenderPDF();
+}
+
+var _currentPdfUrl = null;
+var _currentFilename = null;
+
+function previewDocument(url, filename) {
+    const modal = new bootstrap.Modal(document.getElementById('docPreviewModal'));
+    const container = document.getElementById('docPreviewContent');
+    const downloadLink = document.getElementById('docDownloadLink');
+
+    _currentPdfUrl = url;
+    _currentFilename = filename;
+
+    // 设置下载链接
+    downloadLink.href = url;
+    downloadLink.download = filename;
+
+    modal.show();
+
+    container.innerHTML = '<p class="text-center"><i class="bi bi-spinner bi-spin"></i> 加载中...</p>';
+
+    // 判断文件类型
+    const ext = filename.split('.').pop().toLowerCase();
+
+    if (ext === 'pdf') {
+        renderPDF(url, container);
+    } else if (ext === 'docx' || ext === 'doc') {
+        renderWord(url, container);
+    } else if (ext === 'xlsx' || ext === 'xls') {
+        container.innerHTML = '<div class="alert alert-warning">Excel文件暂不支持预览，请下载后查看</div>';
+    } else if (['jpg','jpeg','png','gif','bmp','webp'].includes(ext)) {
+        container.innerHTML = '<div style="text-align:center;"><img src="' + url + '" style="max-width:100%;max-height:75vh;border:1px solid #ddd;box-shadow:0 2px 8px rgba(0,0,0,0.15);" /></div>';
+    } else {
+        container.innerHTML = '<div class="alert alert-warning">暂不支持此格式预览，请下载后查看</div>';
+    }
+}
+
+function reRenderPDF() {
+    if (!_currentPdfUrl) return;
+    const container = document.getElementById('docPreviewContent');
+    if (!container) return;
+    const ext = _currentFilename.split('.').pop().toLowerCase();
+    if (ext === 'pdf') {
+        renderPDF(_currentPdfUrl, container);
+    }
+}
+</script>

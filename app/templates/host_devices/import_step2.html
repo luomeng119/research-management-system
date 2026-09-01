@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+
+{% block title %}宿主设备库 - 导入预览（步骤2/3）{% endblock %}
+
+{% block content %}
+<style>
+.match-exact { color: #52c41a; }
+.match-fuzzy { color: #fa8c16; }
+.match-unmatched { color: #f5222d; }
+.match-icon { font-weight: bold; margin-right: 4px; }
+.row-dup { background: #fff7e6; }
+.row-skip { opacity: 0.5; }
+</style>
+
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>宿主设备库 - 导入预览（步骤2/3）</h4>
+        <a href="{{ url_for('host_devices.import_page') }}" class="btn btn-outline-secondary btn-sm">← 上一步</a>
+    </div>
+
+    <!-- 统计条 -->
+    <div class="card mb-3">
+        <div class="card-body" style="padding:12px 20px;">
+            <div class="d-flex align-items-center gap-4">
+                <span style="color:#888;">文件: <strong>{{ filename }}</strong></span>
+                <span>总计: <strong>{{ statistics.total }}</strong> 行</span>
+                <span class="match-exact">✓ 精确: {{ statistics.exact }}</span>
+                <span class="match-fuzzy">~ 模糊: {{ statistics.fuzzy }}</span>
+                <span class="match-unmatched">⚠ 未匹配: {{ statistics.unmatched }}</span>
+                {% if statistics.duplicate > 0 %}
+                <span style="color:#722ed1;">⚡ 重复: {{ statistics.duplicate }}</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <form method="post" action="{{ url_for('host_devices.import_commit') }}">
+        <!-- 标签页 -->
+        <ul class="nav nav-tabs mb-3" id="filterTabs">
+            <li class="nav-item">
+                <a class="nav-link active" href="#" onclick="filterRows('all'); return false;">全部</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" onclick="filterRows('exact'); return false;">精确匹配</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" onclick="filterRows('fuzzy'); return false;">模糊匹配</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" onclick="filterRows('unmatched'); return false;">未匹配</a>
+            </li>
+            {% if statistics.duplicate > 0 %}
+            <li class="nav-item">
+                <a class="nav-link" href="#" onclick="filterRows('duplicate'); return false;">重复</a>
+            </li>
+            {% endif %}
+        </ul>
+
+        <!-- 数据表格 -->
+        <div class="card">
+            <div class="card-body" style="padding:0;">
+                <div style="overflow-x:auto;">
+                    <table class="table table-bordered table-sm mb-0" style="white-space:nowrap;">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>宿主设备编号</th>
+                                <th>名称</th>
+                                <th>型号</th>
+                                <th>类型</th>
+                                <th>形态</th>
+                                <th>关联密码设备</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dataTableBody">
+                            {% for row in processed %}
+                            <tr class="data-row
+                                {% if row.duplicate_status == 'exists' %}row-dup{% endif %}
+                                {% if row.duplicate_status == 'skip' %}row-skip{% endif %}"
+                                data-row="{{ row.row_idx }}"
+                                data-related-status="{% for d in row.related_result.devices %}{{ d.status }}{% if not loop.last %},{% endif %}{% endfor %}"
+                                data-dup="{% if row.duplicate_status == 'exists' %}yes{% else %}no{% endif %}">
+
+                                <td>{{ loop.index }}</td>
+
+                                <!-- 宿主设备编号 -->
+                                <td>
+                                    {% if row.duplicate_status == 'exists' %}
+                                    <div style="font-size:12px; color:#722ed1; margin-bottom:4px;">
+                                        已存在: {{ row.existing_host.host_id }}
+                                    </div>
+                                    <div class="d-flex gap-1 align-items-center">
+                                        <select name="dup_action_{{ row.row_idx }}" class="form-select form-select-sm" style="width:auto; min-width:100px;"
+                                                onchange="onDupActionChange('{{ row.row_idx }}', this.value)">
+                                            <option value="">-- 选择 --</option>
+                                            <option value="overwrite">覆盖</option>
+                                            <option value="skip">跳过</option>
+                                            <option value="new">新建编号</option>
+                                        </select>
+                                    </div>
+                                    {% else %}
+                                    <input type="text" name="host_id_{{ row.row_idx }}" value="{{ row.host_id_raw }}"
+                                           class="form-control form-control-sm" style="width:120px;" placeholder="自动生成">
+                                    {% endif %}
+                                </td>
+
+                                <!-- 名称（可编辑） -->
+                                <td><input type="text" name="name_{{ row.row_idx }}" value="{{ row.name }}"
+                                           class="form-control form-control-sm" style="width:130px;"></td>
+
+                                <!-- 型号（可编辑） -->
+                                <td><input type="text" name="model_{{ row.row_idx }}" value="{{ row.model }}"
+                                           class="form-control form-control-sm" style="width:120px;"></td>
+
+                                <!-- 类型（可编辑+新增检测） -->
+                                <td>
+                                    {% if row.is_new_category %}
+                                    <div style="font-size:11px; color:#fa8c16; margin-bottom:2px;">⚠ 新类型</div>
+                                    {% endif %}
+                                    <input type="text" name="category_{{ row.row_idx }}" value="{{ row.category }}"
+                                           class="form-control form-control-sm" style="width:100px;"
+                                           list="category-list-{{ row.row_idx }}">
+                                    <datalist id="category-list-{{ row.row_idx }}">
+                                        <option value="通信电台">
+                                        <option value="计算存储">
+                                        <option value="数据链">
+                                    </datalist>
+                                </td>
+
+                                <!-- 形态（可编辑） -->
+                                <td><input type="text" name="form_{{ row.row_idx }}" value="{{ row.form }}"
+                                           class="form-control form-control-sm" style="width:80px;"
+                                           list="form-list-{{ row.row_idx }}">
+                                    <datalist id="form-list-{{ row.row_idx }}">
+                                        <option value="独立式">
+                                        <option value="板卡式">
+                                    </datalist>
+                                </td>
+
+                                <!-- 关联设备匹配结果 -->
+                                <td>
+                                    {% if row.related_result.devices %}
+                                        {% for dev in row.related_result.devices %}
+                                        <div class="device-match-row match-{{ dev.status }}"
+                                             style="margin-bottom:4px; padding:2px 4px; border-radius:4px; background:{% if dev.status == 'exact' %}#f6ffed{% elif dev.status == 'fuzzy' %}#fff7e6{% else %}#fff2f0{% endif %};">
+                                            <span class="match-icon">
+                                                {% if dev.status == 'exact' %}✓{% elif dev.status == 'fuzzy' %}~{% else %}⚠{% endif %}
+                                            </span>
+                                            <span>{{ dev.name }}</span>
+
+                                            {% if dev.status == 'exact' %}
+                                                {% if dev.exact and dev.exact[0] %}
+                                                <span style="font-size:12px; color:#52c41a; margin-left:4px;">
+                                                    → {{ dev.exact[0].name }} ({{ dev.exact[0].equipment_id }})
+                                                </span>
+                                                {% endif %}
+
+                                            {% elif dev.status == 'fuzzy' %}
+                                                <select name="related_select_{{ row.row_idx }}_{{ loop.index0 }}"
+                                                        class="form-select form-select-sm"
+                                                        style="width:auto; min-width:140px; display:inline-block; margin-left:4px;"
+                                                        onchange="onFuzzyChange(this)">
+                                                    <option value="">-- 选择 --</option>
+                                                    {% for cand in dev.fuzzy %}
+                                                    <option value="{{ cand.equipment_id }}">{{ cand.name }} ({{ cand.model or cand.equipment_id }})</option>
+                                                    {% endfor %}
+                                                    <option value="_skip_">跳过此关联</option>
+                                                </select>
+                                                <div style="font-size:11px; color:#fa8c16; margin-top:2px;">
+                                                    候选: {% for c in dev.fuzzy %}{{ c.name }}{% if not loop.last %} / {% endif %}{% endfor %}
+                                                </div>
+
+                                            {% else %}
+                                                <input type="text"
+                                                       name="related_search_{{ row.row_idx }}_{{ loop.index0 }}"
+                                                       class="form-control form-control-sm"
+                                                       style="width:120px; display:inline-block; margin-left:4px;"
+                                                       placeholder="搜索设备..."
+                                                       oninput="debounceSearch(this, '{{ row.row_idx }}', '{{ loop.index0 }}')">
+                                                <select name="related_select_{{ row.row_idx }}_{{ loop.index0 }}"
+                                                        class="form-select form-select-sm"
+                                                        style="width:auto; min-width:140px; display:inline-block; margin-left:2px;">
+                                                    <option value="">-- 选择 --</option>
+                                                    <option value="_skip_">跳过此关联</option>
+                                                </select>
+                                            {% endif %}
+                                        </div>
+                                        {% endfor %}
+                                    {% else %}
+                                        <span style="color:#999; font-size:12px;">无关联</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-3 text-end">
+            <button type="submit" class="btn btn-primary">
+                确认导入 →
+            </button>
+        </div>
+    </form>
+</div>
+
+<script>
+let currentFilter = 'all';
+
+function filterRows(filter) {
+    currentFilter = filter;
+    document.querySelectorAll('#filterTabs .nav-link').forEach(el => {
+        el.classList.remove('active');
+    });
+    event.target.classList.add('active');
+
+    const rows = document.querySelectorAll('.data-row');
+    rows.forEach(row => {
+        let show = false;
+        const relStatus = row.dataset.relatedStatus || '';
+        const isDup = row.dataset.dup === 'yes';
+
+        if (filter === 'all') {
+            show = true;
+        } else if (filter === 'duplicate') {
+            show = isDup;
+        } else {
+            const statuses = relStatus.split(',');
+            show = statuses.some(s => s === filter);
+        }
+
+        row.style.display = show ? '' : 'none';
+    });
+}
+
+function onDupActionChange(rowIdx, action) {
+    const row = document.querySelector(`tr[data-row="${rowIdx}"]`);
+    if (action === 'skip') {
+        row.classList.add('row-skip');
+    } else {
+        row.classList.remove('row-skip');
+    }
+}
+
+function onFuzzyChange(select) {
+    // 选中后该行高亮自动移除
+    const row = select.closest('tr');
+    const matchDiv = select.closest('.device-match-row');
+    if (matchDiv) {
+        matchDiv.style.background = '#f6ffed';
+    }
+}
+
+let searchTimer = null;
+function debounceSearch(input, rowIdx, devIdx) {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+        const keyword = input.value.trim();
+        if (keyword.length < 1) return;
+
+        const select = input.nextElementSibling;
+        // 通过 API 搜索
+        fetch(`/api/fuzzy-match/equipment?q=${encodeURIComponent(keyword)}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    // 清空并填充选项
+                    select.innerHTML = '<option value="">-- 选择 --</option><option value="_skip_">跳过此关联</option>';
+                    data.data.forEach(item => {
+                        const opt = document.createElement('option');
+                        opt.value = item.id;
+                        opt.textContent = `${item.name} (${item.model || item.id})`;
+                        select.appendChild(opt);
+                    });
+                }
+            });
+    }, 400);
+}
+</script>
+{% endblock %}

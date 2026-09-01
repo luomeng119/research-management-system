@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+
+{% block title %}状态监控 - 辅助工具 - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex align-items-center mb-4">
+        <a href="/utils" class="btn btn-outline-secondary btn-sm me-3">返回</a>
+        <h2 class="mb-0"><i class="bi bi-activity text-success"></i> 推理服务监控</h2>
+        <button class="btn btn-outline-warning btn-sm ms-auto" onclick="refreshStatus()">
+            <i class="bi bi-arrow-clockwise"></i> 刷新
+        </button>
+    </div>
+
+    <!-- 状态概览 -->
+    <div class="row g-3 mb-4">
+        <div class="col-md-3">
+            <div class="card h-100" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-body text-center">
+                    <div id="serverStatus" class="fs-1">-</div>
+                    <div class="text-muted small">推理服务状态</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card h-100" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-body text-center">
+                    <div id="modelLoaded" class="fs-6 text-info">-</div>
+                    <div class="text-muted small">已加载模型</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card h-100" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-body text-center">
+                    <div id="latency" class="fs-1 text-warning">-</div>
+                    <div class="text-muted small">推理延迟 (ms)</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card h-100" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-body text-center">
+                    <div id="totalRequests" class="fs-1">-</div>
+                    <div class="text-muted small">总请求次数</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 系统资源 -->
+    <div class="row g-3 mb-4">
+        <div class="col-md-6">
+            <div class="card" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-header">内存使用</div>
+                <div class="card-body">
+                    <div class="d-flex justify-content-between mb-2">
+                        <span id="memoryUsed" class="text-light">-</span>
+                        <span id="memoryTotal" class="text-muted">-</span>
+                    </div>
+                    <div class="progress" style="height: 20px; background: rgba(255,255,255,0.1);">
+                        <div id="memoryBar" class="progress-bar bg-info" style="width: 0%;">0%</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-header">CPU 使用</div>
+                <div class="card-body">
+                    <div class="d-flex justify-content-between mb-2">
+                        <span id="cpuPercent" class="text-light">-</span>
+                        <span class="text-muted">CPU</span>
+                    </div>
+                    <div class="progress" style="height: 20px; background: rgba(255,255,255,0.1);">
+                        <div id="cpuBar" class="progress-bar bg-warning" style="width: 0%;">0%</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 推理服务控制 -->
+    <div class="row g-3 mb-4">
+        <div class="col-md-6">
+            <div class="card" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-header">服务控制</div>
+                <div class="card-body">
+                    <div id="errorMsg" class="alert alert-danger" style="display:none;"></div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-primary" onclick="restartServer()">
+                            <i class="bi bi-arrow-repeat"></i> 重启推理服务
+                        </button>
+                        <button class="btn btn-outline-success" onclick="testInference()">
+                            <i class="bi bi-play-circle"></i> 发送测试请求
+                        </button>
+                    </div>
+                    <div id="testResult" class="mt-3" style="display:none;">
+                        <div class="text-muted small mb-1">测试结果：</div>
+                        <div id="testResultContent" class="p-2" style="background:rgba(0,0,0,0.3); border-radius:6px; white-space:pre-wrap; font-size:13px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-header">统计信息</div>
+                <div class="card-body">
+                    <table class="table table-dark table-sm mb-0">
+                        <tbody>
+                            <tr>
+                                <td>平均推理延迟</td>
+                                <td id="avgLatency" class="text-end">- ms</td>
+                            </tr>
+                            <tr>
+                                <td>服务器状态</td>
+                                <td id="statusText" class="text-end">-</td>
+                            </tr>
+                            <tr>
+                                <td>已加载模型</td>
+                                <td id="modelName" class="text-end text-break">-</td>
+                            </tr>
+                            <tr>
+                                <td>最后请求时间</td>
+                                <td id="lastRequest" class="text-end">-</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 实时刷新说明 -->
+    <div class="text-center text-muted small">
+        页面每 10 秒自动刷新一次 | 推理服务冷启动约需 3-5 分钟
+    </div>
+</div>
+
+<script>
+let autoRefresh = null;
+
+function loadStatus() {
+    fetch('/utils/api/monitor/status', { credentials: 'include' })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) {
+                showError(data.error);
+                return;
+            }
+            updateUI(data);
+        })
+        .catch(() => {
+            document.getElementById('serverStatus').textContent = '❌';
+            document.getElementById('serverStatus').className = 'fs-1 text-danger';
+        });
+}
+
+function updateUI(d) {
+    // 服务状态
+    const statusEl = document.getElementById('serverStatus');
+    if (d.server_status === 'running') {
+        statusEl.textContent = '🟢';
+        statusEl.className = 'fs-1';
+    } else if (d.server_status === 'error') {
+        statusEl.textContent = '🔴';
+        statusEl.className = 'fs-1 text-danger';
+    } else {
+        statusEl.textContent = '⚫';
+        statusEl.className = 'fs-1 text-secondary';
+    }
+
+    document.getElementById('modelLoaded').textContent = d.model_loaded || '未加载';
+    document.getElementById('latency').textContent = d.latency_ms > 0 ? d.latency_ms : '-';
+    document.getElementById('totalRequests').textContent = d.total_requests || 0;
+    document.getElementById('memoryUsed').textContent = `${d.memory_usage_mb} MB`;
+    document.getElementById('memoryTotal').textContent = `${d.memory_total_mb} MB`;
+    document.getElementById('memoryBar').style.width = d.memory_percent + '%';
+    document.getElementById('memoryBar').textContent = d.memory_percent.toFixed(1) + '%';
+    document.getElementById('cpuPercent').textContent = d.cpu_percent.toFixed(1) + '%';
+    document.getElementById('cpuBar').style.width = d.cpu_percent + '%';
+    document.getElementById('cpuBar').textContent = d.cpu_percent.toFixed(1) + '%';
+    document.getElementById('avgLatency').textContent = (d.avg_latency_ms || 0) + ' ms';
+    document.getElementById('statusText').textContent = d.server_status;
+    document.getElementById('modelName').textContent = d.model_loaded || '-';
+    document.getElementById('lastRequest').textContent = d.last_request_time || '-';
+
+    if (d.error_message) {
+        document.getElementById('errorMsg').textContent = '错误: ' + d.error_message;
+        document.getElementById('errorMsg').style.display = 'block';
+    } else {
+        document.getElementById('errorMsg').style.display = 'none';
+    }
+}
+
+function refreshStatus() {
+    loadStatus();
+}
+
+function restartServer() {
+    if (!confirm('确定重启推理服务？重启过程中服务暂时不可用。')) return;
+    fetch('/utils/api/monitor/restart', { method: 'POST', credentials: 'include' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(data.message || '重启命令已发送');
+                loadStatus();
+            } else {
+                alert('重启失败: ' + data.error);
+            }
+        });
+}
+
+function testInference() {
+    const testText = '今天天气真不措，心情也很不措！';
+    const resultDiv = document.getElementById('testResult');
+    const contentDiv = document.getElementById('testResultContent');
+    resultDiv.style.display = 'block';
+    contentDiv.textContent = '推理中...';
+
+    fetch('http://127.0.0.1:18789/complete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ prompt: testText, max_tokens: 512, temperature: 0.3 }),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.choices && data.choices[0]) {
+            contentDiv.textContent = `原文：${testText}\n纠错后：${data.choices[0].text.trim()}`;
+        } else {
+            contentDiv.textContent = '推理失败：' + JSON.stringify(data);
+        }
+    })
+    .catch(e => {
+        contentDiv.textContent = '请求失败：' + e.message + '\n\n推理服务可能未启动或正在加载模型中。';
+    });
+}
+
+// 启动时加载
+loadStatus();
+
+// 每 10 秒自动刷新
+autoRefresh = setInterval(loadStatus, 10000);
+</script>
+{% endblock %}

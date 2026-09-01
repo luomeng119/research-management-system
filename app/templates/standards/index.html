@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% include 'components/preview_panel.html' %}
+
+{% block title %}标准法规库 - 科研管理系统V2{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>标准法规库</h4>
+        <div>
+            {% if session.get('role') == '管理员' %}
+            <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#uploadModal">
+                <i class="bi bi-upload"></i> 上传标准
+            </button>
+            {% endif %}
+        </div>
+    </div>
+    
+    <!-- 分类筛选 - 可折叠 -->
+    <div class="card mb-2">
+        <div class="card-header" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseCategory">
+            <span><i class="bi bi-chevron-right me-2"></i> 分类筛选</span>
+        </div>
+        <div id="collapseCategory" class="collapse show">
+            <div class="card-body">
+                <a href="{{ url_for('standards.index') }}" class="btn btn-sm {{ '' if not category_filter else 'btn-outline-secondary' }}">全部</a>
+                <a href="{{ url_for('standards.index', category='国军标') }}" class="btn btn-sm {{ 'btn-primary' if category_filter == '国军标' else 'btn-outline-secondary' }}">国军标</a>
+                <a href="{{ url_for('standards.index', category='国家标准') }}" class="btn btn-sm {{ 'btn-primary' if category_filter == '国家标准' else 'btn-outline-secondary' }}">国家标准</a>
+                <a href="{{ url_for('standards.index', category='行业标准') }}" class="btn btn-sm {{ 'btn-primary' if category_filter == '行业标准' else 'btn-outline-secondary' }}">行业标准</a>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 标准列表 - 可折叠 -->
+    <div class="card">
+        <div class="card-header" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseList">
+            <span><i class="bi bi-chevron-right me-2"></i> 标准列表 ({{ standards|length }})</span>
+        </div>
+        <div id="collapseList" class="collapse show">
+            <div class="card-body">
+                {% if standards %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>文档编号</th><th>文档名称</th><th>分类领域</th><th>文件类型</th><th>上传人</th><th>上传时间</th><th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for s in standards %}
+                            <tr>
+                                <td>{{ s['doc_id'] }}</td>
+                                <td>{{ s['name'] }}</td>
+                                <td><span class="badge bg-info">{{ s['category'] }}</span></td>
+                                <td>{{ s['file_type'] }}</td>
+                                <td>{{ s['uploader'] }}</td>
+                                <td>{{ s['upload_time'] }}</td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary" onclick="openPreview('{{ s['file_path'] }}', '{{ s['name'] }}', 'standard', '/standards/download/{{ s['doc_id'] }}')" title="预览">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                    <a href="/standards/download/{{ s['doc_id'] }}" class="btn btn-sm btn-outline-success" title="下载">
+                                        <i class="bi bi-download"></i>
+                                    </a>
+                                    {% if session.get('role') == '管理员' %}
+                                    <button class="btn btn-sm btn-outline-danger" onclick="deleteStandard('{{ s['doc_id'] }}')">删除</button>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-muted text-center py-5">暂无标准</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 上传模态框 -->
+<div class="modal fade" id="uploadModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">上传标准</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="uploadForm">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">文档名称</label>
+                        <input type="text" name="name" class="form-control" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">分类领域</label>
+                        <select name="category" class="form-select">
+                            <option value="国军标">国军标</option>
+                            <option value="国家标准">国家标准</option>
+                            <option value="行业标准">行业标准</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">选择文件</label>
+                        <input type="file" name="file" class="form-control" required>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">上传</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('uploadForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var formData = new FormData(this);
+    fetch('/standards/upload', { method: 'POST', body: formData })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) { location.reload(); }
+        else { alert(data.message); }
+    });
+});
+
+function deleteStandard(docId) {
+    if (confirm('确定删除此标准？')) {
+        fetch('/standards/delete/' + docId, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => { if (data.success) location.reload(); else alert(data.message); });
+    }
+}
+</script>
+{% endblock %}

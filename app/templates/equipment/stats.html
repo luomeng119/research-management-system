@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}设备统计 - 科研管理系统V2{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/equipment">设备知识库</a></li>
+            <li class="breadcrumb-item active">汇总统计</li>
+        </ol>
+    </nav>
+    
+    <h4 class="mb-4">设备汇总统计</h4>
+    
+    <!-- 总体统计 -->
+    <div class="card mb-2">
+        <div class="card-header" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseTotal">
+            <span><i class="bi bi-chevron-right me-2"></i> 总体统计</span>
+        </div>
+        <div id="collapseTotal" class="collapse show">
+            <div class="card-body">
+                <div class="row text-center">
+                    <div class="col-md-4">
+                        <div class="card bg-primary text-white">
+                            <div class="card-body">
+                                <h1>{{ total }}</h1>
+                                <p class="mb-0">设备总数</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card bg-success text-white">
+                            <div class="card-body">
+                                <h1>{{ total_value|int }}</h1>
+                                <p class="mb-0">总价值(元)</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card bg-info text-white">
+                            <div class="card-body">
+                                <h1>{{ by_status|length }}</h1>
+                                <p class="mb-0">技术状态类型</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 按分类统计 -->
+    <div class="card mb-2">
+        <div class="card-header" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseCategory">
+            <span><i class="bi bi-chevron-right me-2"></i> 按分类统计</span>
+        </div>
+        <div id="collapseCategory" class="collapse show">
+            <div class="card-body">
+                <table class="table">
+                    <thead>
+                        <tr><th>分类</th><th>数量</th><th>总价值(元)</th><th>占比</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for cat, data in by_category.items() %}
+                        <tr>
+                            <td><span class="badge bg-{{ 'info' if cat=='安全设备' else 'warning' if cat=='密码设备' else 'secondary' }}">{{ cat }}</span></td>
+                            <td>{{ data.count }}</td>
+                            <td>{{ data.value|int }}</td>
+                            <td>{{ '%.1f'|format((data.value / total_value * 100) if total_value > 0 else 0 }}%</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 按技术状态统计 -->
+    <div class="card mb-2">
+        <div class="card-header" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseStatus">
+            <span><i class="bi bi-chevron-right me-2"></i> 按技术状态统计</span>
+        </div>
+        <div id="collapseStatus" class="collapse show">
+            <div class="card-body">
+                <div class="row">
+                    {% for status, count in by_status.items() %}
+                    <div class="col-md-4 mb-3">
+                        <div class="card border-{{ 'success' if status=='定型' else 'warning' if status=='在研' else 'secondary' }}">
+                            <div class="card-body text-center">
+                                <h3>{{ count }}</h3>
+                                <p class="mb-0">{{ status }}</p>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

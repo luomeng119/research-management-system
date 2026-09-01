@@ -1,0 +1,26 @@
+# 京东发票测试数据（本地测试用，上传后不纳入版本控制）
+2026京东发票-测试数据/
+
+# 截图
+screenshots/
+
+# expense.db
+*.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 离线部署包（不纳入版本控制）
+research_offline_deploy_*.zip
+data/flask_sessions/
+test_data/设备知识库_1200条.xlsx

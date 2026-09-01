@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}宿主设备类型管理 - 科研管理系统V2{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>宿主设备类型管理</h4>
+        <a href="{{ url_for('host_devices.index') }}" class="btn btn-outline-secondary btn-sm">返回列表</a>
+    </div>
+
+    <div class="table-responsive" style="max-width:600px">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>类型名称</th>
+                    <th>创建时间</th>
+                    <th>设备数量</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cat in categories %}
+                <tr id="row-{{ loop.index }}">
+                    <td>{{ cat.name }}</td>
+                    <td>{{ cat.created_at or '' }}</td>
+                    <td>{{ cat._device_count }}</td>
+                    <td>
+                        <select class="form-select form-select-sm" style="width:auto;display:inline-block"
+                            onchange="doMerge('{{ cat.name }}', this.value)">
+                            <option value="">合并到...</option>
+                            {% for c2 in categories %}
+                            {% if c2.name != cat.name %}
+                            <option value="{{ c2.name }}">{{ c2.name }}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
+                        {% if cat._device_count == 0 %}
+                        <button type="button" class="btn btn-outline-danger btn-sm" onclick="doDelete('{{ cat.name }}')">删除</button>
+                        {% else %}
+                        <button type="button" class="btn btn-secondary btn-sm" disabled title="有关联设备，无法删除">删除</button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 新增类型 -->
+    <div class="mt-3" style="max-width:400px">
+        <div class="input-group">
+            <input type="text" id="new-category-name" class="form-control" placeholder="新类型名称">
+            <button class="btn btn-outline-primary" onclick="doAdd()">+ 新增类型</button>
+        </div>
+    </div>
+</div>
+
+<script>
+function doAdd() {
+    let name = document.getElementById('new-category-name').value.trim();
+    if (!name) { alert('请输入类型名称'); return; }
+    fetch('{{ url_for("host_devices.categories_add") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'name=' + encodeURIComponent(name)
+    }).then(r => r.json()).then(res => {
+        if (res.success) location.reload();
+        else alert(res.message || '添加失败');
+    });
+}
+
+function doMerge(oldName, newName) {
+    if (!newName) return;
+    if (!confirm(`确认将「${oldName}」合并到「${newName}」？设备将迁移到「${newName}」。`)) {
+        location.reload();
+        return;
+    }
+    fetch('{{ url_for("host_devices.categories_merge") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'old_name=' + encodeURIComponent(oldName) + '&new_name=' + encodeURIComponent(newName)
+    }).then(r => r.json()).then(res => {
+        if (res.success) location.reload();
+        else alert(res.message || '合并失败');
+    });
+}
+
+function doDelete(name) {
+    if (!confirm(`确认删除类型「${name}」？`)) return;
+    fetch('{{ url_for("host_devices.categories_delete") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'name=' + encodeURIComponent(name)
+    }).then(r => r.json()).then(res => {
+        if (res.success) location.reload();
+        else alert(res.message || '删除失败');
+    });
+}
+</script>
+{% endblock %}

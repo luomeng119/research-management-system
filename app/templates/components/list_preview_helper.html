@@ -1,0 +1,166 @@
+{# ============================================================
+   list_preview_helper.html
+   共享：悬浮详情卡片 CSS + JS 辅助函数
+   所有列表页 include 此文件即可使用：
+     - showDetailPopup(item, event)  显示悬浮详情
+     - hideDetailPopup()              隐藏
+     - openFilePreview(item)          点击预览文件
+   需配合 preview_panel.html 一起使用（openPreview 在那里）
+   ============================================================ #}
+
+<style>
+/* 悬浮详情卡片 */
+.detail-popup {
+    position: fixed;
+    z-index: 2000;
+    background: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    padding: 12px 16px;
+    min-width: 280px;
+    max-width: 380px;
+    display: none;
+    pointer-events: none;
+}
+.detail-popup.show { display: block; }
+.detail-popup .popup-title { font-weight: 600; color: #333; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 6px; }
+.detail-popup .popup-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; font-size: 13px; }
+.detail-popup .popup-label { color: #888; flex-shrink: 0; }
+.detail-popup .popup-value { color: #333; text-align: right; word-break: break-all; }
+.detail-popup .popup-ocr { margin-top: 8px; border-top: 1px solid #eee; padding-top: 6px; font-size: 12px; color: #666; max-height: 120px; overflow-y: auto; white-space: pre-wrap; background: #fafafa; padding: 6px; border-radius: 4px; }
+
+/* 列表行悬浮高亮 */
+.list-row-hover { cursor: pointer; transition: background 0.15s; }
+.list-row-hover:hover { background: #f0f7ff; }
+</style>
+
+<!-- 悬浮详情卡片 -->
+<div id="detailPopup" class="detail-popup"></div>
+
+<script>
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function formatAmount(v) {
+    if (v == null) return '-';
+    const n = parseFloat(v);
+    if (isNaN(n)) return v;
+    return '¥' + n.toFixed(2);
+}
+
+function formatDate(d) {
+    if (!d) return '-';
+    return String(d).substring(0, 10);
+}
+
+/** 通用悬浮详情卡片显示 */
+function showDetailPopup(item, event) {
+    const popup = document.getElementById('detailPopup');
+    const isInvoice = 'invoice_no' in item || 'amount' in item && !('payment_no' in item);
+    const isPayment = 'payment_no' in item && !('invoice_no' in item);
+
+    let html = '<div class="popup-title">' +
+        (isInvoice ? '📄 发票详情' : isPayment ? '💳 支付记录详情' : '详情') + '</div>';
+
+    if (isInvoice) {
+        const fields = [
+            ['发票号', item.invoice_no || '-'],
+            ['类型', item.invoice_type || '-'],
+            ['金额', formatAmount(item.amount)],
+            ['税额', item.tax_amount != null ? formatAmount(item.tax_amount) : '-'],
+            ['价税合计', item.price_ex_tax != null ? formatAmount(item.price_ex_tax) : '-'],
+            ['日期', formatDate(item.date)],
+            ['购买方', item.buyer || '-'],
+            ['销售方', item.seller || '-'],
+            ['内容', item.content || '-'],
+            ['税率', item.tax_rate != null ? item.tax_rate + '%' : '-'],
+            ['可信度', item.confidence != null ? (parseFloat(item.confidence)*100).toFixed(0) + '%' : '-'],
+            ['状态', item.status || '-'],
+            ['文件', item.file_path ? item.file_path.split('/').pop() : '-'],
+        ];
+        fields.forEach(function(f) {
+            if (f[1] !== '-' && f[1] !== '') {
+                html += '<div class="popup-row"><span class="popup-label">' + f[0] + '</span><span class="popup-value">' + escapeHtml(String(f[1])) + '</span></div>';
+            }
+        });
+        if (item.ocr_text) {
+            html += '<div class="popup-ocr">' + escapeHtml(item.ocr_text) + '</div>';
+        }
+    } else if (isPayment) {
+        const fields = [
+            ['凭证号', item.payment_no || '-'],
+            ['金额', formatAmount(item.amount)],
+            ['日期', formatDate(item.pay_date)],
+            ['状态', item.status || '-'],
+            ['文件', item.file_path ? item.file_path.split('/').pop() : '-'],
+        ];
+        fields.forEach(function(f) {
+            if (f[1] !== '-' && f[1] !== '') {
+                html += '<div class="popup-row"><span class="popup-label">' + f[0] + '</span><span class="popup-value">' + escapeHtml(String(f[1])) + '</span></div>';
+            }
+        });
+        if (item.ocr_text) {
+            html += '<div class="popup-ocr">' + escapeHtml(item.ocr_text) + '</div>';
+        }
+    } else {
+        // 通用：显示所有非空字段
+        Object.keys(item).forEach(function(k) {
+            const v = item[k];
+            if (v != null && v !== '' && !Array.isArray(v) && typeof v !== 'object') {
+                const label = {'reimbursement_no':'编号','title':'标题','total_amount':'总金额','invoice_count':'发票数','payment_count':'支付记录','status':'状态','created_at':'创建时间'}[k] || k;
+                html += '<div class="popup-row"><span class="popup-label">' + label + '</span><span class="popup-value">' + escapeHtml(String(v)) + '</span></div>';
+            }
+        });
+    }
+
+    popup.innerHTML = html;
+    popup.classList.add('show');
+
+    // 定位
+    let left = event.clientX + 12;
+    let top = event.clientY + 12;
+    requestAnimationFrame(function() {
+        const rect = popup.getBoundingClientRect();
+        if (left + rect.width > window.innerWidth) left = event.clientX - rect.width - 12;
+        if (top + rect.height > window.innerHeight) top = event.clientY - rect.height - 12;
+        popup.style.left = left + 'px';
+        popup.style.top = top + 'px';
+    });
+}
+
+function hideDetailPopup() {
+    document.getElementById('detailPopup').classList.remove('show');
+}
+
+/** 点击预览文件（通用） */
+function openFilePreview(item) {
+    if (!item || !item.file_path) return;
+    const name = item.invoice_no || item.payment_no || item.reimbursement_no || '文件';
+    const fname = item.file_path.split('/').pop();
+    const ext = fname.split('.').pop().toLowerCase();
+    const type = ['jpg','jpeg','png','gif','webp','bmp'].indexOf(ext) >= 0 ? 'image' :
+                 ext === 'pdf' ? 'pdf' : 'other';
+    const downloadUrl = '/expense/download?path=' + encodeURIComponent(item.file_path);
+    if (typeof openPreview === 'function') {
+        openPreview(item.file_path, fname, type, downloadUrl);
+    } else {
+        // 回退：直接下载
+        window.location.href = downloadUrl;
+    }
+}
+
+/** 列表行属性：悬浮详情 + 点击预览（用于 render 字符串中） */
+function listRowAttrs(item) {
+    const json = JSON.stringify(item).replace(/"/g, '&quot;');
+    return 'class="list-row-hover"' +
+        ' onmouseenter="showDetailPopup(' + json + ', event)"' +
+        ' onmousemove="showDetailPopup(' + json + ', event)"' +
+        ' onmouseleave="hideDetailPopup()"' +
+        ' onclick="openFilePreview(' + json + ')"';
+}
+</script>

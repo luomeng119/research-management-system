@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}注册 - 科研管理系统V2{% endblock %}
+
+{% block login_content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-5">
+            <div class="card shadow">
+                <div class="card-body">
+                    <h3 class="text-center mb-4">用户注册</h3>
+                    <form method="POST">
+                        <div class="mb-3">
+                            <label class="form-label">用户名 <span class="text-danger">*</span></label>
+                            <input type="text" name="username" class="form-control" required minlength="3">
+                            <div class="form-text">至少3个字符</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">姓名 <span class="text-danger">*</span></label>
+                            <input type="text" name="name" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">密码 <span class="text-danger">*</span></label>
+                            <input type="password" name="password" class="form-control" required minlength="6">
+                            <div class="form-text">至少6个字符</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">确认密码 <span class="text-danger">*</span></label>
+                            <input type="password" name="confirm_password" class="form-control" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100">注册</button>
+                    </form>
+                    <div class="mt-3 text-center">
+                        <small>已有账号？<a href="{{ url_for('auth.login') }}">立即登录</a></small>
+                    </div>
+                    <div class="mt-2 text-center text-muted">
+                        <small>注册后需等待管理员审核通过才能登录</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

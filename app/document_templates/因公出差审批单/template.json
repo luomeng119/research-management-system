@@ -1,0 +1,89 @@
+{
+  "template_id": "tpl_chuchai",
+  "doc_type": "因公出差审批单",
+  "docx_filename": "模板.docx",
+  "table_index": 0,
+  "version": "1.0.0",
+  "fields": [
+    {
+      "field_id": "T2[0,1]",
+      "label": "出差事由",
+      "type": "text",
+      "source": "user_input",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T2[1,1]",
+      "label": "到达单位及地点",
+      "type": "text",
+      "source": "invoice:火车票.到达站",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T2[2,1]",
+      "label": "起止时间",
+      "type": "text",
+      "source": "invoice:火车票.日期范围",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T2[3,1]",
+      "label": "出行方式",
+      "type": "text",
+      "source": "invoice:火车票.出行方式",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T2[5,0]",
+      "label": "出差人员姓名",
+      "type": "text",
+      "source": "invoice:火车票.乘客姓名",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T2[5,1]",
+      "label": "出差人员部职别",
+      "type": "text",
+      "source": "session.dept_title",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T2[5,3]",
+      "label": "出差人员职级",
+      "type": "text",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T2[5,4]",
+      "label": "随员",
+      "type": "text",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T2[12,1]",
+      "label": "领导审批",
+      "type": "text",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T2[13,1]",
+      "label": "备注",
+      "type": "text",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    }
+  ]
+}

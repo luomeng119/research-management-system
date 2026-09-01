@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}目录权限设置 - 科研管理系统V2{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h2 class="mb-4"><i class="bi bi-gear"></i> 目录权限设置</h2>
+    
+    <div class="card">
+        <div class="card-header">
+            <h5 class="mb-0">用户: {{ username }}</h5>
+        </div>
+        <div class="card-body">
+            <form method="post">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>目录</th>
+                            <th>可见</th>
+                            <th>隐藏</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for directory in directories %}
+                        <tr>
+                            <td>
+                                {% if directory == 'projects' %}科研项目
+                                {% elif directory == 'security_projects' %}安评项目
+                                {% elif directory == 'crypto_projects' %}密码项目
+                                {% elif directory == 'equipment' %}设备知识库
+                                {% elif directory == 'standards' %}标准法规库
+                                {% elif directory == 'templates' %}科研模板
+                                {% elif directory == 'experts' %}专家库
+                                {% else %}{{ directory }}{% endif %}
+                            </td>
+                            <td>
+                                <input type="radio" name="{{ directory }}" value="visible" 
+                                    {% if permissions.get(directory, 'visible') == 'visible' %}checked{% endif %}>
+                            </td>
+                            <td>
+                                <input type="radio" name="{{ directory }}" value="hidden"
+                                    {% if permissions.get(directory, 'visible') == 'hidden' %}checked{% endif %}>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                
+                <div class="mt-3">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-lg"></i> 保存
+                    </button>
+                    <a href="{{ url_for('users.index') }}" class="btn btn-secondary">
+                        <i class="bi bi-arrow-left"></i> 返回
+                    </a>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

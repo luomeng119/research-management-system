@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}添加专家 - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h2 class="mb-4">添加专家</h2>
+    
+    <form method="POST" class="row g-3" style="max-width: 600px;">
+        <div class="col-12">
+            <label class="form-label">姓名 <span class="text-danger">*</span></label>
+            <input type="text" name="name" class="form-control" required>
+        </div>
+        
+        <div class="col-md-6">
+            <label class="form-label">单位</label>
+            <input type="text" name="unit" class="form-control">
+        </div>
+        
+        <div class="col-md-6">
+            <label class="form-label">职务</label>
+            <input type="text" name="position" class="form-control">
+        </div>
+        
+        <div class="col-12">
+            <label class="form-label">专业领域</label>
+            <input type="text" name="expertise" class="form-control">
+        </div>
+        
+        <div class="col-md-6">
+            <label class="form-label">联系电话</label>
+            <input type="text" name="phone" class="form-control">
+        </div>
+        
+        <div class="col-md-6">
+            <label class="form-label">银行卡号</label>
+            <input type="text" name="bank_card" class="form-control">
+        </div>
+        
+        <div class="col-md-6">
+            <label class="form-label">开户行</label>
+            <input type="text" name="bank_name" class="form-control">
+        </div>
+        
+        <div class="col-12">
+            <label class="form-label">身份证号</label>
+            <input type="text" name="id_card" class="form-control">
+        </div>
+        
+        <div class="col-12">
+            <button type="submit" class="btn btn-primary">保存</button>
+            <a href="{{ url_for('experts.index') }}" class="btn btn-secondary">取消</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

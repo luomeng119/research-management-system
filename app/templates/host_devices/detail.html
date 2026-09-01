@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+
+{% block title %}宿主设备详情 - 科研管理系统V2{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>宿主设备详情</h4>
+        <div>
+            <a href="{{ url_for('host_devices.edit', host_id=host.host_id) }}" class="btn btn-primary btn-sm">编辑</a>
+            <form method="POST" action="{{ url_for('host_devices.delete', host_id=host.host_id) }}" style="display:inline" onsubmit="return confirm('确认删除？')">
+                <button type="submit" class="btn btn-danger btn-sm">删除</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-6">
+            <table class="table table-bordered">
+                <tr><th style="width:35%">宿主设备编号</th><td>{{ host.host_id }}</td></tr>
+                <tr><th>名称</th><td>{{ host.name }}</td></tr>
+                <tr><th>型号</th><td>{{ host.model or '' }}</td></tr>
+                <tr><th>类型</th><td>{{ host.category or '' }}</td></tr>
+                <tr><th>形态</th><td>{{ host.form or '' }}</td></tr>
+                <tr><th>创建时间</th><td>{{ host.created_at or '' }}</td></tr>
+                <tr><th>更新时间</th><td>{{ host.updated_at or '' }}</td></tr>
+            </table>
+        </div>
+    </div>
+
+    <!-- 关联密码设备区块 -->
+    <div class="mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5>关联密码设备</h5>
+            <button type="button" class="btn btn-outline-primary btn-sm" onclick="openRelationModal()">
+                <i class="bi bi-plus"></i> 添加关联密码设备
+            </button>
+        </div>
+        {% if related_devices %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>设备名称</th>
+                        <th>型号</th>
+                        <th>分类</th>
+                        <th>技术状态</th>
+                        <th>数量</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for d in related_devices %}
+                    <tr>
+                        <td>{{ d.name }}</td>
+                        <td>{{ d.model or '' }}</td>
+                        <td>{{ d.category }}</td>
+                        <td>{{ d.tech_status or '' }}</td>
+                        <td>{{ d.quantity }}</td>
+                        <td>
+                            <a href="{{ url_for('equipment.detail', equipment_id=d.device_id) }}" class="btn btn-outline-primary btn-sm">查看</a>
+                            <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeRelation('{{ d.device_id }}', '{{ host.host_id }}')">移除</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-info">暂无关联密码设备</div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- 关联设备选择模态框 -->
+{% include 'host_devices/_relation_modal.html' %}
+
+<script>
+let selectedDevices = [];
+let currentHostId = '{{ host.host_id }}';
+
+function openRelationModal() {
+    loadDeviceList('', '', 1);
+    let modal = new bootstrap.Modal(document.getElementById('relationModal'));
+    modal.show();
+}
+
+function loadDeviceList(keyword, category, page) {
+    let url = `/equipment/api/hosts/search?keyword=${encodeURIComponent(keyword)}&category=${encodeURIComponent(category)}&page=${page}`;
+    fetch(url, { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(res => {
+            if (res.code !== 0) return;
+            renderDeviceList(res.data, res.total, res.page, res.total_pages);
+        });
+}
+
+function renderDeviceList(devices, total, page, totalPages) {
+    let tbody = document.getElementById('modal-device-list');
+    tbody.innerHTML = devices.map(d => `
+        <tr>
+            <td><input type="checkbox" class="device-check" value="${d.equipment_id}" data-name="${d.name}" data-model="${d.model}" data-category="${d.category}" data-tech_status="${d.tech_status}"></td>
+            <td>${d.name}</td>
+            <td>${d.model || ''}</td>
+            <td>${d.category}</td>
+            <td>${d.tech_status || ''}</td>
+            <td><input type="number" class="form-control form-control-sm" style="width:70px" value="1" min="1"></td>
+        </tr>
+    `).join('');
+
+    document.querySelectorAll('.device-check').forEach(cb => {
+        if (selectedDevices.find(d => d.device_id === cb.value)) cb.checked = true;
+    });
+
+    let pagination = document.getElementById('modal-pagination');
+    pagination.innerHTML = `
+        <span class="me-3">第 ${page}/${totalPages} 页，共 ${total} 条</span>
+        ${page > 1 ? `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadDeviceList('${keyword}', '${category}', ${page-1})">&lt;</button>` : ''}
+        ${page < totalPages ? `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadDeviceList('${keyword}', '${category}', ${page+1})">&gt;</button>` : ''}
+    `;
+}
+
+function confirmRelation() {
+    let selected = [];
+    document.querySelectorAll('.device-check:checked').forEach(cb => {
+        let tr = cb.closest('tr');
+        let qty = parseInt(tr.querySelector('input[type=number]').value) || 1;
+        selected.push({ device_id: cb.value, quantity: qty });
+    });
+    if (selected.length === 0) {
+        alert('请至少选择一台设备');
+        return;
+    }
+    let relations = selected.map(s => ({ device_id: s.device_id, quantity: s.quantity }));
+    fetch('/equipment/hosts/api/relations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host_id: currentHostId, relations: relations })
+    }).then(r => r.json()).then(res => {
+        if (res.success) {
+            location.reload();
+        } else {
+            alert('添加关联失败');
+        }
+    });
+}
+
+function removeRelation(device_id, host_id) {
+    if (!confirm('确认移除关联？')) return;
+    fetch(`/equipment/hosts/api/relations/${device_id}/${host_id}`, {
+        method: 'DELETE',
+        credentials: 'same-origin'
+    }).then(r => r.json()).then(res => {
+        if (res.success) location.reload();
+        else alert('移除失败');
+    });
+}
+
+document.getElementById('relationModal').addEventListener('shown.bs.modal', function() {
+    loadDeviceList('', '', 1);
+});
+</script>
+{% endblock %}

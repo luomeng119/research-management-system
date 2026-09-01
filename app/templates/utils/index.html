@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}辅助工具 - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2 class="mb-4"><i class="bi bi-tools"></i> 辅助工具</h2>
+    
+    <div class="row g-4">
+        <div class="col-md-4">
+            <div class="card h-100" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="bi bi-file-earmark-check text-info"></i> 文档校对</h5>
+                    <p class="card-text text-light">上传文档或输入文本，进行智能中文纠错、校对。</p>
+                    <a href="/utils/document_correction" class="btn btn-outline-info">立即使用</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card h-100" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="bi bi-gear text-secondary"></i> 模型配置</h5>
+                    <p class="card-text text-light">管理 LLM 模型参数，配置推理服务模型文件路径、温度、上下文等。</p>
+                    <a href="/utils/model_config" class="btn btn-outline-secondary">管理模型</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card h-100" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="bi bi-activity text-success"></i> 状态监控</h5>
+                    <p class="card-text text-light">监控推理服务器运行状态、内存、CPU、推理延迟等指标。</p>
+                    <a href="/utils/monitor" class="btn btn-outline-success">查看监控</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

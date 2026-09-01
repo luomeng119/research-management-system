@@ -1,0 +1,1073 @@
+{% extends "base.html" %}
+
+{% block title %}{{ project['name'] }} - 科研管理系统V2{% endblock %}
+
+{% block content %}
+{% include 'components/preview_panel.html' %}
+<div class="container-fluid">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/projects">科研项目</a></li>
+            <li class="breadcrumb-item active">{{ project['name'] }}</li>
+        </ol>
+    </nav>
+    
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>{{ project['name'] }}</h4>
+    </div>
+    
+    <!-- 项目信息 - 可折叠 -->
+    <div class="card mb-2">
+        <div class="card-header" id="info" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseProject">
+            <span><i class="bi bi-chevron-right me-2"></i> 项目信息</span>
+        </div>
+        <div id="collapseProject" class="collapse show">
+            <div class="card-body">
+                <style>
+                .info-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 16px; }
+                .info-field { display: flex; align-items: center; min-height: 32px; }
+                .info-field label { width: 100px; text-align: right; margin: 0; font-weight: 600; color: #555; flex-shrink: 0; padding-right: 8px; }
+                .info-field .form-control, .info-field .form-select { flex: 1; min-width: 0; }
+                .info-field .field-text { flex: 1; color: #333; }
+                </style>
+                <div class="info-grid">
+                    <div class="info-field">
+                        <label>项目编号：</label>
+                        <input type="text" class="form-control form-control-sm" value="{{ project['project_id'] }}" onchange="updateProjectField('{{ project['project_id'] }}', '项目编号', this.value)">
+                    </div>
+                    <div class="info-field">
+                        <label>负责人：</label>
+                        <span class="field-text">{{ project['leader'] }}</span>
+                    </div>
+                    <div class="info-field">
+                        <label>开始日期：</label>
+                        <span class="field-text">{{ project['start_date'] or '-' }}</span>
+                    </div>
+                    <div class="info-field">
+                        <label>计划结束：</label>
+                        <input type="date" class="form-control form-control-sm" value="{{ project['planned_end_date'] or '' }}" onchange="updateProjectField('{{ project['project_id'] }}', '计划结束日期', this.value)">
+                    </div>
+                    <div class="info-field">
+                        <label>实际结束：</label>
+                        <input type="date" class="form-control form-control-sm" value="{{ project['actual_end_date'] or '' }}" onchange="updateProjectField('{{ project['project_id'] }}', '实际结束日期', this.value)">
+                    </div>
+                    <div class="info-field">
+                        <label>状态：</label>
+                        <select class="form-select form-select-sm" onchange="updateProjectField('{{ project['project_id'] }}', '状态', this.value)">
+                            <option value="任务下达" {% if project['status']=='任务下达' %}selected{% endif %}>任务下达</option>
+                            <option value="通过院内评审" {% if project['status']=='通过院内评审' %}selected{% endif %}>通过院内评审</option>
+                            <option value="通过机关评审" {% if project['status']=='通过机关评审' %}selected{% endif %}>通过机关评审</option>
+                            <option value="结题上报" {% if project['status']=='结题上报' %}selected{% endif %}>结题上报</option>
+                        </select>
+                    </div>
+                    {% if project['status'] == '结题上报' %}
+                    <div class="info-field">
+                        <label>任务号：</label>
+                        <input type="text" class="form-control form-control-sm" value="{{ project['task_number'] or '' }}" placeholder="请输入任务号" onchange="updateProjectField('{{ project['project_id'] }}', '任务号', this.value)">
+                    </div>
+                    {% endif %}
+                    <div class="info-field">
+                        <label>创建时间：</label>
+                        <span class="field-text">{{ project['created_at'] }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 设备选型 - 可折叠 -->
+    <div class="card mb-2">
+        <div class="card-header d-flex justify-content-between align-items-center" id="equipment" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseEquipment">
+            <span><i class="bi bi-chevron-right me-2"></i> 设备选型 ({{ project_equipment|length }})</span>
+        </div>
+        <!-- 工具栏移到折叠区外部 -->
+        <div class="card-header bg-light py-1 px-3 border-bottom">
+            {% if session.get('role') == '管理员' or project['leader'] == session.get('user') %}
+            <button class="btn btn-primary btn-sm me-1" onclick="showLinkEquipment()">
+                <i class="bi bi-plus-circle"></i> 添加设备
+            </button>
+            <button class="btn btn-info btn-sm me-1" onclick="showRequirement('installation')">
+                <i class="bi bi-wrench"></i> 适配要求
+            </button>
+            <button class="btn btn-info btn-sm me-1" onclick="showRequirement('resource')">
+                <i class="bi bi-box"></i> 资源要求
+            </button>
+            <button class="btn btn-info btn-sm me-1" onclick="showRequirement('tech')">
+                <i class="bi bi-gear"></i> 指标要求
+            </button>
+            {% endif %}
+            <button class="btn btn-success btn-sm" onclick="exportEquipment('{{ project['project_id'] }}')">
+                <i class="bi bi-file-earmark-excel"></i> 导出Excel
+            </button>
+        </div>
+        <div id="collapseEquipment" class="collapse show">
+            <div class="card-body p-2">
+                {% if project_equipment %}
+                <table class="table table-sm table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th style="min-width:120px;">设备名称</th>
+                            <th style="min-width:70px;">分类</th>
+                            <th style="min-width:55px;">数量</th>
+                            <th style="min-width:120px;">研制单位</th>
+                            <th style="min-width:80px;">技术状态</th>
+                            <th style="min-width:80px;">单价(万元)</th>
+                            <th style="min-width:180px;">使用位置</th>
+                            <th style="min-width:80px;white-space:nowrap;" class="text-center">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for e in project_equipment %}
+                    <tr data-group-id="{{ e['group_id'] }}" data-installation="{{ e['installation_requirements'] or '' }}" data-resource="{{ e['resource_guarantee'] or '' }}" data-tech="{{ e['tech_index'] or '' }}">
+                        <td class="align-middle">
+                            <div>{{ e['name'] }}</div>
+                            <div class="text-muted small">{{ e['model'] or '' }}</div>
+                        </td>
+                        <td class="align-middle"><span class="badge bg-info">{{ e['category'] }}</span></td>
+                        <td class="align-middle">
+                            <input type="number" class="form-control form-control-sm" value="{{ e['quantity'] }}" min="1" onblur="updateEquipment('{{ project['project_id'] }}', '{{ e['group_id'] }}', '{{ e['id'] }}', this)" style="width:55px;">
+                        </td>
+                        <td class="align-middle text-muted small">{{ e['manufacturer'] or '-' }}</td>
+                        <td class="align-middle text-muted small">{{ e['tech_status'] or '-' }}</td>
+                        <td class="align-middle text-end">{{ e['price'] if e['price'] else '-' }}</td>
+                        <td class="align-middle">
+                            <textarea class="form-control form-control-sm" rows="2" style="resize:vertical;" placeholder="使用位置" onblur="updateEquipment('{{ project['project_id'] }}', '{{ e['group_id'] }}', '{{ e['id'] }}', this)">{{ e['location'] or '' }}</textarea>
+                        </td>
+                        <td class="align-middle text-center">
+                        {% if session.get('role') == '管理员' or project['leader'] == session.get('user') %}
+                        <button class="btn btn-outline-danger btn-sm" title="移除" onclick="unlinkEquipment('{{ project['project_id'] }}', '{{ e['group_id'] }}', '{{ e['id'] }}')">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                        {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="text-muted mb-0 px-2">暂无选型设备</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <!-- 文档管理 - 可折叠 -->
+    <div class="card mb-2">
+        <div class="card-header d-flex justify-content-between align-items-center" id="documents" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseDocs">
+            <span><i class="bi bi-chevron-right me-2"></i> 文档管理</span>
+        </div>
+        <!-- 工具栏移到折叠区外部 -->
+        <div class="card-header bg-light py-1 px-3 border-bottom">
+            <button class="btn btn-outline-primary btn-sm" onclick="showCreateFolder('')">
+                <i class="bi bi-folder-plus"></i> 新建文件集
+            </button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="exportSelected()">
+                <i class="bi bi-file-zip"></i> 导出选中
+            </button>
+            <a class="btn btn-outline-success btn-sm" href="/argumentation/{{ category }}/{{ project['project_id'] }}">
+                <i class="bi bi-file-earmark-text"></i> 方案论证
+            </a>
+        </div>
+        <div id="collapseDocs" class="collapse show">
+            <div class="card-body">
+                <div id="folderTree"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 新建文件夹模态框 -->
+<div class="modal fade" id="folderModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">新建文件夹</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="folderForm">
+                <div class="modal-body">
+                    <input type="hidden" name="parent_folder" id="parentFolder">
+                    <div class="mb-3">
+                        <label class="form-label">文件夹名称</label>
+                        <input type="text" name="folder_name" class="form-control" required placeholder="请输入文件夹名称">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">创建</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- 上传模态框 -->
+<div class="modal fade" id="uploadModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="uploadModalTitle">上传文件</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="uploadForm" enctype="multipart/form-data">
+                <div class="modal-body">
+                    <input type="hidden" name="folder" id="uploadFolder">
+                    <div class="mb-3">
+                        <label class="form-label">选择文件</label>
+                        <input type="file" name="file" class="form-control" id="fileInput" multiple>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">或选择文件夹</label>
+                        <input type="file" class="form-control" id="folderInput" webkitdirectory multiple>
+                        <small class="text-muted">支持保持目录结构上传</small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">上传</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- 重命名文件弹窗 -->
+<div class="modal fade" id="renameModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">重命名文件</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="renameForm">
+                <div class="modal-body">
+                    <input type="hidden" name="file_path" id="renameFilePath">
+                    <div class="mb-3">
+                        <label class="form-label">新文件名</label>
+                        <input type="text" name="new_name" id="newFileName" class="form-control" required>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">确定</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- 添加设备模态框 - 使用和方案论证一致的表格风格 -->
+<div class="modal fade" id="equipmentModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">选择设备（可多选）</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- 搜索过滤 -->
+                <div class="row g-2 mb-2">
+                    <div class="col-auto">
+                        <input type="text" class="form-control form-control-sm" id="eqSearch" placeholder="搜索设备名称/型号..." onkeyup="filterEquipment()">
+                    </div>
+                    <div class="col-auto">
+                        <select class="form-select form-select-sm" id="eqCategory" onchange="filterEquipment()">
+                            <option value="">全部分类</option>
+                            <option value="安全设备">安全设备</option>
+                            <option value="密码设备">密码设备</option>
+                            <option value="通用设备">通用设备</option>
+                        </select>
+                    </div>
+                </div>
+                <!-- 已选设备列表 -->
+                <div class="alert alert-info mb-2 d-flex justify-content-between align-items-center">
+                    <strong>已选设备：</strong><span id="eqSelectedCount">0</span>台
+                </div>
+                <div class="table-responsive mb-2" id="eqSelectedTable">
+                    <table class="table table-bordered table-sm table-hover" style="table-layout: fixed;">
+                        <colgroup>
+                            <col style="width: 30px;">
+                            <col style="width: auto;">
+                            <col style="width: 100px;">
+                            <col style="width: 80px;">
+                            <col style="width: 60px;">
+                            <col style="width: auto;">
+                            <col style="width: 60px;">
+                        </colgroup>
+                        <thead class="table-light"><tr><th style="width:30px;"></th><th>设备名称</th><th>型号</th><th>分类</th><th>数量</th><th>使用位置</th><th style="width:60px;">操作</th></tr></thead>
+                        <tbody id="eqSelectedBody"></tbody>
+                    </table>
+                </div>
+                <!-- 待选设备列表 -->
+                <div class="table-responsive" style="max-height: 40vh; overflow-y: auto;">
+                    <table class="table table-bordered table-sm table-hover" style="table-layout: fixed;">
+                        <colgroup>
+                            <col style="width: 30px;">
+                            <col style="width: auto;">
+                            <col style="width: 100px;">
+                            <col style="width: 80px;">
+                            <col style="width: 70px;">
+                            <col style="width: 70px;">
+                            <col style="width: 100px;">
+                        </colgroup>
+                        <thead class="table-light"><tr><th style="width:30px;"></th><th>设备名称</th><th>型号</th><th>分类</th><th>形态</th><th>单价(万)</th><th>研制单位</th></tr></thead>
+                        <tbody id="equipmentList">
+                            {% for e in available_equipment %}
+                            <tr class="eq-row" data-eq-id="{{ e['id'] }}">
+                                <td><input type="checkbox" name="eqSelect" value="{{ e['id'] }}" 
+                                   data-name="{{ e['name'] }}" data-model="{{ e['model'] }}" data-category="{{ e['category'] }}" 
+                                   data-form="{{ e['form'] }}" data-price="{{ e['price'] }}" data-manufacturer="{{ e['manufacturer'] }}"></td>
+                                <td title="{{ e['name'] }}"><strong>{{ e['name'][:20] }}{% if e['name']|length > 20 %}...{% endif %}</strong></td>
+                                <td title="{{ e['model'] }}"><small class="text-muted">{{ e['model'][:20] if e['model'] }}{% if e['model'] and e['model']|length > 20 %}...{% endif %}</small></td>
+                                <td><span class="badge bg-secondary">{{ e['category'] }}</span></td>
+                                <td><small>{{ e['form'] or '-' }}</small></td>
+                                <td><small>{{ e['price'] if e['price'] else '-' }}</small></td>
+                                <td title="{{ e['manufacturer'] }}"><small>{{ e['manufacturer'][:20] if e['manufacturer'] }}{% if e['manufacturer'] and e['manufacturer']|length > 20 %}...{% endif %}</small></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="confirmEquipment()">确定</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+var projectUpdateUrl = '/{{ "projects" if category in ("research", "projects", "") else category + "_projects" }}';
+var eqSelected = [];
+
+function filterEquipment() {
+    var search = document.getElementById('eqSearch').value.toLowerCase();
+    var category = document.getElementById('eqCategory').value;
+    var selectedIds = eqSelected.map(function(e) { return e.id; });
+    document.querySelectorAll('.eq-row').forEach(function(row) {
+        var input = row.querySelector('input');
+        var name = (input.dataset.name || '').toLowerCase();
+        var model = (input.dataset.model || '').toLowerCase();
+        var cat = input.dataset.category || '';
+        var match = (search === '' || name.includes(search) || model.includes(search)) && (category === '' || cat.includes(category));
+        var isSelected = selectedIds.indexOf(input.value) !== -1;
+        row.style.display = (isSelected || match) ? '' : 'none';
+    });
+    updateEqSelectedDisplay();
+}
+
+function updateEqSelectedDisplay() {
+    var tbody = document.getElementById('eqSelectedBody');
+    var countSpan = document.getElementById('eqSelectedCount');
+    var table = document.getElementById('eqSelectedTable');
+    var selectedIds = eqSelected.map(function(e) { return e.id; });
+    tbody.innerHTML = '';
+    eqSelected.forEach(function(eq, idx) {
+        var row = document.createElement('tr');
+        row.innerHTML = '<td><input type="checkbox" checked disabled value="' + eq.id + '"></td>' +
+            '<td title="' + eq.name + '">' + (eq.name.length > 20 ? eq.name.substring(0,20) + '...' : eq.name) + '</td>' +
+            '<td title="' + eq.model + '">' + (eq.model && eq.model.length > 20 ? eq.model.substring(0,20) + '...' : (eq.model || '')) + '</td>' +
+            '<td><span class="badge bg-secondary">' + eq.category + '</span></td>' +
+            '<td><input type="number" class="form-control form-control-sm" value="1" min="1" style="width:60px;"></td>' +
+            '<td><input type="text" class="form-control form-control-sm" placeholder="使用位置"></td>' +
+            '<td><button type="button" class="btn btn-sm btn-outline-danger" onclick="removeEq(' + idx + ')">移除</button></td>';
+        tbody.appendChild(row);
+    });
+    countSpan.textContent = eqSelected.length;
+    table.style.display = eqSelected.length > 0 ? '' : 'none';
+    // 同步checkbox状态
+    document.querySelectorAll('.eq-row input').forEach(function(cb) {
+        cb.checked = selectedIds.indexOf(cb.value) !== -1;
+    });
+}
+
+function removeEq(idx) {
+    eqSelected.splice(idx, 1);
+    updateEqSelectedDisplay();
+}
+
+// 监听checkbox变化
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.eq-row input').forEach(function(cb) {
+        cb.addEventListener('change', function() {
+            if (this.checked) {
+                eqSelected.push({
+                    id: this.value,
+                    name: this.dataset.name,
+                    model: this.dataset.model,
+                    category: this.dataset.category
+                });
+            } else {
+                var idx = eqSelected.findIndex(function(e) { return e.id === this.value; });
+                if (idx >= 0) eqSelected.splice(idx, 1);
+            }
+            updateEqSelectedDisplay();
+        });
+    });
+});
+
+function confirmEquipment() {
+    if (eqSelected.length === 0) {
+        alert('请先选择至少一个设备');
+        return;
+    }
+    var projectId = '{{ project['project_id'] }}';
+    // 逐个添加设备
+    var promises = eqSelected.map(function(eq) {
+        var row = Array.from(document.querySelectorAll('#eqSelectedBody tr')).find(function(r) {
+            return r.querySelector('input[value="' + eq.id + '"]');
+        });
+        var quantity = row ? row.querySelector('input[type="number"]').value : 1;
+        var location = row ? row.querySelector('input[type="text"]').value : '';
+        return fetch(projectUpdateUrl + '/link_equipment/' + projectId, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'equipment_id=' + eq.id + '&quantity=' + quantity + '&location=' + location
+        }).then(function(r) { return r.json(); });
+    });
+    Promise.all(promises).then(function(results) {
+        var allSuccess = results.every(function(r) { return r.success; });
+        if (allSuccess) {
+            location.reload();
+        } else {
+            alert('部分设备添加失败');
+        }
+    });
+}
+
+// 需求生成弹窗
+var requirementModal = null;
+function showRequirement(type) {
+    var titles = {'installation': '适配要求', 'resource': '资源要求', 'tech': '指标要求'};
+    var keyMap = {'installation': 'data-installation', 'resource': 'data-resource', 'tech': 'data-tech'};
+    var content = '';
+    document.querySelectorAll('#collapseEquipment tbody tr').forEach(function(tr) {
+        var val = tr.getAttribute(keyMap[type]);
+        var name = tr.cells[0].textContent.trim();
+        if (val && val.trim()) {
+            content += '【' + name + '】\n' + val.trim() + '\n\n';
+        }
+    });
+    if (!content) content = '暂无数据';
+    document.getElementById('requirementContent').value = content;
+    document.getElementById('requirementTitle').textContent = titles[type];
+    if (!requirementModal) requirementModal = new bootstrap.Modal(document.getElementById('requirementModal'));
+    requirementModal.show();
+}
+</script>
+
+<!-- 需求生成弹窗 -->
+<div class="modal fade" id="requirementModal" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><span id="requirementTitle">需求</span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <textarea id="requirementContent" class="form-control" rows="15" readonly></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" onclick="copyRequirement()">复制</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+function copyRequirement() {
+    var text = document.getElementById('requirementContent');
+    text.select();
+    document.execCommand('copy');
+    alert('已复制到剪贴板');
+}
+</script>
+
+<!-- 归档导出模态框 -->
+<div class="modal fade" id="archiveModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">归档导出</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="archiveForm">
+                <div class="modal-body">
+                    <p class="text-muted">选择要导出的文件夹（选中父节点会自动选中所有子节点）：</p>
+                    <div id="archiveFolderList" style="max-height:300px;overflow-y:auto;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">导出</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+var folderData = {{ folder_tree|tojson|safe }};
+var currentFolder = '{{ folder_types[0] if folder_types else "任务输入文件" }}';
+var projectId = {{ project.project_id | tojson }};
+
+
+
+function toggleTree(el) {
+    var p = el.parentElement;
+    while (p && !p.classList.contains('folder-node')) {
+        p = p.parentElement;
+    }
+    if (!p) return;
+    var c = p.querySelector('.children');
+    if (c) {
+        c.style.display = c.style.display === 'none' ? 'block' : 'none';
+        el.classList.toggle('bi-chevron-right');
+        el.classList.toggle('bi-chevron-down');
+    }
+}
+
+
+function renderTree(nodes, container) {
+    try {
+    if (!nodes || nodes.length === 0) {
+        container.innerHTML = '<p class="text-muted">暂无文件夹</p>';
+        return;
+    }
+    var html = '<ul class="nav flex-column">';
+    nodes.forEach(function(n) { html += buildNode(n); });
+    html += '</ul>';
+    container.innerHTML = html;
+    bindEvents();
+    } catch(e) { console.error('renderTree error:', e); }
+}
+
+function buildNode(node) {
+    var hasChildren = node.children && node.children.length > 0;
+    var lvl = node.level || 0;
+    var indent = lvl * 20;
+    var html = '<li class="nav-item folder-node">';
+    html += '<div class="d-flex align-items-center mb-2" style="padding-left:' + indent + 'px;">';
+    
+    if (hasChildren) {
+        html += '<i class="bi bi-chevron-right toggle-icon me-1" style="cursor:pointer;" onclick="event.stopPropagation(); toggleTree(this)"></i>';
+    } else {
+        html += '<span class="me-2" style="width:16px;display:inline-block;"></span>';
+    }
+    
+    // 文件夹勾选框
+    html += '<input type="checkbox" class="form-check-input me-2 folder-cb" value="' + node.path + '" data-type="folder" onchange="toggleKids(this)">';
+    html += '<i class="bi bi-folder text-warning me-2"></i>';
+    html += '<span class="me-2">' + node.name + '</span>';
+    html += '<span class="badge bg-secondary me-2">' + node.fileCount + '</span>';
+    // 上传按钮 - 直接触发文件选择
+    html += '<label class="btn btn-outline-success btn-sm me-1" for="file-' + node.path + '"><i class="bi bi-upload"></i><input type="file" id="file-' + node.path + '" class="d-none" data-folder="' + node.path + '" multiple onchange="uploadFiles(this)"></label>';
+    // 上传文件夹按钮
+    html += '<button class="btn btn-outline-info btn-sm me-1 btn-upload-folder" data-folder="' + node.path + '" title="上传文件夹"><i class="bi bi-upload"></i></button>';
+    html += '<button class="btn btn-outline-primary btn-sm me-1 btn-subfolder" data-folder="' + node.path + '"><i class="bi bi-folder-plus"></i></button>';
+    if (node.path !== '') {
+        html += '<button class="btn btn-outline-danger btn-sm btn-delete-folder" data-folder="' + node.path + '"><i class="bi bi-trash"></i></button>';
+    }
+    html += '</div>';
+    
+    if (hasChildren) {
+        html += '<ul class="children" style="display:none;list-style:none;padding-left:20px;">';
+        node.children.forEach(function(c) { html += buildNode(c); });
+        html += '</ul>';
+    }
+    
+    if (node.files && node.files.length > 0) {
+        html += '<div class="ms-4" style="padding-left:' + (indent + 20) + 'px;">';
+        node.files.forEach(function(f) {
+            html += '<div class="d-flex align-items-center mb-1">';
+            // 文件勾选框
+            html += '<input type="checkbox" class="form-check-input me-2 file-cb" value="' + f.path + '" data-type="file" onchange="toggleFolder(this)">';
+            {% set proj_id = project.project_id %}
+            // 文件名点击预览
+            html += '<a href="javascript:void(0)" onclick="openPreview(\'/uploads/{{ proj_id }}/' + f.path + '\', \'' + f.name.replace(/'/g, "\\'") + '\', \'project\', \'/projects/download/{{ proj_id }}/' + encodeURIComponent(f.path) + '\')" class="text-decoration-none text-dark">';
+            html += '<i class="bi bi-file-text me-2"></i>';
+            html += '<span class="me-2">' + f.name + '</span>';
+            html += '</a>';
+            html += '<span class="text-muted me-2" style="font-size:0.8em">(' + (f.size/1024).toFixed(1) + ' KB)</span>';
+            {% if session.get('role') == '管理员' or project['leader'] == session.get('user') %}
+            // 预览按钮改为下载（仅管理员）
+            html += '<a href="/projects/download/{{ proj_id }}/' + encodeURIComponent(f.path) + '" class="btn btn-outline-info btn-sm" title="下载"><i class="bi bi-download"></i></a>';
+            {% endif %}
+            // 重命名和删除对所有用户开放
+            html += '<button class="btn btn-outline-primary btn-sm btn-rename" data-path="' + f.path + '" data-name="' + f.name + '"><i class="bi bi-pencil"></i></button>';
+            html += '<button class="btn btn-outline-danger btn-sm btn-del" data-path="' + f.path + '"><i class="bi bi-trash"></i></button>';
+            html += '</div>';
+        });
+        html += '</div>';
+    }
+    html += '</li>';
+    return html;
+}
+
+function toggleKids(cb) {
+    var checked = cb.checked;
+    var parentLi = cb.closest('.folder-node');
+    if (!parentLi) return;
+
+    // 步骤1：收集所有隐藏的children div，记录原始状态并临时显示
+    var hiddenChildren = [];
+    parentLi.querySelectorAll('.children').forEach(function(childDiv) {
+        if (childDiv.style.display === 'none') {
+            hiddenChildren.push(childDiv);
+            childDiv.style.display = 'block'; // 临时显示
+        }
+    });
+
+    // 步骤2：遍历所有勾选框（此时所有子节点都可见，能正常修改状态）
+    parentLi.querySelectorAll('input[type="checkbox"]').forEach(function(checkbox) {
+        if (checkbox !== cb) {
+            checkbox.checked = checked;
+        }
+    });
+
+    // 步骤3：恢复所有临时显示的children div为隐藏状态
+    hiddenChildren.forEach(function(childDiv) {
+        childDiv.style.display = 'none';
+    });
+}
+
+// 勾选文件时，同步勾选所有祖先文件夹
+function toggleFolder(cb) {
+    var checked = cb.checked;
+    // 找到所有祖先folder-node中的checkbox并同步
+    var current = cb.closest('.folder-node');
+    while (current) {
+        var folderCb = current.querySelector(':scope > div > .folder-cb');
+        if (folderCb) {
+            folderCb.checked = checked;
+        }
+        // 继续向上查找
+        current = current.parentElement.closest('.folder-node');
+    }
+}
+
+// 监听折叠事件来改变图标
+function setupCollapseIcons() {
+    document.querySelectorAll('#info, #equipment, #documents').forEach(function(header) {
+        var target = document.getElementById(header.id.replace('info', 'collapseProject').replace('equipment', 'collapseEquipment').replace('documents', 'collapseDocs'));
+        if (target) {
+            target.addEventListener('shown.bs.collapse', function() {
+                var icon = header.querySelector('.bi');
+                if (icon) {
+                    icon.classList.remove('bi-chevron-right');
+                    icon.classList.add('bi-chevron-down');
+                }
+            });
+            target.addEventListener('hidden.bs.collapse', function() {
+                var icon = header.querySelector('.bi');
+                if (icon) {
+                    icon.classList.remove('bi-chevron-down');
+                    icon.classList.add('bi-chevron-right');
+                }
+            });
+        }
+    });
+}
+
+function bindEvents() {
+    // 目录树展开/折叠事件
+    document.querySelectorAll('#folderTree .toggle-icon').forEach(function(icon) {
+        icon.addEventListener('click', function() {
+            var p = this.closest('.folder-node');
+            var child = p.querySelector('.children');
+            if (child) {
+                child.style.display = child.style.display === 'none' ? 'block' : 'none';
+                this.classList.toggle('bi-chevron-right');
+                this.classList.toggle('bi-chevron-down');
+            }
+        });
+    });
+    
+    document.querySelectorAll('.btn-upload').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            currentFolder = this.dataset.folder;
+            document.getElementById('uploadFolder').value = currentFolder;
+            document.getElementById('uploadModalTitle').textContent = '上传到 ' + currentFolder;
+            new bootstrap.Modal(document.getElementById('uploadModal')).show();
+        });
+    });
+    
+    document.querySelectorAll('.btn-subfolder').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            document.getElementById('parentFolder').value = this.dataset.folder;
+            new bootstrap.Modal(document.getElementById('folderModal')).show();
+        });
+    });
+    
+    // 直接上传文件（多选）
+    window.uploadFiles = function(input) {
+        var files = input.files;
+        if (!files || files.length === 0) return;
+        
+        var folder = input.dataset.folder;
+        var projectId = '{{ project['project_id'] }}';
+        
+        // 逐个上传文件
+        var uploaded = 0;
+        var total = files.length;
+        var hasError = false;
+        
+        Array.from(files).forEach(function(file) {
+            var fd = new FormData();
+            fd.append('file', file);
+            fd.append('folder', folder);
+            
+            fetch('/projects/upload/' + projectId, {method:'POST', body:fd})
+            .then(r=>r.json())
+            .then(d=>{
+                uploaded++;
+                if (!d.success) {
+                    hasError = true;
+                    alert('上传失败: ' + (d.message || '未知错误'));
+                }
+                if (uploaded === total) {
+                    if (!hasError) {
+                        alert('上传成功！');
+                    }
+                    location.reload();
+                }
+            })
+            .catch(e=>{
+                uploaded++;
+                hasError = true;
+                alert('上传失败: ' + e);
+                if (uploaded === total) {
+                    location.reload();
+                }
+            });
+        });
+    };
+    
+    // 上传文件夹按钮事件
+    document.querySelectorAll('.btn-upload-folder').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var folderPath = this.dataset.folder;
+            document.getElementById('uploadFolder').value = folderPath;
+            document.getElementById('uploadModalTitle').textContent = '上传文件夹到: ' + (folderPath || '根目录');
+            // 清空文件选择
+            document.getElementById('fileInput').value = '';
+            document.getElementById('folderInput').value = '';
+            new bootstrap.Modal(document.getElementById('uploadModal')).show();
+        });
+    });
+    
+    // 删除文件夹按钮事件
+    document.querySelectorAll('.btn-delete-folder').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var folderPath = this.dataset.folder;
+            if (confirm('确定删除文件夹 "' + folderPath + '" 及其所有内容？')) {
+                var fd = new FormData();
+                fd.append('folder_path', folderPath);
+                fetch('/projects/delete_folder/{{ project['project_id'] }}', {method:'POST', body:fd})
+                .then(r=>r.json())
+                .then(d=>{ 
+                    if(d.success) {
+                        alert('删除成功！');
+                        location.reload(); 
+                    } else {
+                        alert(d.message || '删除失败');
+                    }
+                });
+            }
+        });
+    });
+    
+    // 删除文件按钮事件
+    document.querySelectorAll('.btn-del').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (confirm('确定删除此文件？')) {
+                var fd = new FormData();
+                fd.append('file_path', this.dataset.path);
+                fetch('/projects/delete_file/{{ project['project_id'] }}', {method:'POST', body:fd})
+                .then(r=>r.json())
+                .then(d=>{ 
+                    if(d.success) {
+                        alert('删除成功！');
+                        location.reload(); 
+                    } else {
+                        alert(d.message || '删除失败');
+                    }
+                });
+            }
+        });
+    });
+    
+    // 重命名文件按钮事件
+    document.querySelectorAll('.btn-rename').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            document.getElementById('renameFilePath').value = this.dataset.path;
+            document.getElementById('newFileName').value = this.dataset.name;
+            new bootstrap.Modal(document.getElementById('renameModal')).show();
+        });
+    });
+    
+    // 重命名表单提交
+    document.getElementById('renameForm').onsubmit = function(e) {
+        e.preventDefault();
+        var fd = new FormData();
+        fd.append('file_path', document.getElementById('renameFilePath').value);
+        fd.append('new_name', document.getElementById('newFileName').value);
+        fetch('/projects/rename_file/{{ project['project_id'] }}', {method:'POST', body:fd})
+        .then(r=>r.json())
+        .then(d=>{ 
+            if(d.success) {
+                alert('重命名成功！');
+                location.reload(); 
+            } else {
+                alert(d.message || '重命名失败');
+            }
+        });
+    };
+}
+
+function renderArchiveList(nodes, lvl) {
+    if (!lvl) lvl = 0;
+    var html = '';
+    nodes.forEach(function(n) {
+        var indent = lvl * 20;
+        var hasKids = n.children && n.children.length > 0;
+        html += '<div style="padding-left:' + indent + 'px">';
+        html += '<input type="checkbox" class="form-check-input me-2 archive-cb" value="' + n.path + '" name="folders" onchange="checkKids(this)">';
+        html += '<i class="bi bi-folder' + (hasKids ? '' : '-open') + ' text-warning me-2"></i>';
+        html += '<span>' + n.name + '</span></div>';
+        if (hasKids) html += renderArchiveList(n.children, lvl + 1);
+    });
+    return html;
+}
+
+function checkKids(cb) {
+    var checked = cb.checked;
+    var val = cb.value;
+    document.querySelectorAll('.archive-cb').forEach(function(c) {
+        if (c.value !== val && c.value.startsWith(val + '/')) {
+            c.checked = checked;
+            checkKids(c);
+        }
+    });
+}
+
+function updateEquipment(pid, gid, eid, inp) {
+    var row = inp.closest('tr');
+    var fd = new FormData();
+    fd.append('quantity', row.querySelector('input[type=number]').value);
+    fd.append('location', row.querySelector('textarea').value);
+    fetch(projectUpdateUrl + '/update_equipment/' + pid + '/' + gid + '/' + eid, {method:'POST', body:fd})
+    .then(r => r.json())
+    .then(d => { if (!d.success) alert('保存失败: ' + (d.message || '未知错误')); });
+}
+
+// 更新项目字段（状态、结束日期、任务号）
+function updateProjectField(projectId, field, value) {
+    var fd = new FormData();
+    fd.append('field', field);
+    fd.append('value', value);
+    fetch(projectUpdateUrl + '/update_field/' + projectId, {method:'POST', body:fd})
+    .then(r=>r.json())
+    .then(data=>{
+        if (data.success) {
+            // 状态变更后刷新页面（更新左侧树和页面状态）
+            if (field === '状态') {
+                location.reload();
+            }
+        } else {
+            alert(data.message);
+        }
+    });
+}
+
+document.getElementById('folderForm').onsubmit = function(e) {
+    e.preventDefault();
+    var fd = new FormData(this);
+    fetch('/projects/create_folder/{{ project['project_id'] }}', {method:'POST', body:fd})
+    .then(r=>r.json())
+    .then(d=>{ 
+        if(d.success) {
+            alert('创建成功！');
+            location.reload(); 
+        } else {
+            alert(d.message || '创建失败');
+        }
+    })
+    .catch(e=>{
+        alert('创建失败: ' + e);
+    });
+};
+
+document.getElementById('uploadForm').onsubmit = function(e) {
+    e.preventDefault();
+    var fd = new FormData(this);
+    var projectId = '{{ project['project_id'] }}';
+    
+    // 检查是否选择了文件夹上传
+    var folderInput = document.getElementById('folderInput');
+    if (folderInput && folderInput.files.length > 0) {
+        // 文件夹上传
+        fd = new FormData();
+        fd.append('folder', document.getElementById('uploadFolder').value);
+        Array.from(folderInput.files).forEach(function(file) {
+            fd.append('files', file);
+        });
+        fetch('/projects/upload_folder/' + projectId, {method:'POST', body:fd})
+        .then(r=>r.json())
+        .then(d=>{ 
+            if(d.success) {
+                alert(d.message || '上传成功！');
+                location.reload(); 
+            } else {
+                alert(d.message || '上传失败');
+            }
+        })
+        .catch(e=>{
+            alert('上传失败: ' + e);
+        });
+    } else {
+        // 单个文件上传
+        fetch('/projects/upload/' + projectId, {method:'POST', body:fd})
+        .then(r=>r.json())
+        .then(d=>{ 
+            if(d.success) {
+                alert('上传成功！');
+                location.reload(); 
+            } else {
+                alert(d.message || '上传失败');
+            }
+        })
+        .catch(e=>{
+            alert('上传失败: ' + e);
+        });
+    }
+};
+
+document.getElementById('archiveForm').onsubmit = function(e) {
+    e.preventDefault();
+    var fd = new FormData(this);
+    fetch('/projects/archive/{{ project['project_id'] }}', {method:'POST', body:fd})
+    .then(r=>r.blob())
+    .then(b=>{
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(b);
+        a.download = '{{ project['name'] }}_{{ project['project_id'] }}.zip';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        bootstrap.Modal.getInstance(document.getElementById('archiveModal')).hide();
+    });
+};
+
+function showCreateFolder(pf) {
+    document.getElementById('parentFolder').value = pf;
+    new bootstrap.Modal(document.getElementById('folderModal')).show();
+}
+
+function showLinkEquipment() {
+    new bootstrap.Modal(document.getElementById('equipmentModal')).show();
+}
+
+function openArgumentation() {
+    var projectId = '{{ project['project_id'] }}';
+    var category = '{{ category }}';
+    window.location.href = '/argumentation/' + category + '/' + projectId;
+}
+
+// 导出设备选型到Excel
+function exportEquipment(projectId) {
+    if (!projectId) {
+        alert('项目ID无效');
+        return;
+    }
+    var exportUrl = '/{{ "projects" if category in ("research", "projects", "") else category + "_projects" }}/export_equipment/' + projectId;
+    console.log('导出设备URL:', exportUrl);
+    window.location.href = exportUrl;
+}
+
+function showArchiveModal() {
+    document.getElementById('archiveFolderList').innerHTML = renderArchiveList(folderData);
+    new bootstrap.Modal(document.getElementById('archiveModal')).show();
+}
+
+// 直接导出选中的文件和文件夹
+function exportSelected() {
+    var checkedFolders = document.querySelectorAll('.folder-cb:checked');
+    var checkedFiles = document.querySelectorAll('.file-cb:checked');
+    
+    if (checkedFolders.length === 0 && checkedFiles.length === 0) {
+        alert('请先勾选要导出的文件或文件夹');
+        return;
+    }
+    
+    // 收集所有选中的路径
+    var paths = [];
+    checkedFolders.forEach(cb => paths.push(cb.value));
+    checkedFiles.forEach(cb => paths.push(cb.value));
+    
+    var fd = new FormData();
+    fd.append('paths', JSON.stringify(paths));
+    
+    fetch('/projects/archive/{{ project['project_id'] }}', {method:'POST', body:fd})
+    .then(r=>r.blob())
+    .then(b=>{
+        if (b.size === 0) {
+            alert('没有找到要导出的文件');
+            return;
+        }
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(b);
+        a.download = '{{ project['name'] }}_{{ project['project_id'] }}.zip';
+        a.click();
+        URL.revokeObjectURL(a.href);
+    })
+    .catch(e=>{
+        alert('导出失败: ' + e);
+    });
+}
+
+function unlinkEquipment(pid, gid, eid) {
+    if (confirm('确定移除此设备？')) {
+        fetch(projectUpdateUrl + '/unlink_equipment/' + pid + '/' + gid + '/' + eid, {method:'POST'})
+        .then(r=>r.json())
+        .then(d=>{ if(d.success) location.reload(); else alert(d.message); });
+    }
+}
+
+// 确保目录树渲染后绑定事件
+if (document.getElementById('folderTree')) {
+    renderTree(folderData, document.getElementById('folderTree'));
+    // 延迟绑定事件确保DOM完全渲染
+    setTimeout(function(){ bindEvents(); }, 100);
+}
+
+    setupCollapseIcons();
+    // 根据URL参数展开对应模块（不使用jQuery）
+document.addEventListener('DOMContentLoaded', function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const view = urlParams.get("view");
+    const collapseProject = document.getElementById("collapseProject");
+    const collapseEquipment = document.getElementById("collapseEquipment");
+    const collapseDocs = document.getElementById("collapseDocs");
+    
+    // 默认全部展开，可通过URL参数聚焦到指定模块
+    if (view === "equipment") {
+        collapseProject.classList.remove("show");
+        collapseDocs.classList.remove("show");
+        collapseEquipment.classList.add("show");
+    } else if (view === "documents") {
+        collapseProject.classList.remove("show");
+        collapseEquipment.classList.remove("show");
+        collapseDocs.classList.add("show");
+    } else {
+        // 默认三个都展开（project info优先聚焦）
+        // collapseProject 默认已有 show 类，无需操作
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% include 'components/preview_panel.html' %}
+
+{% block title %}项目文档 - {{ project['name'] }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h4 class="mb-4">
+        <i class="bi bi-folder"></i> 项目文档 - {{ project['name'] }}
+        <small class="text-muted">({{ project['project_id'] }})</small>
+    </h4>
+    
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-file-earmark-text"></i> 项目文档列表</span>
+            <button class="btn btn-primary btn-sm" onclick="showUploadModal()">
+                <i class="bi bi-upload"></i> 上传文档
+            </button>
+        </div>
+        <div class="card-body">
+            {% if documents %}
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>文档名称</th>
+                            <th>类型</th>
+                            <th>大小</th>
+                            <th>上传时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for doc in documents %}
+                        <tr>
+                            <td>
+                                <a href="javascript:void(0)" onclick="openPreview('{{ doc.path }}', '{{ doc.name }}', 'project', '/projects/download_doc/{{ project['project_id'] }}/{{ doc.name }}')" class="text-decoration-none">
+                                    <i class="bi bi-file-{{ 'pdf' if doc.type == 'pdf' else 'word' if doc.type in ['doc','docx'] else 'earmark' }} text-{{ 'danger' if doc.type == 'pdf' else 'primary' }}"></i>
+                                    {{ doc.name }}
+                                </a>
+                            </td>
+                            <td><span class="badge bg-{{ 'danger' if doc.type == 'pdf' else 'primary' }}">{{ doc.type|upper }}</span></td>
+                            <td>{{ (doc.size/1024)|round(1) }} KB</td>
+                            <td>{{ doc.upload_time }}</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-primary" onclick="openPreview('{{ doc.path }}', '{{ doc.name }}', 'project', '/projects/download_doc/{{ project['project_id'] }}/{{ doc.name }}')" title="预览">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                                <a href="/projects/download_doc/{{ project['project_id'] }}/{{ doc.name }}" class="btn btn-sm btn-outline-success" title="下载">
+                                    <i class="bi bi-download"></i>
+                                </a>
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteDoc('{{ doc.name }}')" title="删除">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-muted text-center py-4">暂无项目文档，请点击上方"上传文档"按钮添加</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- 上传文档模态框 -->
+<div class="modal fade" id="uploadDocModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="/projects/upload_doc/{{ project['project_id'] }}" enctype="multipart/form-data">
+                <div class="modal-header">
+                    <h5 class="modal-title">上传项目文档</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">选择文档</label>
+                        <input type="file" name="document" class="form-control" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx" required>
+                        <small class="text-muted">支持 PDF、Word、Excel、PPT 格式</small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">上传</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+function showUploadModal() {
+    new bootstrap.Modal(document.getElementById('uploadDocModal')).show();
+}
+
+function deleteDoc(docName) {
+    if (confirm('确认删除文档"' + docName + '"？')) {
+        fetch('/projects/delete_doc/{{ project['project_id'] }}/' + docName, {
+            method: 'POST'
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                alert(data.message || '删除失败');
+            }
+        });
+    }
+}
+</script>
+{% endblock %}

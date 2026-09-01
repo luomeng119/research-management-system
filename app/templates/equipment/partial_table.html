@@ -1,0 +1,58 @@
+<!-- 设备列表局部刷新片段（partial=1 时返回） -->
+<div class="row mb-3">
+    <div class="col"><span class="badge bg-primary">{{ stats.total }}</span> 台设备</div>
+    <div class="col"><span class="badge bg-info">{{ stats.categories }}</span> 个分类</div>
+    <div class="col"><span class="badge bg-success">总价: {{ "%.2f"|format(stats.total_value) }} 万</span></div>
+</div>
+
+{% if grouped_equipment %}
+{% for cat, items in grouped_equipment.items() %}
+<div class="card mb-3">
+    <div class="card-header">
+        <span class="badge bg-info me-2">{{ cat }}</span>
+        {{ items|length }} 台设备
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>设备编号</th>
+                    <th>名称</th>
+                    <th>型号</th>
+                    <th>形态</th>
+                    <th>技术状态</th>
+                    <th>价格(万)</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in items %}
+                <tr>
+                    <td><code>{{ e['equipment_id'] }}</code></td>
+                    <td>
+                        <strong>{{ e['name'] }}</strong>
+                        {% if e.get('former_name') %}
+                        <br><small class="text-muted">曾用名: {{ e['former_name'] }}</small>
+                        {% endif %}
+                    </td>
+                    <td>{{ e['model'] or '-' }}</td>
+                    <td>{{ e['form'] or '-' }}</td>
+                    <td><span class="badge bg-{% if e.get('tech_status')=='完好' %}success{% elif e.get('tech_status')=='维修' %}warning{% else %}secondary{% endif %}">{{ e['tech_status'] or '-' }}</span></td>
+                    <td>{{ e['price'] or '-' }}</td>
+                    <td>
+                        <a href="{{ url_for('equipment.detail', equipment_id=e['equipment_id']) }}" class="btn btn-sm btn-outline-primary">详情</a>
+                        <a href="{{ url_for('equipment.edit', equipment_id=e['equipment_id']) }}" class="btn btn-sm btn-outline-secondary">编辑</a>
+                        {% if session.get('role') == '管理员' %}
+                        <a href="{{ url_for('equipment.delete', equipment_id=e['equipment_id']) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('确定删除？')">删除</a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="alert alert-info">暂无设备信息</div>
+{% endif %}

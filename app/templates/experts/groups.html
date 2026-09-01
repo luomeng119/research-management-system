@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}专家组{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2><i class="bi bi-people"></i>专家组</h2>
+        <a href="{{ url_for('experts.index') }}" class="btn btn-outline-secondary">返回专家库</a>
+    </div>
+    
+    <div class="mb-3">
+        <a href="{{ url_for('expert_groups.new') }}" class="btn btn-primary">
+            <i class="bi bi-plus-circle"></i> 新建专家组
+        </a>
+    </div>
+    
+    <div class="card">
+        <div class="card-body">
+            {% if groups %}
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>会议名称</th>
+                            <th>成员数</th>
+                            <th>创建人</th>
+                            <th>创建时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for g in groups %}
+                        <tr>
+                            <td>{{ g.meeting_name }}</td>
+                            <td><span class="badge bg-primary">{{ g.member_count }}</span> 人</td>
+                            <td>{{ g.creator }}</td>
+                            <td>{{ g.created_at }}</td>
+                            <td>
+                                <a href="{{ url_for('expert_groups.edit', group_id=g.group_id) }}" class="btn btn-sm btn-outline-primary">查看</a>
+                                <a href="{{ url_for('expert_groups.export', group_id=g.group_id) }}" class="btn btn-sm btn-outline-success">导出</a>
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteGroup('{{ g.group_id }}')">删除</button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-muted text-center py-4">暂无专家组，请先创建</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+function deleteGroup(group_id) {
+    if (!confirm('确定删除此专家组？')) return;
+    fetch('/experts/groups/delete/' + group_id, {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            location.reload();
+        } else {
+            alert(data.message);
+        }
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,149 @@
+<!-- 研制单位管理模态框 -->
+<div class="modal" id="unitModal" tabindex="-1" style="z-index:9000;">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">研制单位管理</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" style="max-height:70vh;overflow-y:auto;">
+                <!-- 工具栏 -->
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <span class="text-muted small">共 <span id="unitCount">0</span> 个单位</span>
+                    <button class="btn btn-success btn-sm" onclick="showUnitAdd()">
+                        <i class="bi bi-plus-circle"></i> 新增单位
+                    </button>
+                </div>
+                <!-- 单位列表 -->
+                <div id="unitList"></div>
+                <!-- 新增/编辑表单（默认隐藏）-->
+                <div id="unitForm" style="display:none;">
+                    <hr>
+                    <h6 id="unitFormTitle">新增研制单位</h6>
+                    <input type="hidden" id="unitEditId">
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-6">
+                            <label class="form-label small">单位名称 <span class="text-danger">*</span></label>
+                            <input type="text" id="unitName" class="form-control form-control-sm" placeholder="如：中国电子科技集团公司第三十研究所">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small">备选名/曾用名</label>
+                            <input type="text" id="unitAlias" class="form-control form-control-sm" placeholder="如：三十所/中国电科30所（用 "/" 分隔）">
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-primary btn-sm" onclick="saveUnit()">保存</button>
+                        <button class="btn btn-secondary btn-sm" onclick="hideUnitForm()">取消</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+var unitModal;
+var currentRole = '{{ session.get("role", "") }}';
+
+document.addEventListener('DOMContentLoaded', function() {
+    unitModal = new bootstrap.Modal(document.getElementById('unitModal'));
+    document.getElementById('unitModal').addEventListener('shown.bs.modal', loadUnits);
+});
+
+function openUnitModal() {
+    if (currentRole !== '管理员') {
+        alert('只有管理员才能管理研制单位');
+        return;
+    }
+    hideUnitForm();
+    unitModal.show();
+}
+
+function loadUnits() {
+    fetch('/research-units/api/list')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var units = data.units || [];
+            document.getElementById('unitCount').textContent = units.length;
+            var html = '<table class="table table-sm table-hover"><thead><tr><th>单位名称</th><th>备选名</th><th style="width:180px;">操作</th></tr></thead><tbody>';
+            units.forEach(function(u) {
+                html += '<tr>';
+                html += '<td>' + escHtml(u.name) + '</td>';
+                html += '<td><span class="text-muted small">' + escHtml(u.alias || '-') + '</span></td>';
+                html += '<td>';
+                html += '<button class="btn btn-sm btn-outline-primary" onclick="editUnit(\'' + u.unit_id + '\')">编辑</button> ';
+                html += '<button class="btn btn-sm btn-outline-danger" onclick="delUnit(\'' + u.unit_id + '\')">删除</button>';
+                html += '</td></tr>';
+            });
+            html += '</tbody></table>';
+            document.getElementById('unitList').innerHTML = html;
+        });
+}
+
+function showUnitAdd() {
+    document.getElementById('unitFormTitle').textContent = '新增研制单位';
+    document.getElementById('unitEditId').value = '';
+    document.getElementById('unitName').value = '';
+    document.getElementById('unitAlias').value = '';
+    document.getElementById('unitForm').style.display = 'block';
+}
+
+function editUnit(unitId) {
+    fetch('/research-units/api/list')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var units = data.units || [];
+            var u = units.find(function(x) { return x.unit_id === unitId; });
+            if (!u) return;
+            document.getElementById('unitFormTitle').textContent = '编辑研制单位';
+            document.getElementById('unitEditId').value = u.unit_id;
+            document.getElementById('unitName').value = u.name;
+            document.getElementById('unitAlias').value = u.alias || '';
+            document.getElementById('unitForm').style.display = 'block';
+        });
+}
+
+function hideUnitForm() {
+    document.getElementById('unitForm').style.display = 'none';
+}
+
+function saveUnit() {
+    var name = document.getElementById('unitName').value.trim();
+    var alias = document.getElementById('unitAlias').value.trim();
+    var editId = document.getElementById('unitEditId').value;
+    
+    if (!name) { alert('单位名称不能为空'); return; }
+    
+    var method = editId ? 'PUT' : 'POST';
+    var url = editId ? '/research-units/api/' + editId : '/research-units/api';
+    
+    fetch(url, {
+        method: method,
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: name, alias: alias})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.error) { alert(data.error); return; }
+        hideUnitForm();
+        loadUnits();
+        // 刷新页面上的多选下拉（如果有）
+        if (typeof refreshManufacturerOptions === 'function') refreshManufacturerOptions();
+    });
+}
+
+function delUnit(unitId) {
+    if (!confirm('确定删除该研制单位？')) return;
+    fetch('/research-units/api/' + unitId, {method: 'DELETE'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            loadUnits();
+            if (typeof refreshManufacturerOptions === 'function') refreshManufacturerOptions();
+        });
+}
+
+function escHtml(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>

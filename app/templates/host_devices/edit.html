@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+
+{% block title %}编辑宿主设备 - 科研管理系统V2{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h4>编辑宿主设备</h4>
+    <form method="POST" onsubmit="return validateForm()">
+        <div class="row">
+            <div class="col-md-6">
+                <div class="mb-3">
+                    <label class="form-label">名称 <span class="text-danger">*</span></label>
+                    <input type="text" name="name" id="name" class="form-control" value="{{ host.name }}" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">型号</label>
+                    <input type="text" name="model" class="form-control" value="{{ host.model or '' }}">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">类型</label>
+                    <div class="input-group">
+                        <input type="text" name="category" id="category" class="form-control" list="category-list" value="{{ host.category or '' }}" placeholder="选择或输入新类型">
+                        <datalist id="category-list">
+                            {% for cat in categories %}
+                            <option value="{{ cat.name }}">
+                            {% endfor %}
+                        </datalist>
+                        <input type="text" name="new_category" class="form-control" placeholder="输入新类型名称">
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">形态</label>
+                    <select name="form" class="form-select">
+                        <option value="独立式" {% if host.form=='独立式' %}selected{% endif %}>独立式</option>
+                        <option value="板卡式" {% if host.form=='板卡式' %}selected{% endif %}>板卡式</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- 关联设备区域 -->
+        <div class="mb-3">
+            <label class="form-label">关联设备</label>
+            <div class="card">
+                <div class="card-header">已选择设备</div>
+                <div class="card-body" id="selected-devices">
+                    <div id="selected-list"></div>
+                    <button type="button" class="btn btn-outline-primary btn-sm mt-2" onclick="openRelationModal()">
+                        <i class="bi bi-plus"></i> 添加关联设备
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-3">
+            <button type="submit" class="btn btn-primary">保存</button>
+            <a href="{{ url_for('host_devices.index') }}" class="btn btn-outline-secondary">取消</a>
+        </div>
+    </form>
+</div>
+
+<!-- 关联设备选择模态框 -->
+{% include 'host_devices/_relation_modal.html' %}
+
+<script>
+let selectedDevices = JSON.parse('{{ selected_relations | tojson | safe }}').map(d => ({
+    device_id: d.device_id,
+    name: d.name,
+    model: d.model,
+    category: d.category,
+    tech_status: d.tech_status,
+    quantity: d.quantity || 1
+}));
+
+function openRelationModal() {
+    loadDeviceList('', '', 1);
+    let modal = new bootstrap.Modal(document.getElementById('relationModal'));
+    modal.show();
+}
+
+function loadDeviceList(keyword, category, page) {
+    let url = `/equipment/api/hosts/search?keyword=${encodeURIComponent(keyword)}&category=${encodeURIComponent(category)}&page=${page}`;
+    fetch(url, { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(res => {
+            if (res.code !== 0) return;
+            renderDeviceList(res.data, res.total, res.page, res.total_pages);
+        });
+}
+
+function renderDeviceList(devices, total, page, totalPages) {
+    let tbody = document.getElementById('modal-device-list');
+    tbody.innerHTML = devices.map(d => `
+        <tr>
+            <td><input type="checkbox" class="device-check" value="${d.equipment_id}" data-name="${d.name}" data-model="${d.model}" data-category="${d.category}" data-tech_status="${d.tech_status}"></td>
+            <td>${d.name}</td>
+            <td>${d.model || ''}</td>
+            <td>${d.category}</td>
+            <td>${d.tech_status || ''}</td>
+            <td><input type="number" class="form-control form-control-sm" style="width:70px" value="1" min="1"></td>
+        </tr>
+    `).join('');
+
+    document.querySelectorAll('.device-check').forEach(cb => {
+        if (selectedDevices.find(d => d.device_id === cb.value)) cb.checked = true;
+    });
+
+    let pagination = document.getElementById('modal-pagination');
+    pagination.innerHTML = `
+        <span class="me-3">第 ${page}/${totalPages} 页，共 ${total} 条</span>
+        ${page > 1 ? `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadDeviceList('${keyword}', '${category}', ${page-1})">&lt;</button>` : ''}
+        ${page < totalPages ? `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadDeviceList('${keyword}', '${category}', ${page+1})">&gt;</button>` : ''}
+    `;
+}
+
+function updateSelectedList() {
+    let list = document.getElementById('selected-list');
+    if (selectedDevices.length === 0) {
+        list.innerHTML = '<span class="text-muted">暂无关联设备</span>';
+        return;
+    }
+    list.innerHTML = selectedDevices.map((d, i) => `
+        <div class="alert alert-secondary py-1 px-2 d-inline-flex align-items-center me-2 mb-1" style="font-size:0.85em">
+            ${d.name} (${d.model || ''}) × <span class="quantity-display">${d.quantity}</span>
+            <input type="hidden" name="device_id" value="${d.device_id}">
+            <input type="hidden" name="quantity" value="${d.quantity}">
+            <button type="button" class="btn-close btn-close-sm ms-2" onclick="removeDevice(${i})"></button>
+        </div>
+    `).join('');
+}
+
+function removeDevice(index) {
+    selectedDevices.splice(index, 1);
+    updateSelectedList();
+    document.querySelectorAll('.device-check').forEach(cb => {
+        cb.checked = !!selectedDevices.find(d => d.device_id === cb.value);
+    });
+}
+
+function confirmRelation() {
+    document.querySelectorAll('.device-check:checked').forEach(cb => {
+        let tr = cb.closest('tr');
+        let qty = parseInt(tr.querySelector('input[type=number]').value) || 1;
+        let existing = selectedDevices.findIndex(d => d.device_id === cb.value);
+        let deviceData = {
+            device_id: cb.value,
+            name: cb.dataset.name,
+            model: cb.dataset.model,
+            category: cb.dataset.category,
+            tech_status: cb.dataset.tech_status,
+            quantity: qty
+        };
+        if (existing >= 0) {
+            selectedDevices[existing] = deviceData;
+        } else {
+            selectedDevices.push(deviceData);
+        }
+    });
+    updateSelectedList();
+    bootstrap.Modal.getInstance(document.getElementById('relationModal')).hide();
+}
+
+function validateForm() {
+    if (!document.getElementById('name').value.trim()) {
+        alert('名称不能为空');
+        return false;
+    }
+    updateSelectedList();
+    return true;
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    updateSelectedList();
+    document.getElementById('relationModal').addEventListener('shown.bs.modal', function() {
+        loadDeviceList('', '', 1);
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,98 @@
+{
+  "template_id": "tpl_caigou",
+  "doc_type": "科研物资采购申请单",
+  "docx_filename": "模板.docx",
+  "table_index": 3,
+  "version": "1.0.0",
+  "note": "商品明细字段使用 item_0, item_1 等索引，自动填充时会根据实际发票商品条数生成动态行",
+  "fields": [
+    {
+      "field_id": "T0[1,1]",
+      "label": "申请单位",
+      "type": "text",
+      "source": "session.dept",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[2,1]",
+      "label": "申请人",
+      "type": "text",
+      "source": "session.name",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[2,4]",
+      "label": "申请日期",
+      "type": "text",
+      "source": "auto:current_date",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[3,1]",
+      "label": "采购物品名称",
+      "type": "text",
+      "source": "invoice:电子发票.item_name_0",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[4,1]",
+      "label": "规格型号",
+      "type": "text",
+      "source": "invoice:电子发票.item_spec_0",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[4,3]",
+      "label": "数量",
+      "type": "number",
+      "source": "invoice:电子发票.item_quantity_0",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[4,5]",
+      "label": "单价",
+      "type": "amount",
+      "source": "invoice:电子发票.item_unit_price_0",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[4,7]",
+      "label": "金额",
+      "type": "amount",
+      "source": "invoice:电子发票.item_amount_0",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[5,1]",
+      "label": "采购原因",
+      "type": "text",
+      "source": "user_input",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[10,1]",
+      "label": "领导审批",
+      "type": "text",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[11,1]",
+      "label": "审核意见",
+      "type": "text",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    }
+  ]
+}

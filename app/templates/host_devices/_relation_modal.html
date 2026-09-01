@@ -1,0 +1,62 @@
+<!-- 关联设备选择弹框（复用模态框） -->
+<div class="modal fade" id="relationModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">选择关联设备</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- 已选择设备列表 -->
+                <div class="mb-3">
+                    <div class="card">
+                        <div class="card-header py-1" style="font-size:0.9em">已选择设备</div>
+                        <div class="card-body py-2" id="modal-selected-list">
+                            <span class="text-muted" style="font-size:0.85em">暂无</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- 筛选 -->
+                <div class="row g-2 mb-2">
+                    <div class="col-md-3">
+                        <select id="modal-category" class="form-select form-select-sm">
+                            <option value="">全部分类</option>
+                            <option value="安全设备">安全设备</option>
+                            <option value="密码设备">密码设备</option>
+                            <option value="通用设备">通用设备</option>
+                            <option value="其他设备">其他设备</option>
+                        </select>
+                    </div>
+                    <div class="col-md-5">
+                        <input type="text" id="modal-keyword" class="form-control form-control-sm" placeholder="搜索设备名称/型号">
+                    </div>
+                    <div class="col-md-2">
+                        <button type="button" class="btn btn-primary btn-sm w-100" onclick="modalSearch()">搜索</button>
+                    </div>
+                </div>
+                <!-- 设备列表 -->
+                <div class="table-responsive" style="max-height:300px;overflow-y:auto">
+                    <table class="table table-sm table-hover" style="font-size:0.85em">
+                        <thead class="sticky-top bg-light">
+                            <tr>
+                                <th style="width:30px"></th>
+                                <th>名称</th>
+                                <th>型号</th>
+                                <th>分类</th>
+                                <th>技术状态</th>
+                                <th>数量</th>
+                            </tr>
+                        </thead>
+                        <tbody id="modal-device-list"></tbody>
+                    </table>
+                </div>
+                <!-- 分页 -->
+                <div class="d-flex align-items-center mt-2" id="modal-pagination"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary btn-sm" onclick="confirmRelation()">确认关联</button>
+            </div>
+        </div>
+    </div>
+</div>

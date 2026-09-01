@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}设备组{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2><i class="bi bi-box-seam"></i> 设备组</h2>
+        <a href="{{ url_for('equipment.index') }}" class="btn btn-outline-secondary">返回设备库</a>
+    </div>
+    
+    <div class="mb-3">
+        <a href="{{ url_for('equipment_groups.new') }}" class="btn btn-primary">
+            <i class="bi bi-plus-circle"></i> 新建设备组
+        </a>
+    </div>
+    
+    <!-- 筛选项目 -->
+    <div class="mb-3">
+        <form method="GET" action="{{ url_for('equipment_groups.index') }}" class="row g-3">
+            <div class="col-auto">
+                <input type="text" name="project_id" class="form-control" placeholder="筛选项目ID" value="{{ filter_project_id or '' }}">
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-outline-secondary">筛选</button>
+                {% if filter_project_id %}
+                <a href="{{ url_for('equipment_groups.index') }}" class="btn btn-outline-secondary">清除</a>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+    
+    <div class="card">
+        <div class="card-body">
+            {% if groups %}
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>设备组名称</th>
+                            <th>关联项目</th>
+                            <th>设备数</th>
+                            <th>创建人</th>
+                            <th>创建时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for g in groups %}
+                        <tr>
+                            <td>{{ g.project_name }}</td>
+                            <td>
+                                {% if g.project_id %}
+                                <span class="badge bg-info">{{ g.project_id }}</span>
+                                {% else %}
+                                <span class="text-muted">-</span>
+                                {% endif %}
+                            </td>
+                            <td><span class="badge bg-primary">{{ g.member_count }}</span> 台</td>
+                            <td>{{ g.creator }}</td>
+                            <td>{{ g.created_at }}</td>
+                            <td>
+                                <a href="{{ url_for('equipment_groups.edit', group_id=g.group_id) }}" class="btn btn-sm btn-outline-primary">查看</a>
+                                <a href="{{ url_for('equipment_groups.export', group_id=g.group_id) }}" class="btn btn-sm btn-outline-success">导出</a>
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteGroup('{{ g.group_id }}')">删除</button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-muted text-center py-4">暂无设备组，请先创建</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+function deleteGroup(group_id) {
+    if (!confirm('确定删除此设备组？')) return;
+    fetch('/equipment/groups/delete/' + group_id, {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) location.reload();
+        else alert(data.message);
+    });
+}
+</script>
+{% endblock %}

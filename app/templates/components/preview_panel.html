@@ -1,0 +1,473 @@
+{# 共享文档预览面板 - 侧边栏形式，默认关闭 #}
+<style>
+.preview-panel {
+    position: fixed;
+    top: 0;
+    right: -55%;
+    width: 55%;
+    height: 100vh;
+    background: #fff;
+    box-shadow: -2px 0 10px rgba(0,0,0,0.15);
+    z-index: 1050;
+    transition: right 0.3s ease;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid #dee2e6;
+}
+.preview-panel.open {
+    right: 0;
+}
+.preview-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid #dee2e6;
+    background: #f8f9fa;
+    flex-shrink: 0;
+}
+.preview-panel-header .filename {
+    font-weight: 600;
+    color: #333;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 0.5rem;
+}
+.preview-panel-body {
+    flex: 1;
+    overflow: auto;
+    padding: 1rem;
+}
+.preview-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.3);
+    z-index: 1049;
+    display: none;
+}
+.preview-overlay.show {
+    display: block;
+}
+/* 图片预览 */
+.preview-image {
+    max-width: 100%;
+    max-height: 80vh;
+    display: block;
+    margin: 0 auto;
+}
+/* PDF预览 */
+.preview-pdf {
+    width: 100%;
+    height: 80vh;
+    border: none;
+}
+/* 文本预览 */
+.preview-text {
+    background: #f5f5f5;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 1rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    max-height: 75vh;
+    overflow: auto;
+    white-space: pre;
+}
+/* Word预览 */
+.preview-word {
+    font-family: 'Microsoft YaHei', 'SimHei', sans-serif;
+    font-size: 0.9rem;
+    line-height: 1.8;
+    max-height: 70vh;
+    overflow: auto;
+}
+.preview-word h1, .preview-word h2, .preview-word h3 {
+    color: #333;
+    margin-top: 1rem;
+}
+.preview-word p {
+    margin: 0.5rem 0;
+    text-indent: 2em;
+}
+/* Excel预览 */
+.preview-excel {
+    overflow: auto;
+    max-height: 75vh;
+}
+.preview-excel table {
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    width: 100%;
+}
+.preview-excel th, .preview-excel td {
+    border: 1px solid #ddd;
+    padding: 4px 8px;
+    text-align: left;
+    white-space: nowrap;
+}
+.preview-excel th {
+    background: #f0f0f0;
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+}
+.preview-excel tr:nth-child(even) {
+    background: #fafafa;
+}
+/* Sheet切换标签 */
+.sheet-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+.sheet-tab {
+    padding: 4px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    background: #f8f9fa;
+}
+.sheet-tab.active {
+    background: #0d6efd;
+    color: #fff;
+    border-color: #0d6efd;
+}
+.sheet-content {
+    display: none;
+}
+.sheet-content.active {
+    display: block;
+}
+/* 加载状态 */
+.preview-loading {
+    text-align: center;
+    padding: 3rem;
+    color: #666;
+}
+</style>
+
+<div class="preview-overlay" id="previewOverlay" onclick="closePreview()"></div>
+
+<div class="preview-panel" id="previewPanel">
+    <div class="preview-panel-header">
+        <span class="filename" id="previewFileName">文档预览</span>
+        <div>
+            <a href="#" class="btn btn-sm btn-outline-primary me-1" id="previewDownloadBtn" target="_blank" title="下载">
+                <i class="bi bi-download"></i>
+            </a>
+            <button class="btn btn-sm btn-outline-info" id="aiCorrectBtn" onclick="doAICorrect()" title="AI 文本纠错" style="display:none;">
+                <i class="bi bi-spellcheck"></i> AI纠错
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="closePreview()" title="关闭">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+    </div>
+    <!-- AI 纠错结果区域 -->
+    <div id="aiCorrectPanel" style="display:none; background:#fffbe6; border-bottom:1px solid #ffe58f; padding:0.5rem 1rem; flex-shrink:0;">
+        <div class="d-flex align-items-center mb-1">
+            <strong class="text-warning me-auto"><i class="bi bi-spellcheck"></i> AI 纠错结果</strong>
+            <button class="btn btn-sm btn-link text-muted p-0 me-2" onclick="hideAICorrect()" title="收起"><i class="bi bi-chevron-up"></i></button>
+        </div>
+        <div id="aiCorrectLoading" style="display:none;" class="small text-muted py-1">
+            <span class="spinner-border spinner-border-sm me-1"></span>正在纠错...
+        </div>
+        <div id="aiCorrectError" style="display:none;" class="small text-danger py-1"></div>
+        <div id="aiCorrectResult" style="display:none;">
+            <div id="aiCorrectDiff" class="small" style="max-height:200px; overflow:auto; background:#fff; border:1px solid #ffe58f; border-radius:4px; padding:0.5rem;"></div>
+            <div class="mt-1 text-end">
+                <span class="badge bg-secondary me-1" id="aiCorrectStats"></span>
+                <button class="btn btn-sm btn-outline-warning" onclick="hideAICorrect()">收起</button>
+            </div>
+        </div>
+    </div>
+    <div class="preview-panel-body" id="previewPanelBody">
+        <div class="preview-loading">
+            <div class="spinner-border text-primary" role="status"></div>
+            <p class="mt-2">正在加载预览...</p>
+        </div>
+    </div>
+</div>
+
+<script>
+var _previewCurrentPath = '';
+var _previewCurrentName = '';
+var _previewCurrentType = '';
+var _previewCurrentDownloadUrl = '';
+
+function openPreview(filePath, fileName, fileType, downloadUrl) {
+    _previewCurrentPath = filePath;
+    _previewCurrentName = fileName;
+    _previewCurrentType = fileType;
+    _previewCurrentDownloadUrl = downloadUrl || '';
+    
+    document.getElementById('previewFileName').textContent = fileName;
+    var dlBtn = document.getElementById('previewDownloadBtn');
+    if (downloadUrl) {
+        dlBtn.href = downloadUrl;
+        dlBtn.style.display = '';
+    } else {
+        dlBtn.style.display = 'none';
+    }
+    
+    document.getElementById('previewPanelBody').innerHTML = '<div class="preview-loading"><div class="spinner-border text-primary" role="status"></div><p class="mt-2">正在加载预览...</p></div>';
+    document.getElementById('previewOverlay').classList.add('show');
+    document.getElementById('previewPanel').classList.add('open');
+    
+    // 请求预览内容
+    var url = '/preview/file?path=' + encodeURIComponent(filePath) + '&type=' + fileType + '&name=' + encodeURIComponent(fileName);
+    fetch(url, {credentials: 'same-origin'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.success) {
+                renderPreviewContent(data);
+            } else {
+                document.getElementById('previewPanelBody').innerHTML = '<div class="alert alert-warning m-3"><i class="bi bi-exclamation-triangle"></i> ' + data.message + '</div>';
+            }
+        })
+        .catch(function(err) {
+            document.getElementById('previewPanelBody').innerHTML = '<div class="alert alert-danger m-3"><i class="bi bi-x-circle"></i> 预览加载失败: ' + err + '</div>';
+        });
+}
+
+function closePreview() {
+    document.getElementById('previewOverlay').classList.remove('show');
+    document.getElementById('previewPanel').classList.remove('open');
+}
+
+function renderPreviewContent(data) {
+    var body = document.getElementById('previewPanelBody');
+    
+    if (data.type === 'image') {
+        body.innerHTML = '<img src="' + data.url + '" class="preview-image" alt="图片预览">';
+        return;
+    }
+    
+    if (data.type === 'pdf') {
+        body.innerHTML = '<iframe src="' + data.url + '" class="preview-pdf"></iframe>';
+        return;
+    }
+    
+    if (data.type === 'text') {
+        var content = data.content;
+        if (data.truncated) {
+            content += '\n\n...（文件过大，已截断前200KB内容）';
+        }
+        body.innerHTML = '<pre class="preview-text">' + escapeHtml(content) + '</pre>';
+        return;
+    }
+    
+    if (data.type === 'word') {
+        var html = '<div class="preview-word">';
+        if (data.paragraphs && data.paragraphs.length > 0) {
+            data.paragraphs.forEach(function(p) {
+                html += '<p>' + escapeHtml(p) + '</p>';
+            });
+        }
+        if (data.tables && data.tables.length > 0) {
+            html += '<div class="mt-3"><strong>文档表格：</strong>';
+            data.tables.forEach(function(t, idx) {
+                html += '<table class="table table-bordered table-sm mt-2"><tbody>';
+                t.forEach(function(row) {
+                    html += '<tr>';
+                    row.forEach(function(cell) {
+                        html += '<td>' + escapeHtml(cell) + '</td>';
+                    });
+                    html += '</tr>';
+                });
+                html += '</tbody></table>';
+            });
+            html += '</div>';
+        }
+        html += '</div>';
+        body.innerHTML = html;
+        return;
+    }
+    
+    if (data.type === 'excel') {
+        var html = '<div class="preview-excel">';
+        if (data.sheets && data.sheets.length > 0) {
+            // Sheet切换标签
+            if (data.sheets.length > 1) {
+                html += '<div class="sheet-tabs">';
+                data.sheets.forEach(function(s, i) {
+                    html += '<button class="sheet-tab' + (i === 0 ? ' active' : '') + '" onclick="switchSheet(' + i + ')">' + escapeHtml(s.name) + '</button>';
+                });
+                html += '</div>';
+            }
+            // Sheet内容
+            data.sheets.forEach(function(s, i) {
+                html += '<div class="sheet-content' + (i === 0 ? ' active' : '') + '" id="sheet-' + i + '">';
+                if (s.rows && s.rows.length > 0) {
+                    var maxCols = Math.min(s.rows[0].length, 20); // 最多20列
+                    html += '<table class="table table-bordered table-sm">';
+                    s.rows.forEach(function(row, ri) {
+                        html += '<tr>';
+                        for (var ci = 0; ci < maxCols; ci++) {
+                            html += '<td>' + escapeHtml(row[ci] || '') + '</td>';
+                        }
+                        html += '</tr>';
+                    });
+                    html += '</table>';
+                } else {
+                    html += '<p class="text-muted">空Sheet</p>';
+                }
+                html += '</div>';
+            });
+        }
+        html += '</div>';
+        body.innerHTML = html;
+        return;
+    }
+    
+    body.innerHTML = '<div class="alert alert-info">该文件类型暂不支持预览，请下载后查看。</div>';
+}
+
+function switchSheet(idx) {
+    document.querySelectorAll('.sheet-tab').forEach(function(t, i) {
+        t.classList.toggle('active', i === idx);
+    });
+    document.querySelectorAll('.sheet-content').forEach(function(c, i) {
+        c.classList.toggle('active', i === idx);
+    });
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    var div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+}
+
+// ============ AI 纠错相关 ============
+var _previewCorrectText = '';  // 记住当前预览纯文本，供纠错用
+
+function showAICorrectBtn(text) {
+    // 仅对可纠错的文本文档显示按钮
+    var btn = document.getElementById('aiCorrectBtn');
+    if (btn && text && text.length > 2) {
+        btn.style.display = '';
+        _previewCorrectText = text;
+    } else if (btn) {
+        btn.style.display = 'none';
+    }
+}
+
+function hideAICorrect() {
+    var panel = document.getElementById('aiCorrectPanel');
+    if (panel) panel.style.display = 'none';
+}
+
+function doAICorrect() {
+    if (!_previewCorrectText) {
+        alert('无文本内容可纠错');
+        return;
+    }
+    var panel = document.getElementById('aiCorrectPanel');
+    var loading = document.getElementById('aiCorrectLoading');
+    var errorDiv = document.getElementById('aiCorrectError');
+    var resultDiv = document.getElementById('aiCorrectResult');
+    var diffDiv = document.getElementById('aiCorrectDiff');
+    var statsDiv = document.getElementById('aiCorrectStats');
+
+    if (panel) panel.style.display = 'block';
+    if (loading) loading.style.display = '';
+    if (errorDiv) { errorDiv.style.display = 'none'; errorDiv.textContent = ''; }
+    if (resultDiv) resultDiv.style.display = 'none';
+
+    fetch('/api/correct', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: _previewCorrectText}),
+        credentials: 'same-origin'
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (loading) loading.style.display = 'none';
+        if (data.code === 0) {
+            var corrected = data.data.corrected;
+            var original = _previewCorrectText;
+            if (diffDiv) {
+                diffDiv.innerHTML = '<pre class="mb-0" style="white-space:pre-wrap;word-break:break-all;font-family:inherit;font-size:0.85rem;">' + escapeHtml(corrected) + '</pre>';
+            }
+            if (statsDiv) {
+                if (corrected === original) {
+                    statsDiv.textContent = '未发现问题';
+                    statsDiv.className = 'badge bg-success me-1';
+                } else {
+                    statsDiv.textContent = '已纠错';
+                    statsDiv.className = 'badge bg-warning text-dark me-1';
+                }
+            }
+            if (resultDiv) resultDiv.style.display = '';
+        } else {
+            if (errorDiv) {
+                errorDiv.textContent = data.msg || '纠错失败';
+                errorDiv.style.display = '';
+            }
+        }
+    })
+    .catch(function(err) {
+        if (loading) loading.style.display = 'none';
+        if (errorDiv) {
+            errorDiv.textContent = '请求失败: ' + err;
+            errorDiv.style.display = '';
+        }
+    });
+}
+
+// 安全的 renderPreviewContent 包装（防止递归）
+var _renderPreviewActive = false;
+var _originalRenderPreviewImpl = null;
+
+function installRenderPreviewHook() {
+    if (typeof renderPreviewContent !== 'function') return;
+    if (_originalRenderPreviewImpl) return; // 已安装
+    _originalRenderPreviewImpl = renderPreviewContent;
+
+    window.renderPreviewContent = function(data) {
+        if (_renderPreviewActive) {
+            // 防止重入，直接调用原实现
+            _originalRenderPreviewImpl(data);
+            return;
+        }
+        _renderPreviewActive = true;
+        try {
+            _originalRenderPreviewImpl(data);
+        } finally {
+            _renderPreviewActive = false;
+        }
+        // 渲染完成后检测文本内容，显示 AI 纠错按钮
+        setTimeout(function() {
+            var body = document.getElementById('previewPanelBody');
+            if (!body) return;
+            var pre = body.querySelector('pre.preview-text');
+            if (pre) {
+                showAICorrectBtn(pre.textContent || pre.innerText || '');
+            } else {
+                var paras = body.querySelectorAll('.preview-word p');
+                if (paras.length > 0) {
+                    var text = Array.from(paras).map(function(p) { return p.textContent; }).join('\n');
+                    showAICorrectBtn(text);
+                }
+            }
+        }, 100);
+    };
+}
+
+// 页面加载后安装 hook
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', installRenderPreviewHook);
+} else {
+    installRenderPreviewHook();
+}
+</script>

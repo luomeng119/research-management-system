@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+
+{% block title %}{{ module_title }} - 操作日志{% endblock %}
+
+{% block content %}<div class="row mb-3">
+    <div class="col-md-3">
+        <div class="card bg-primary text-white">
+            <div class="card-body">
+                <h5 class="card-title">操作总数</h5>
+                <h2>{{ logs|length }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-success text-white">
+            <div class="card-body">
+                <h5 class="card-title">添加设备</h5>
+                <h2>{{ logs|selectattr("operation_type", "equalto", "添加设备")|list|length }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-warning text-white">
+            <div class="card-body">
+                <h5 class="card-title">删除设备</h5>
+                <h2>{{ logs|selectattr("operation_type", "equalto", "删除设备")|list|length }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-info text-white">
+            <div class="card-body">
+                <h5 class="card-title">导入文件</h5>
+                <h2>{{ logs|selectattr("operation_type", "equalto", "导入文件")|list|length }}</h2>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<div class="row mb-3">
+    <div class="col-md-4">
+        <select class="form-select" onchange="location.href='?operation_type='+this.value">
+            <option value="">全部操作</option>
+            <option value="添加设备">添加设备</option>
+            <option value="删除设备">删除设备</option>
+            <option value="上传图片">上传图片</option>
+            <option value="上传文件">上传文件</option>
+        </select>
+    </div>
+</div>
+<div class="container-fluid">
+    <h4 class="mb-4">
+        <i class="bi bi-clock-history"></i> {{ module_title }} - 操作日志
+    </h4>
+    
+    <!-- 筛选表单 -->
+    <form method="get" class="row g-3 mb-4">
+        <div class="col-md-3">
+            <input type="text" name="operator" class="form-control" placeholder="操作人" value="{{ request.args.get('operator', '') }}">
+        </div>
+        <div class="col-md-3">
+            <input type="text" name="file_name" class="form-control" placeholder="文件名" value="{{ request.args.get('file_name', '') }}">
+        </div>
+        <div class="col-md-2">
+            <input type="date" name="start_date" class="form-control" value="{{ request.args.get('start_date', '') }}">
+        </div>
+        <div class="col-md-2">
+            <input type="date" name="end_date" class="form-control" value="{{ request.args.get('end_date', '') }}">
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary w-100">
+                <i class="bi bi-search"></i> 筛选
+            </button>
+        </div>
+    </form>
+    
+    <!-- 操作日志列表 -->
+    <div class="card">
+        <div class="card-header">
+            <i class="bi bi-clock-history"></i> 操作日志
+        </div>
+        <div class="card-body">
+            {% if logs %}
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>操作人</th>
+                            <th>操作类型</th>
+                            <th>文件名</th>
+                            <th>详情</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in logs %}
+                        <tr>
+                            <td>{{ log.timestamp }}</td>
+                            <td>{{ log.operator }}</td>
+                            <td>
+                                {% if log.operation_type == '上传文件' %}
+                                <span class="badge bg-success">{{ log.operation_type }}</span>
+                                {% elif log.operation_type == '删除文件' or log.operation_type == '删除设备' %}
+                                <span class="badge bg-danger">{{ log.operation_type }}</span>
+                                {% elif log.operation_type == '添加设备' %}
+                                <span class="badge bg-primary">{{ log.operation_type }}</span>
+                                {% else %}
+                                <span class="badge bg-secondary">{{ log.operation_type }}</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ log.file_name }}</td>
+                            <td>{{ log.detail or '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-muted text-center py-4">暂无操作日志</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

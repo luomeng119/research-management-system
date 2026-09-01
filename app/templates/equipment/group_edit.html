@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+
+{% block title %}设备组详情{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>{{ group.project_name }}</h2>
+        <div>
+            <a href="{{ url_for('equipment_groups.export', group_id=group.group_id) }}" class="btn btn-success">导出Excel</a>
+            <a href="{{ url_for('equipment_groups.index') }}" class="btn btn-outline-secondary">返回</a>
+        </div>
+    </div>
+    
+    <!-- 上栏：已选择设备 -->
+    <div class="card mb-4">
+        <div class="card-header bg-success text-white">
+            <i class="bi bi-check-circle"></i> 已选择设备 ({{ group.members|length }}台)
+        </div>
+        <div class="card-body p-0">
+            {% if group.members %}
+            <div class="table-responsive" style="max-height: 250px; overflow-y: auto;">
+                <table class="table table-hover table-sm mb-0">
+                    <thead class="sticky-top bg-light">
+                        <tr>
+                            <th>序号</th>
+                            <th>设备名称</th>
+                            <th>型号</th>
+                            <th>分类</th>
+                            <th>形态</th>
+                            <th>单价(万元)</th>
+                            <th>技术状态</th>
+                            <th>数量</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for m in group.members %}
+                        <tr>
+                            <td>{{ loop.index }}</td>
+                            <td>{{ m.name }}</td>
+                            <td>{{ m.model }}</td>
+                            <td>{{ m.category }}</td>
+                            <td>{{ m.form }}</td>
+                            <td>{{ m.price }}</td>
+                            <td>{{ m.tech_status }}</td>
+                            <td>{{ m.quantity }}</td>
+                            <td>
+                                <form method="POST" style="display:inline;">
+                                    <input type="hidden" name="action" value="remove">
+                                    <input type="hidden" name="equipment_id" value="{{ m.equipment_id }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">移除</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-muted text-center py-4">暂无设备，请从下方添加</p>
+            {% endif %}
+        </div>
+    </div>
+    
+    <!-- 下栏：设备库列表 -->
+    <div class="card">
+        <div class="card-header">
+            <i class="bi bi-box-seam"></i> 从设备库选择
+        </div>
+        <div class="card-body">
+            <form method="GET" class="row g-3 mb-3">
+                <div class="col-md-3">
+                    <input type="text" name="search" id="searchInput" class="form-control" placeholder="搜索名称/型号" value="{{ request.args.get('search', '') }}">
+                </div>
+                <div class="col-md-2">
+                    <select name="category" id="categorySelect" class="form-select">
+                        <option value="">全部分类</option>
+                        {% for c in categories %}
+                        <option value="{{ c }}" {% if request.args.get('category') == c %}selected{% endif %}>{{ c }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <select name="form" id="formSelect" class="form-select">
+                        <option value="">全部形态</option>
+                        {% for f in forms %}
+                        <option value="{{ f }}" {% if request.args.get('form') == f %}selected{% endif %}>{{ f }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-1">
+                    <button type="button" class="btn btn-primary w-100" onclick="doSearch()">筛选</button>
+                </div>
+                <div class="col-md-2">
+                    <input type="number" name="quantity" class="form-control" value="1" min="1" style="width:80px" title="添加数量">
+                </div>
+                <div class="col-md-2 text-end">
+                    <button type="button" class="btn btn-success" onclick="addSelected()">
+                        <i class="bi bi-plus-circle"></i> 添加选中
+                    </button>
+                </div>
+            </form>
+            
+            <form id="equipmentForm" method="POST">
+                <input type="hidden" name="action" value="add">
+                <input type="hidden" name="equipment_id" id="selectedEquipmentId" value="">
+                <input type="hidden" name="quantity" value="1">
+                <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table table-hover table-sm">
+                        <thead class="sticky-top bg-light">
+                            <tr>
+                                <th width="40"><input type="checkbox" id="checkAll"></th>
+                                <th>设备名称</th>
+                                <th>型号</th>
+                                <th>分类</th>
+                                <th>形态</th>
+                                <th>技术状态</th>
+                                <th>单价(万元)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="equipmentTableBody">
+                            <!-- AJAX加载 -->
+                        </tbody>
+                    </table>
+                </div>
+                <div id="loading" class="text-center py-3" style="display:none;">
+                    <div class="spinner-border text-primary"></div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+let searchTimer = null;
+const groupId = '{{ group.group_id }}';
+
+function doSearch() {
+    loadEquipment();
+}
+
+function loadEquipment() {
+    const q = document.getElementById('searchInput').value;
+    const category = document.getElementById('categorySelect').value;
+    const form = document.getElementById('formSelect').value;
+    
+    const params = new URLSearchParams({api: 'search', q, category, form});
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('equipmentTableBody').innerHTML = '';
+    
+    fetch(`/equipment/groups/edit/${groupId}?${params}`)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('loading').style.display = 'none';
+            const tbody = document.getElementById('equipmentTableBody');
+            if (data.items && data.items.length) {
+                data.items.forEach(e => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td><input type="checkbox" name="equipment_ids" value="${e.equipment_id}" class="equipment-cb"></td>
+                        <td>${e.name || ''}</td>
+                        <td>${e.model || ''}</td>
+                        <td>${e.category || ''}</td>
+                        <td>${e.form || ''}</td>
+                        <td>${e.tech_status || ''}</td>
+                        <td>${e.price || ''}</td>`;
+                    tbody.appendChild(tr);
+                });
+            } else {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-muted text-center">暂无设备数据</td></tr>';
+            }
+        });
+}
+
+// 输入防抖
+document.getElementById('searchInput').addEventListener('input', function() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(doSearch, 300);
+});
+document.getElementById('categorySelect').addEventListener('change', doSearch);
+document.getElementById('formSelect').addEventListener('change', doSearch);
+
+// 全选
+document.getElementById('checkAll').addEventListener('change', function() {
+    document.querySelectorAll('.equipment-cb').forEach(cb => cb.checked = this.checked);
+});
+
+function addSelected() {
+    const checked = document.querySelectorAll('.equipment-cb:checked');
+    if (checked.length === 0) { alert('请先选择设备'); return; }
+    
+    const quantity = document.querySelector('input[name="quantity"]').value || 1;
+    document.querySelector('#equipmentForm input[name="quantity"]').value = quantity;
+    
+    checked.forEach(cb => {
+        document.getElementById('selectedEquipmentId').value = cb.value;
+        document.getElementById('equipmentForm').submit();
+    });
+}
+
+// 初始加载
+loadEquipment();
+</script>
+{% endblock %}

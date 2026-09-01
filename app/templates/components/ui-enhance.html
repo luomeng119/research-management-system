@@ -1,0 +1,154 @@
+# 科研管理系统 UI 增强模板片段
+# 可直接 include 到其他模板中使用
+
+# ===== 1. 空状态组件 =====
+{% block empty_state %}
+<div class="empty-state" id="emptyState">
+    <i class="bi bi-inbox"></i>
+    <h5>暂无数据</h5>
+    <p class="text-muted">没有找到相关内容</p>
+    {% if create_url %}
+    <a href="{{ create_url }}" class="btn btn-primary mt-3">
+        <i class="bi bi-plus-lg"></i> 创建第一个
+    </a>
+    {% endif %}
+</div>
+{% endblock %}
+
+# ===== 2. 加载骨架屏组件 =====
+{% block skeleton_loader %}
+<div class="skeleton-loader">
+    {% for i in range(5) %}
+    <div class="skeleton mb-3" style="height: 60px;"></div>
+    {% endfor %}
+</div>
+{% endblock %}
+
+# ===== 3. 分页增强组件 =====
+{% block enhanced_pagination %}
+{% if total_pages > 1 %}
+<nav aria-label="分页导航">
+    <ul class="pagination justify-content-center">
+        {# 首页 #}
+        <li class="page-item {% if page == 1 %}disabled{% endif %}">
+            <a class="page-link" href="?page=1{{ extra_params }}">&laquo;</a>
+        </li>
+        
+        {# 上一页 #}
+        <li class="page-item {% if page == 1 %}disabled{% endif %}">
+            <a class="page-link" href="?page={{ page - 1 }}{{ extra_params }}">&lsaquo;</a>
+        </li>
+        
+        {# 页码 #}
+        {% for p in range((page - 2)|max(1), (page + 3)|min(total_pages + 1)) %}
+        <li class="page-item {% if p == page %}active{% endif %}">
+            <a class="page-link" href="?page={{ p }}{{ extra_params }}">{{ p }}</a>
+        </li>
+        {% endfor %}
+        
+        {# 下一页 #}
+        <li class="page-item {% if page == total_pages %}disabled{% endif %}">
+            <a class="page-link" href="?page={{ page + 1 }}{{ extra_params }}">&rsaquo;</a>
+        </li>
+        
+        {# 末页 #}
+        <li class="page-item {% if page == total_pages %}disabled{% endif %}">
+            <a class="page-link" href="?page={{ total_pages }}{{ extra_params }}">&raquo;</a>
+        </li>
+    </ul>
+</nav>
+{% endif %}
+{% endblock %}
+
+# ===== 4. 搜索筛选栏组件 =====
+{% block search_bar %}
+<div class="row mb-4">
+    <div class="col-md-8">
+        <div class="input-group">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input type="text" class="form-control" placeholder="搜索..." value="{{ search_keyword|default('') }}">
+            {% if search_keyword %}
+            <button class="btn btn-outline-secondary" type="button" onclick="window.location.href='?page=1'">
+                <i class="bi bi-x-lg"></i>
+            </button>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-md-4">
+        <select class="form-select">
+            <option value="">全部状态</option>
+            <option value="进行中">进行中</option>
+            <option value="已完成">已完成</option>
+            <option value="已暂停">已暂停</option>
+        </select>
+    </div>
+</div>
+{% endblock %}
+
+# ===== 5. 操作日志组件 =====
+{% block operation_logs %}
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-clock-history"></i> 操作日志</h5>
+    </div>
+    <div class="card-body p-0">
+        <ul class="list-group list-group-flush">
+            {% for log in logs|default([]) %}
+            <li class="list-group-item">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <span class="badge bg-{{ 'success' if log.action == 'create' else 'primary' if log.action == 'update' else 'warning' }}">
+                            {{ log.action }}
+                        </span>
+                        <span class="ms-2">{{ log.description }}</span>
+                    </div>
+                    <small class="text-muted">{{ log.time }}</small>
+                </div>
+            </li>
+            {% else %}
+            <li class="list-group-item text-center text-muted">暂无日志</li>
+            {% endfor %}
+        </ul>
+    </div>
+</div>
+{% endblock %}
+
+# ===== 6. 确认对话框组件 =====
+{% block confirm_modal %}
+<div class="modal fade" id="confirmModal" tabindex="-1">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">确认操作</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p id="confirmMessage">确定要执行此操作吗？</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-danger" id="confirmBtn">确认</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+# ===== 7. 详情卡片组件 =====
+{% block detail_card %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-info-circle"></i> 详情信息</h5>
+        <div>
+            {% block card_actions %}{% endblock %}
+        </div>
+    </div>
+    <div class="card-body">
+        <table class="table table-borderless">
+            <tbody>
+                {% block detail_table %}{% endblock %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,704 @@
+{% extends "base.html" %}
+
+{% block title %}报销单据 - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+
+    {# ============ 顶部操作栏 ============ #}
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4 class="mb-0"><i class="bi bi-file-earmark-word text-info"></i> 报销单据</h4>
+        <div class="d-flex gap-2">
+            <a href="/expense/records" class="btn btn-outline-secondary btn-sm">
+                <i class="bi bi-arrow-left"></i> 返回报销项
+            </a>
+            <a href="/expense/documents/templates" class="btn btn-outline-info btn-sm">
+                <i class="bi bi-files"></i> 模板管理
+            </a>
+        </div>
+    </div>
+
+    {# ============ 说明 ============ #}
+    <div class="alert alert-info py-2 mb-3" style="background:rgba(0,123,255,0.1); border:1px solid rgba(0,123,255,0.3);">
+        <i class="bi bi-info-circle"></i> 选择一个报销项进入，新建单据并自动从发票/支付记录填充数据。
+    </div>
+
+    {# ============ 报销项选择 ============ #}
+    <div class="card mb-3" style="background:rgba(255,255,255,0.05); border:1px solid rgba(0,255,255,0.2);">
+        <div class="card-body p-0">
+            <div class="table-responsive" style="max-height:400px; overflow-y:auto;">
+                <table class="table table-hover table-sm mb-0">
+                    <thead style="position:sticky; top:0; background:rgba(30,30,40,0.95); z-index:1;">
+                        <tr>
+                            <th>编号</th>
+                            <th>标题</th>
+                            <th>总金额</th>
+                            <th>状态</th>
+                            <th>发票</th>
+                            <th>支付记录</th>
+                            <th>单据</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="reimbTable">
+                        <tr><td colspan="8" class="text-center text-muted py-3">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    {# ============ 选中报销项后的单据列表 ============ #}
+    <div id="documentsPanel" style="display:none;">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0" id="selectedReimbTitle"></h5>
+            <div class="d-flex gap-2">
+                <button class="btn btn-primary btn-sm" id="btnNewDoc">
+                    <i class="bi bi-plus-circle"></i> 新建单据
+                </button>
+                <button class="btn btn-success btn-sm" id="btnMergePrint">
+                    <i class="bi bi-printer"></i> 汇总打印
+                </button>
+            </div>
+        </div>
+
+        <div class="card" style="background:rgba(255,255,255,0.05); border:1px solid rgba(0,255,255,0.2);">
+            <div class="card-body p-0">
+                <div id="docsList" class="p-2">
+                    <p class="text-muted text-center py-3 mb-0">暂无单据，请点击"新建单据"</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+{# ============ 新建单据模态框 ============ #}
+<div class="modal fade" id="newDocModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content" style="background:#1e3a5f; border:1px solid rgba(0,255,255,0.35); box-shadow: 0 4px 24px rgba(0,0,0,0.4);">
+            <div class="modal-header" style="border-bottom: 1px solid rgba(0,255,255,0.25);">
+                <h5 class="modal-title text-white"><i class="bi bi-file-earmark-plus text-info"></i> 新建单据</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label text-white fw-medium">选择模板</label>
+                    <div class="row g-2" id="templateCards"></div>
+                </div>
+                <div id="selectedTemplateInfo" style="display:none;" class="alert alert-secondary py-2">
+                    <strong class="text-dark" id="selectedTemplateName"></strong>
+                    <p class="mb-0 mt-1 text-muted small" id="selectedTemplateDesc"></p>
+                </div>
+                <div id="fieldsPanel" style="display:none;">
+                    <hr style="border-color: rgba(0,255,255,0.2);">
+                    <div id="autoFillStatus" class="alert alert-warning py-1 mb-2" style="display:none;"></div>
+                    <div id="fieldsContainer" class="row g-2"></div>
+                    <div class="mt-3 d-flex gap-2">
+                        <button class="btn btn-outline-info btn-sm" id="btnAutoFill" type="button">
+                            <i class="bi bi-magic"></i> 自动填充
+                        </button>
+                        <button class="btn btn-primary btn-sm" id="btnSaveDoc" type="button">
+                            <i class="bi bi-check-circle"></i> 保存单据
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ============ 汇总打印模态框 ============ #}
+<div class="modal fade" id="printModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content" style="background:#1e3a5f; border:1px solid rgba(0,255,255,0.35); box-shadow: 0 4px 24px rgba(0,0,0,0.4);">
+            <div class="modal-header" style="border-bottom: 1px solid rgba(0,255,255,0.25);">
+                <h5 class="modal-title text-white"><i class="bi bi-printer text-success"></i> 汇总打印</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body text-white">
+                <p>将生成所选单据的 Word 文档。</p>
+                <div id="printDocsList" class="mb-3"></div>
+                <button class="btn btn-success w-100" id="btnDoPrint">
+                    <i class="bi bi-download"></i> 生成并下载
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let selectedRid = null;
+let selectedRimb = null;
+let templates = [];
+let selectedDocType = null;
+let currentDocs = [];
+let autoFillSuggestions = {};
+
+$(document).ready(function() {
+    loadReimbursements();
+    loadTemplates();
+    // 自动选中报销项（从 records.html 跳转过来时带 project_id 参数）
+    const params = new URLSearchParams(window.location.search);
+    const pid = params.get('project_id');
+    if (pid) {
+        // 等报销项列表加载完成后选中
+        const waitAndSelect = setInterval(() => {
+            const row = document.querySelector(`#reimbTable tr[onclick*="(${pid},"]`);
+            if (row) { clearInterval(waitAndSelect); selectReimbursement(parseInt(pid), row); }
+        }, 200);
+        setTimeout(() => clearInterval(waitAndSelect), 5000);
+    }
+});
+
+// 加载报销项列表
+function loadReimbursements() {
+    fetch('/expense/documents/api/reimbursements', { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (!d.success) return;
+            const rows = d.reimbursements || [];
+            if (!rows.length) {
+                document.getElementById('reimbTable').innerHTML =
+                    '<tr><td colspan="8" class="text-center text-muted py-3">暂无报销项，请先创建</td></tr>';
+                return;
+            }
+            let html = '';
+            rows.forEach(r => {
+                html += `<tr onclick="selectReimbursement(${r.id}, this)" style="cursor:pointer;">
+                    <td><span class="small">${r.reimbursement_no || ''}</span></td>
+                    <td>${r.title || ''}</td>
+                    <td class="text-end">${parseFloat(r.total_amount || 0).toFixed(2)}</td>
+                    <td><span class="badge bg-${statusColor(r.status)}">${r.status || ''}</span></td>
+                    <td class="text-center">${r.invoice_count || 0}</td>
+                    <td class="text-center">${r.payment_count || 0}</td>
+                    <td class="text-center"><span class="badge bg-info">${(r.documents ? JSON.parse(r.documents || '[]').length : 0)}</span></td>
+                    <td>
+                        <button class="btn btn-outline-info btn-sm py-0" onclick="event.stopPropagation(); selectReimbursement(${r.id})">
+                            <i class="bi bi-arrow-right-circle"></i> 选择
+                        </button>
+                    </td>
+                </tr>`;
+            });
+            document.getElementById('reimbTable').innerHTML = html;
+        })
+        .catch(err => {
+            console.error('加载报销项失败:', err);
+            document.getElementById('reimbTable').innerHTML =
+                '<tr><td colspan="8" class="text-center text-danger py-3">加载失败，请刷新重试</td></tr>';
+        });
+}
+
+function statusColor(s) {
+    const m = {'草稿':'secondary','已确认':'primary','已生成文档':'info','已完成':'success','已作废':'danger'};
+    return m[s] || 'secondary';
+}
+
+function selectReimbursement(rid, rowEl) {
+    selectedRid = rid;
+    // 高亮选中行
+    document.querySelectorAll('#reimbTable tr').forEach(r => r.style.background = '');
+    if (rowEl) rowEl.style.background = 'rgba(0,255,255,0.1)';
+
+    // 获取报销项数据
+    fetch(`/expense/documents/api/reimbursements/${rid}`, { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (!d.success) return;
+            selectedRimb = d.reimbursement;
+            document.getElementById('selectedReimbTitle').textContent =
+                `${selectedRimb.reimbursement_no} - ${selectedRimb.title || ''}`;
+            document.getElementById('documentsPanel').style.display = '';
+            loadDocuments(rid);
+        })
+        .catch(err => console.error('加载报销项详情失败:', err));
+}
+
+// 加载单据列表
+function loadDocuments(rid) {
+    fetch(`/expense/documents/api/reimbursements/${rid}/documents`, { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            currentDocs = d.documents || [];
+            renderDocsList(currentDocs);
+        })
+        .catch(err => {
+            console.error('加载单据列表失败:', err);
+        });
+}
+
+function renderDocsList(docs) {
+    if (!docs.length) {
+        document.getElementById('docsList').innerHTML =
+            '<p class="text-muted text-center py-3 mb-0">暂无单据，请点击"新建单据"</p>';
+        return;
+    }
+    let html = '';
+    docs.forEach(doc => {
+        const fields = doc.fields || {};
+        const fieldCount = Object.keys(fields).filter(k => fields[k]).length;
+        html += `<div class="d-flex justify-content-between align-items-center border-bottom border-secondary py-2" style="background:rgba(255,255,255,0.03);">
+            <div>
+                <span class="badge bg-info me-2">${doc.doc_type || ''}</span>
+                <span class="small text-secondary">${doc.filled_by || ''} · ${doc.filled_at || ''}</span>
+                <span class="small text-warning ms-2">${fieldCount} 个字段已填</span>
+            </div>
+            <div class="d-flex gap-1">
+                <a href="/expense/documents/api/reimbursements/${selectedRid}/documents/${doc.id}/download" class="btn btn-outline-success btn-sm py-0">
+                    <i class="bi bi-download"></i> 下载
+                </a>
+                <button class="btn btn-outline-danger btn-sm py-0" onclick="deleteDoc('${doc.id}')">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>
+        </div>`;
+    });
+    document.getElementById('docsList').innerHTML = html;
+}
+
+// 加载模板列表
+function loadTemplates() {
+    fetch('/expense/documents/api/templates', { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            templates = d.templates || [];
+            renderTemplateCards(templates);
+        })
+        .catch(err => {
+            console.error('加载模板列表失败:', err);
+            document.getElementById('templateCards').innerHTML =
+                '<div class="col-12 text-center text-danger py-3">加载失败，请刷新重试</div>';
+        });
+}
+
+function renderTemplateCards(tpls) {
+    let html = '';
+    tpls.forEach(t => {
+        html += `<div class="col-md-6">
+            <div class="card template-card" style="cursor:pointer; background:rgba(255,255,255,0.08); border:1px solid rgba(0,255,255,0.3);"
+                 onclick="selectTemplate('${t.doc_type}', this)">
+                <div class="card-body py-2">
+                    <h6 class="mb-1 text-light"><i class="bi bi-file-earmark-word text-info"></i> ${t.doc_type}</h6>
+                    <small class="text-secondary">v${t.version || '1.0'}</small>
+                </div>
+            </div>
+        </div>`;
+    });
+    document.getElementById('templateCards').innerHTML = html || '<div class="col-12 text-muted">暂无可用模板</div>';
+}
+
+function selectTemplate(docType, cardEl) {
+    selectedDocType = docType;
+    // 高亮
+    document.querySelectorAll('.template-card').forEach(c => c.style.border = '1px solid rgba(0,255,255,0.2)');
+    if (cardEl) cardEl.style.border = '2px solid #0dcaf0';
+
+    const tpl = templates.find(t => t.doc_type === docType);
+    document.getElementById('selectedTemplateName').textContent = docType;
+    document.getElementById('selectedTemplateDesc').textContent = '版本: ' + (tpl?.version || '1.0.0');
+    document.getElementById('selectedTemplateInfo').style.display = '';
+    document.getElementById('fieldsPanel').style.display = '';
+
+    // 加载模板字段
+    loadTemplateFields(docType);
+}
+
+function loadTemplateFields(docType) {
+    fetch(`/expense/documents/api/templates/${encodeURIComponent(docType)}`, { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (!d.success) return;
+            renderFields(d.template.fields || [], {});
+        })
+        .catch(err => console.error('加载模板字段失败:', err));
+}
+
+// 解析 field_id: "T0[3,2]" → {table: 0, row: 3, col: 2}
+function parseFieldId(fid) {
+    const m = fid.match(/^T(\d+)\[(\d+),(\d+)\]$/);
+    if (m) return { table: parseInt(m[1]), row: parseInt(m[2]), col: parseInt(m[3]) };
+    return { table: 0, row: 0, col: 0 };
+}
+
+// 所有badge都不显示
+function sourceBadge(source) {
+    return '';
+}
+
+function renderFields(fields, suggestions) {
+    // suggestions: 可选的预填充数据 { field_id: {value, source} }
+    suggestions = suggestions || {};
+
+    // 按 table 分组
+    const byTable = {};
+    fields.forEach(f => {
+        const { table } = parseFieldId(f.field_id);
+        if (!byTable[table]) byTable[table] = [];
+        byTable[table].push(f);
+    });
+
+    let html = '';
+    Object.keys(byTable).sort((a, b) => a - b).forEach(tblIdx => {
+        const tblFields = byTable[tblIdx];
+        const docType = selectedDocType || '';
+
+        // 科研物资采购申请单：特殊处理（动态行）
+        if (docType.includes('科研物资采购') || docType.includes('采购')) {
+            html += renderPurchaseTemplate(tblFields, suggestions);
+        } else {
+            // 标准 Word 样式表格
+            html += renderStandardTable(tblFields, suggestions);
+        }
+    });
+
+    document.getElementById('fieldsContainer').innerHTML = html;
+    autoFillSuggestions = suggestions;
+}
+
+// 标准 Word 样式表格（差旅费/出差/伙食补助）
+// 修复：每个field独立渲染为label+input pair，不按col<3归类为label-only
+function renderStandardTable(fields, suggestions) {
+    suggestions = suggestions || {};
+    // 按 row 分组
+    const byRow = {};
+    fields.forEach(f => {
+        const { row, col } = parseFieldId(f.field_id);
+        if (!byRow[row]) byRow[row] = [];
+        byRow[row].push({ ...f, col });
+    });
+
+    // 排序：先按 row，再按 col
+    const sortedRows = Object.keys(byRow).sort((a, b) => parseInt(a) - parseInt(b));
+
+    let html = `<div class="mb-3" style="display:flex; flex-direction:column; gap:8px;">`;
+
+    sortedRows.forEach(rowIdx => {
+        const rowFields = byRow[rowIdx].sort((a, b) => a.col - b.col);
+
+        // 每行：每个field都渲染为 label + input pair
+        html += `<div class="d-flex align-items-center flex-wrap" style="gap:12px;">`;
+
+        rowFields.forEach(f => {
+            const sug = suggestions[f.field_id] || {};
+            const prefillValue = sug.value || '';
+            const source = sug.source || f.source || '';
+            const badge = sourceBadge(source);
+            const locked = f.editable === false ? 'readonly' : '';
+            const lockedIcon = f.editable === false ? ' <i class="bi bi-lock text-muted small"></i>' : '';
+
+            // 每个field都独立渲染为 label + input pair（Bug2修复）
+            // label靠左小字灰色，input靠右，带max-width约束（Bug3修复）
+            // 统一样式：高度28px、边框色一致（Bug4修复）
+            const bgStyle = prefillValue ? 'background:rgba(0,255,255,0.08);' : 'background:rgba(255,255,255,0.1);';
+            html += `<div class="d-flex align-items-center gap-2" style="flex:1; min-width:180px; max-width:320px;">`;
+            html += `<label class="mb-0 text-white-50 small fw-normal" style="white-space:nowrap; min-width:70px; font-size:0.78rem;">${f.label}${lockedIcon}</label>`;
+            html += `<div class="d-flex align-items-center gap-1" style="flex:1;">`;
+            html += badge;
+            html += `<input type="text" class="form-control form-control-sm" id="field_${f.field_id}" data-field="${f.field_id}" value="${prefillValue}" ${locked} placeholder="" style="${bgStyle} border:1px solid rgba(255,255,255,0.25); color:#fff; font-size:0.82rem; height:28px; line-height:1; max-width:100%;">`;
+            html += `</div>`;
+            html += `</div>`;
+        });
+
+        html += `</div>`; // end row
+    });
+
+    html += `</div>`;
+    return html;
+}
+
+// 科研物资采购申请单：固定行 + 动态物品行
+function renderPurchaseTemplate(fields, suggestions) {
+    suggestions = suggestions || {};
+
+    // 判断有多少个商品明细 item
+    // 后端返回 item_name_0 → 值可能是数组 ['物品A','物品B']
+    // 找 base_field + _item_N 格式的 suggestions key
+    let maxItemIndex = -1;
+    Object.keys(suggestions).forEach(k => {
+        const m = k.match(/_item_(\d+)$/);
+        if (m) { const idx = parseInt(m[1]); if (idx > maxItemIndex) maxItemIndex = idx; }
+    });
+    // 也检查商品名称数组长度
+    const nameArr = suggestions['T0[3,1]']?.value;
+    if (Array.isArray(nameArr) && nameArr.length > 1 && maxItemIndex < nameArr.length - 1) {
+        maxItemIndex = nameArr.length - 1;
+    }
+    const itemCount = maxItemIndex >= 0 ? maxItemIndex + 1 : 1; // 至少1行
+
+    let html = `<div class="table-responsive mb-3" style="border:1px solid rgba(0,255,255,0.2); border-radius:4px; overflow:hidden;">`;
+    html += `<table class="table table-sm mb-0" style="table-layout:fixed; background:#1e3a5f;" id="itemsTable">`;
+    html += `<tbody>`;
+
+    // 表头行
+    html += `<tr style="background:rgba(0,80,120,0.6);">`;
+    html += `<th style="width:30%; border-color:rgba(0,255,255,0.2); text-align:center; color:#fff; font-size:0.8rem;">物品名称</th>`;
+    html += `<th style="width:20%; border-color:rgba(0,255,255,0.2); text-align:center; color:#fff; font-size:0.8rem;">规格型号</th>`;
+    html += `<th style="width:12%; border-color:rgba(0,255,255,0.2); text-align:center; color:#fff; font-size:0.8rem;">数量</th>`;
+    html += `<th style="width:18%; border-color:rgba(0,255,255,0.2); text-align:center; color:#fff; font-size:0.8rem;">单价</th>`;
+    html += `<th style="width:20%; border-color:rgba(0,255,255,0.2); text-align:center; color:#fff; font-size:0.8rem;">金额</th>`;
+    html += `</tr>`;
+
+    // 物品行（渲染 itemCount 行，从 suggestions 取值）
+    for (let i = 0; i < itemCount; i++) {
+        html += renderPurchaseItemRow(i, suggestions);
+    }
+
+    // 采购原因（跨行）
+    html += `<tr>`;
+    html += `<td colspan="5" style="border-color:rgba(0,255,255,0.1); padding:8px;">`;
+    html += `<div class="d-flex gap-2 align-items-center">`;
+    html += `<label class="form-label small mb-0 text-white fw-bold" style="white-space:nowrap;">采购原因：</label>`;
+    html += `<input type="text" class="form-control form-control-sm" id="field_T0[5,1]" data-field="T0[5,1]" placeholder="请填写采购原因" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; flex:1;">`;
+    html += `</div>`;
+    html += `</td></tr>`;
+
+    // 领导审批 + 审核意见
+    ['T0[10,1]', 'T0[11,1]'].forEach(fid => {
+        const f = fields.find(x => x.field_id === fid);
+        if (!f) return;
+        html += `<tr>`;
+        html += `<td colspan="5" style="border-color:rgba(0,255,255,0.1); padding:6px 8px;">`;
+        html += `<div class="d-flex gap-2 align-items-center">`;
+        html += `<label class="form-label small mb-0 text-white fw-bold" style="white-space:nowrap;">${f.label}：</label>`;
+        html += `<input type="text" class="form-control form-control-sm" id="field_${fid}" data-field="${fid}" placeholder="${f.label}" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; flex:1;">`;
+        html += `</div>`;
+        html += `</td></tr>`;
+    });
+
+    html += `</tbody></table></div>`;
+
+    // 动态行追加信息
+    if (itemCount > 1) {
+        html += `<div class="text-end mb-2">`;
+        html += `<span class="badge bg-info">${itemCount} 个商品已加载</span>`;
+        html += `</div>`;
+    }
+
+    return html;
+}
+
+// 科研物资采购申请单：单个物品行
+// suggestions 中 item_N 数据格式：
+//   - 'T0[3,1]_item_N': {value: '物品名'}（推荐格式）
+//   - 'T0[3,1]': {value: ['物品A','物品B']}（后端返回数组时）
+function renderPurchaseItemRow(itemIndex, suggestions) {
+    const isFirst = itemIndex === 0;
+    const rowBg = isFirst ? '' : 'background:rgba(0,80,120,0.3);';
+
+    // 从 suggestions 取值（兼容两种格式）
+    const getVal = (baseFid, suffix) => {
+        // 优先用 suffix 格式
+        const withSuffix = suggestions[baseFid + suffix];
+        if (withSuffix && withSuffix.value) return withSuffix.value;
+        // 其次用数组格式（baseFid 对应数组的第 itemIndex 项）
+        const base = suggestions[baseFid];
+        if (base && base.value !== undefined) {
+            if (Array.isArray(base.value)) return base.value[itemIndex] || '';
+            if (itemIndex === 0) return base.value;
+        }
+        return '';
+    };
+
+    let html = `<tr class="${isFirst ? 'first-item-row' : 'item-row'}" data-item-index="${itemIndex}" style="${rowBg}">`;
+    // 物品名称
+    html += `<td style="border-color:rgba(0,255,255,0.1); padding:4px 6px;">`;
+    html += `<input type="text" class="form-control form-control-sm" id="field_T0[3,1]_item_${itemIndex}" data-field="T0[3,1]_item_${itemIndex}" value="${getVal('T0[3,1]', '_item_' + itemIndex)}" placeholder="${isFirst ? '物品名称' : ''}" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; font-size:0.8rem;">`;
+    html += `</td>`;
+    // 规格型号
+    html += `<td style="border-color:rgba(0,255,255,0.1); padding:4px 6px;">`;
+    html += `<input type="text" class="form-control form-control-sm" id="field_T0[4,1]_item_${itemIndex}" data-field="T0[4,1]_item_${itemIndex}" value="${getVal('T0[4,1]', '_item_' + itemIndex)}" placeholder="${isFirst ? '规格' : ''}" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; font-size:0.8rem;">`;
+    html += `</td>`;
+    // 数量
+    html += `<td style="border-color:rgba(0,255,255,0.1); padding:4px 6px;">`;
+    html += `<input type="number" class="form-control form-control-sm" id="field_T0[4,3]_item_${itemIndex}" data-field="T0[4,3]_item_${itemIndex}" value="${getVal('T0[4,3]', '_item_' + itemIndex)}" placeholder="${isFirst ? '数量' : ''}" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; font-size:0.8rem;">`;
+    html += `</td>`;
+    // 单价
+    html += `<td style="border-color:rgba(0,255,255,0.1); padding:4px 6px;">`;
+    html += `<input type="number" class="form-control form-control-sm" id="field_T0[4,5]_item_${itemIndex}" data-field="T0[4,5]_item_${itemIndex}" value="${getVal('T0[4,5]', '_item_' + itemIndex)}" placeholder="${isFirst ? '单价' : ''}" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; font-size:0.8rem;">`;
+    html += `</td>`;
+    // 金额
+    html += `<td style="border-color:rgba(0,255,255,0.1); padding:4px 6px;">`;
+    html += `<input type="number" class="form-control form-control-sm" id="field_T0[4,7]_item_${itemIndex}" data-field="T0[4,7]_item_${itemIndex}" value="${getVal('T0[4,7]', '_item_' + itemIndex)}" placeholder="${isFirst ? '金额' : ''}" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; font-size:0.8rem;">`;
+    html += `</td>`;
+    html += `</tr>`;
+    return html;
+}
+
+// 回填单个值到输入框（支持动态 item 行）
+function fillField(fid, value) {
+    const inp = document.getElementById('field_' + fid);
+    if (inp && !inp.readOnly && !inp.value) {
+        inp.value = value || '';
+    }
+}
+
+// OCR 进度显示状态
+let ocrProgressTotal = 0;
+let ocrProgressCurrent = 0;
+
+// 自动填充
+document.getElementById('btnAutoFill').addEventListener('click', function() {
+    if (!selectedRid || !selectedDocType) return;
+    this.disabled = true;
+    this.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 识别中...';
+
+    const statusEl = document.getElementById('autoFillStatus');
+    statusEl.className = 'alert alert-warning py-1 mb-2';
+    statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> 正在连接服务器...';
+    statusEl.style.display = 'block';
+
+    const fields = {};
+    document.querySelectorAll('#fieldsContainer input[data-field]').forEach(inp => {
+        if (inp.value) fields[inp.dataset.field] = inp.value;
+    });
+
+    fetch(`/expense/documents/api/reimbursements/${selectedRid}/documents/auto_fill`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        credentials: 'include',
+        body: JSON.stringify({ doc_type: selectedDocType, fields: fields })
+    })
+    .then(r => r.json())
+    .then(d => {
+        this.disabled = false;
+        this.innerHTML = '<i class="bi bi-magic"></i> 自动填充';
+        if (!d.success) {
+            statusEl.className = 'alert alert-danger py-1 mb-2';
+            statusEl.innerHTML = '<i class="bi bi-x-circle"></i> 填充失败: ' + (d.error || '未知错误');
+            return;
+        }
+        autoFillSuggestions = d.suggestions || {};
+
+        // OCR 进度信息
+        const invCount = d.available_invoices?.length || 0;
+        const payCount = d.available_payments?.length || 0;
+        statusEl.className = 'alert alert-success py-1 mb-2';
+        statusEl.innerHTML = `<i class="bi bi-check-circle"></i> 已识别 ${invCount} 张发票、${payCount} 条支付记录`;
+        statusEl.style.display = 'block';
+
+        // 重新渲染字段（传入 suggestions 以便动态行展开）
+        const tpl = templates.find(t => t.doc_type === selectedDocType);
+        if (tpl) {
+            fetch(`/expense/documents/api/templates/${encodeURIComponent(selectedDocType)}`, { credentials: 'include' })
+                .then(r => r.json())
+                .then(tplData => {
+                    if (tplData.success) {
+                        // 保存当前输入值（防止被覆盖）
+                        const savedValues = {};
+                        document.querySelectorAll('#fieldsContainer input[data-field]').forEach(inp => {
+                            savedValues[inp.dataset.field] = inp.value;
+                        });
+                        // 用 suggestions 重新渲染（包含动态行，renderPurchaseItemRow 直接设 value）
+                        renderFields(tplData.template.fields || [], autoFillSuggestions);
+                        // 恢复用户已输入的值（OCR 不覆盖）
+                        Object.entries(savedValues).forEach(([fid, val]) => {
+                            const inp = document.getElementById('field_' + fid);
+                            if (inp && inp.value === '' && val) inp.value = val;
+                        });
+                    }
+                });
+        }
+    })
+    .catch(err => {
+        this.disabled = false;
+        this.innerHTML = '<i class="bi bi-magic"></i> 自动填充';
+        statusEl.className = 'alert alert-danger py-1 mb-2';
+        statusEl.innerHTML = '<i class="bi bi-x-circle"></i> 网络错误: ' + err.message;
+        statusEl.style.display = 'block';
+    });
+});
+
+// 保存单据
+document.getElementById('btnSaveDoc').addEventListener('click', function() {
+    if (!selectedRid || !selectedDocType) return;
+    this.disabled = true;
+    const fields = {};
+    document.querySelectorAll('#fieldsContainer input[data-field]').forEach(inp => {
+        const fid = inp.dataset.field;
+        // 动态 item 行字段规范化：T0[x,y]_item_N → T0[x,y] (存为数组，只取单值简化)
+        // 多商品时仅保存第一个商品，后续可通过编辑多商品解决
+        const m = fid.match(/^(T\d+\[\d+,\d+\])_item_\d+$/);
+        if (m) {
+            const base = m[1]; // e.g. T0[3,1]
+            // 只存第一个 item（item_0）的值，多商品时覆盖即可
+            if (!fields[base] || fid.endsWith('_item_0')) {
+                fields[base] = inp.value;
+            }
+        } else {
+            fields[fid] = inp.value;
+        }
+    });
+    fetch(`/expense/documents/api/reimbursements/${selectedRid}/documents`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        credentials: 'include',
+        body: JSON.stringify({ template_id: selectedDocType, doc_type: selectedDocType, fields: fields })
+    })
+    .then(r => r.json())
+    .then(d => {
+        this.disabled = false;
+        if (!d.success) { alert('保存失败: ' + d.error); return; }
+        alert('保存成功');
+        loadDocuments(selectedRid);
+        loadReimbursements(); // 更新单据计数
+    })
+    .catch(() => { this.disabled = false; });
+});
+
+function deleteDoc(docId) {
+    if (!confirm('确认删除此单据？')) return;
+    fetch(`/expense/documents/api/reimbursements/${selectedRid}/documents/${docId}`, {
+        method: 'DELETE', credentials: 'include'
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (!d.success) { alert('删除失败'); return; }
+        loadDocuments(selectedRid);
+        loadReimbursements();
+    });
+}
+
+// 汇总打印
+document.getElementById('btnMergePrint').addEventListener('click', function() {
+    if (!currentDocs.length) { alert('没有可打印的单据'); return; }
+    let html = '';
+    currentDocs.forEach((doc, i) => {
+        html += `<div class="form-check">
+            <input class="form-check-input" type="checkbox" id="printDoc${i}" value="${doc.id}" checked>
+            <label class="form-check-label" for="printDoc${i}">${doc.doc_type} (${doc.filled_at || ''})</label>
+        </div>`;
+    });
+    document.getElementById('printDocsList').innerHTML = html;
+    new bootstrap.Modal(document.getElementById('printModal')).show();
+});
+
+document.getElementById('btnDoPrint').addEventListener('click', function() {
+    const checked = Array.from(document.querySelectorAll('#printDocsList input:checked')).map(inp => inp.value);
+    if (!checked.length) { alert('请至少选择一个单据'); return; }
+    // 动态创建表单用POST提交，触发文件下载
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `/expense/documents/api/reimbursements/${selectedRid}/documents/merge_print`;
+    form.style.display = 'none';
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'doc_ids';
+    input.value = checked.join(',');
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
+});
+
+// 新建单据按钮
+document.getElementById('btnNewDoc').addEventListener('click', function() {
+    if (!selectedRid) { alert('请先选择一个报销项'); return; }
+    selectedDocType = null;
+    document.querySelectorAll('.template-card').forEach(c => c.style.border = '1px solid rgba(0,255,255,0.2)');
+    document.getElementById('selectedTemplateInfo').style.display = 'none';
+    document.getElementById('fieldsPanel').style.display = 'none';
+    document.getElementById('fieldsContainer').innerHTML = '';
+    new bootstrap.Modal(document.getElementById('newDocModal')).show();
+});
+</script>
+{% endblock %}

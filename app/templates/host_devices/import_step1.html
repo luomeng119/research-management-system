@@ -1,0 +1,255 @@
+{% extends "base.html" %}
+
+{% block title %}宿主设备库 - 导入（步骤1/3）{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>宿主设备库 - 导入（步骤1/3：列映射）</h4>
+        <a href="{{ url_for('host_devices.index') }}" class="btn btn-outline-secondary btn-sm">← 返回列表</a>
+    </div>
+
+    <!-- 第一步：上传文件，解析后显示预览+映射 -->
+    <form id="uploadForm" method="post" enctype="multipart/form-data">
+        <div class="card mb-3">
+            <div class="card-body">
+                <div id="dropZone" onclick="document.getElementById('fileInput').click()"
+                     style="border:2px dashed #ccc; border-radius:8px; padding:40px; text-align:center; cursor:pointer; background:#fafafa;">
+                    <i class="bi bi-cloud-upload" style="font-size:48px; color:#aaa;"></i>
+                    <p style="margin:10px 0 5px; color:#666;">拖拽 xlsx 文件到此处 或 <a href="#" style="color:#0d6efd;">点击选择</a></p>
+                    <p style="margin:0; color:#999; font-size:12px;">支持 .xlsx 文件</p>
+                    <input type="file" id="fileInput" name="file" accept=".xlsx,.xls" style="display:none"
+                           onchange="onFileSelected(this)">
+                </div>
+                <div id="fileInfo" style="margin-top:10px; display:none;" class="text-muted">
+                    <i class="bi bi-file-earmark-excel"></i> <span id="selectedFileName"></span>
+                    <span id="fileSize" class="ms-2"></span>
+                </div>
+                <div id="uploadError" class="alert alert-danger mt-2" style="display:none;"></div>
+            </div>
+        </div>
+
+        <!-- 列映射区（选择文件后显示） -->
+        <div class="card" id="mappingCard" style="display:none;">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <strong>列映射</strong>
+                    <span style="color:#888; font-size:13px; margin-left:10px;">请为每列选择对应字段（<span style="color:#f5222d;">★关联字段必须指定</span>）</span>
+                </div>
+                <div id="mappingTip" style="font-size:12px; color:#888;"></div>
+            </div>
+            <div class="card-body">
+                <div style="overflow-x:auto;">
+                    <table class="table table-bordered table-sm" style="margin:0; white-space:nowrap;">
+                        <thead id="mappingHead"></thead>
+                        <tbody id="mappingBody"></tbody>
+                    </table>
+                </div>
+                <div id="unmappedWarning" class="mt-2" style="font-size:13px;"></div>
+                <div class="mt-3 text-end">
+                    <button type="submit" class="btn btn-primary" id="nextBtn" disabled>
+                        下一步: 匹配预览 →
+                    </button>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>
+
+<script>
+// 字段选项
+const FIELD_OPTIONS = [
+    {group: '主字段', fields: [
+        {value: 'host_id', label: '宿主设备编号'},
+        {value: 'name', label: '名称'},
+        {value: 'model', label: '型号'},
+        {value: 'category', label: '类型'},
+        {value: 'form', label: '形态'},
+    ]},
+    {group: '关联字段', fields: [
+        {value: 'related_equipment', label: '关联密码设备 ★'},
+    ]},
+    {group: '跳过', fields: [
+        {value: '_skip_', label: '跳过此列'},
+    ]},
+];
+
+// 自动映射规则
+const AUTO_MAP = {
+    '宿主设备编号': 'host_id', '编号': 'host_id', 'host_id': 'host_id',
+    '名称': 'name', '设备名称': 'name', '宿主设备名称': 'name',
+    '型号': 'model', '设备型号': 'model',
+    '类型': 'category', '设备类型': 'category', '宿主设备类型': 'category',
+    '形态': 'form', '设备形态': 'form',
+    '关联密码设备': 'related_equipment', '关联设备': 'related_equipment',
+    '关联设备名称': 'related_equipment', '关联设备ID': 'related_equipment',
+};
+
+let previewData = null;  // 存储预览数据（header + 前3行原始数据）
+
+function onFileSelected(input) {
+    const file = input.files[0];
+    if (!file) return;
+    document.getElementById('selectedFileName').textContent = file.name;
+    document.getElementById('fileSize').textContent = (file.size / 1024).toFixed(1) + ' KB';
+    document.getElementById('fileInfo').style.display = 'block';
+
+    // 立即读取文件用于预览
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        parseAndShowMapping(e.target.result, file.name);
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+function parseAndShowMapping(arrayBuffer, fileName) {
+    // 用 openpyxl via fetch 上传文件获取预览数据
+    const formData = new FormData();
+    const blob = new Blob([arrayBuffer]);
+    formData.append('file', blob, fileName);
+    formData.append('preview_only', '1');
+
+    fetch('{{ url_for("host_devices.import_preview") }}', {
+        method: 'POST',
+        body: formData,
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            previewData = data;
+            renderMappingTable(data.headers, data.preview_rows);
+            document.getElementById('mappingCard').style.display = 'block';
+        } else {
+            showError(data.message || '解析失败');
+        }
+    })
+    .catch(err => showError('网络错误: ' + err.message));
+}
+
+function renderMappingTable(headers, previewRows) {
+    const thead = document.getElementById('mappingHead');
+    const tbody = document.getElementById('mappingBody');
+
+    // 生成表头行（下拉选择）
+    let headerHtml = '<tr>';
+    headers.forEach((h, colIdx) => {
+        const autoSelected = AUTO_MAP[h] || '';
+        let optionsHtml = '';
+        FIELD_OPTIONS.forEach(group => {
+            optionsHtml += `<optgroup label="${group.group}">`;
+            group.fields.forEach(f => {
+                const selected = autoSelected === f.value ? 'selected' : '';
+                optionsHtml += `<option value="${f.value}" ${selected}>${f.label}</option>`;
+            });
+            optionsHtml += '</optgroup>';
+        });
+        headerHtml += `<th style="min-width:120px;">
+            <select class="form-select form-select-sm col-map-select" data-col="${colIdx}"
+                    onchange="onMappingChange()">${optionsHtml}</select>
+            <div class="mapping-original" style="font-size:11px; color:#888; margin-top:4px; max-width:150px; overflow:hidden; text-overflow:ellipsis;">${h || '(空)'}</div>
+        </th>`;
+    });
+    headerHtml += '</tr>';
+    thead.innerHTML = headerHtml;
+
+    // 生成数据预览行（前3行）
+    let bodyHtml = '';
+    previewRows.slice(0, 3).forEach((row, rowIdx) => {
+        bodyHtml += '<tr>';
+        row.forEach((cell, colIdx) => {
+            bodyHtml += `<td style="max-width:150px; overflow:hidden; text-overflow:ellipsis;">${cell || ''}</td>`;
+        });
+        bodyHtml += '</tr>';
+    });
+    tbody.innerHTML = bodyHtml;
+
+    onMappingChange();
+}
+
+function onMappingChange() {
+    // 检查关联字段是否已指定
+    const selects = document.querySelectorAll('.col-map-select');
+    let relatedSpecified = false;
+    let unmappedCount = 0;
+    const mappedFields = new Set();
+
+    selects.forEach(sel => {
+        const val = sel.value;
+        if (val && val !== '_skip_') {
+            mappedFields.add(val);
+        }
+        if (val === 'related_equipment') {
+            relatedSpecified = true;
+        }
+    });
+
+    // 检查是否有列未映射
+    selects.forEach(sel => {
+        if (!sel.value || sel.value === '_skip_') unmappedCount++;
+    });
+
+    const tip = document.getElementById('mappingTip');
+    if (!relatedSpecified) {
+        tip.innerHTML = '<span style="color:#fa8c16;">⚠ 关联字段未指定，该列将不参与关联匹配</span>';
+    } else {
+        tip.innerHTML = '<span style="color:#52c41a;">✓ 关联字段已指定</span>';
+    }
+
+    const warning = document.getElementById('unmappedWarning');
+    if (unmappedCount > 0) {
+        warning.innerHTML = `⚠ 有 ${unmappedCount} 列未映射（将忽略，不影响导入）`;
+        warning.style.color = '#fa8c16';
+    } else {
+        warning.innerHTML = '';
+    }
+
+    document.getElementById('nextBtn').disabled = false;
+}
+
+function showError(msg) {
+    const el = document.getElementById('uploadError');
+    el.textContent = msg;
+    el.style.display = 'block';
+}
+
+// 提交时：构建 column_mapping_json 一起提交
+document.getElementById('uploadForm').onsubmit = function(e) {
+    e.preventDefault();
+
+    // 收集列映射
+    const selects = document.querySelectorAll('.col-map-select');
+    const mapping = {};
+    selects.forEach(sel => {
+        if (sel.value && sel.value !== '_skip_') {
+            mapping[sel.value] = parseInt(sel.dataset.col);
+        }
+    });
+
+    // 重新上传文件 + 列映射
+    const fileInput = document.getElementById('fileInput');
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('column_mapping_json', JSON.stringify(mapping));
+
+    fetch('{{ url_for("host_devices.import_preview") }}', {
+        method: 'POST',
+        body: formData,
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            window.location.href = data.redirect;
+        } else {
+            showError(data.message || '解析失败');
+        }
+    })
+    .catch(err => showError('网络错误: ' + err.message));
+};
+</script>
+
+<style>
+.upload-zone:hover { background:#f0f7ff !important; border-color:#0d6efd !important; }
+.col-map-select { min-width: 130px; }
+.mapping-original { word-break: break-all; }
+</style>
+{% endblock %}

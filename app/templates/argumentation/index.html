@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+
+{% block title %}方案论证 - {{ category_name }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    .project-card {
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .project-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .template-badge {
+        font-size: 0.75rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h4>{{ category_name }} - 方案论证</h4>
+        <div>
+            {% if template %}
+            <button class="btn btn-sm btn-outline-warning" data-bs-toggle="modal" data-bs-target="#templateModal">
+                <i class="bi bi-layout-text-sidebar-reverse"></i> 模板编辑
+            </button>
+            {% endif %}
+            <a href="{{ url_for('argumentation.index', category='research') }}" class="btn btn-sm btn-outline-primary {% if category == 'research' %}active{% endif %}">科研项目</a>
+            <a href="{{ url_for('argumentation.index', category='crypto') }}" class="btn btn-sm btn-outline-primary {% if category == 'crypto' %}active{% endif %}">密码项目</a>
+            <a href="{{ url_for('argumentation.index', category='security') }}" class="btn btn-sm btn-outline-primary {% if category == 'security' %}active{% endif %}">安全项目</a>
+        </div>
+    </div>
+    
+    {% if not projects %}
+    <div class="alert alert-info">
+        <i class="bi bi-info-circle"></i> 暂无{{ category_name }}，请先创建项目。
+        <a href="{{ url_for('projects.add') }}">创建项目</a>
+    </div>
+    {% else %}
+    
+    {% if not template %}
+    <div class="alert alert-warning">
+        <i class="bi bi-exclamation-triangle"></i> 尚未配置{{ category_name }}的论证模板，请先
+        <a href="#" onclick="showTemplateModal()">配置模板</a>
+    </div>
+    {% endif %}
+    
+    <div class="row">
+        {% for p in projects %}
+        <div class="col-md-6 col-lg-4 mb-3">
+            <div class="card project-card h-100">
+                <div class="card-body">
+                    <h5 class="card-title">{{ p['name'] }}</h5>
+                    <p class="card-text text-muted">
+                        <small>
+                            <i class="bi bi-person"></i> {{ p['leader'] or '未指定' }}<br>
+                            <i class="bi bi-calendar"></i> {{ p['start_date'] or '未指定' }}
+                        </small>
+                    </p>
+                </div>
+                <div class="card-footer bg-transparent">
+                    <a href="{{ url_for('argumentation.edit', category=category, project_id=p['project_id']) }}" 
+                       class="btn btn-primary btn-sm">
+                        <i class="bi bi-pencil-square"></i> 方案论证
+                    </a>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- 模板配置弹窗 -->
+<div class="modal" id="templateModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">配置{{ category_name }}论证模板</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <ul class="nav nav-tabs" role="tablist">
+                    <li class="nav-item">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#chapterTree">
+                            章节结构
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#uploadTemplate">
+                            上传模板
+                        </button>
+                    </li>
+                </ul>
+                <div class="tab-content mt-3">
+                    <div class="tab-pane fade show active" id="chapterTree">
+                        <div id="chapterEditor"></div>
+                    </div>
+                    <div class="tab-pane fade" id="uploadTemplate">
+                        <form id="uploadForm">
+                            <div class="mb-3">
+                                <label class="form-label">模板名称</label>
+                                <input type="text" name="name" class="form-control" placeholder="请输入模板名称">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">选择Word模板</label>
+                                <input type="file" name="file" class="form-control" accept=".docx">
+                            </div>
+                            <button type="submit" class="btn btn-primary">上传</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" onclick="saveChapterTree()">保存模板</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+var templateData = {{ template.chapter_tree | safe if template else '{}' }};
+
+function showTemplateModal() {
+    var modal = new bootstrap.Modal(document.getElementById('templateModal'));
+    modal.show();
+    renderChapterTree();
+}
+
+function renderChapterTree() {
+    var container = document.getElementById('chapterEditor');
+    var chapters = templateData.chapters || [];
+    
+    var html = '<div class="alert alert-info">点击"保存模板"后，将使用此章节结构生成论证页面</div>';
+    html += '<ul class="list-group">';
+    
+    chapters.forEach(function(ch, idx) {
+        html += '<li class="list-group-item">';
+        html += '<strong>' + ch.title + '</strong>';
+        if (ch.type === 'device_ref') {
+            html += ' <span class="badge bg-info">设备引用</span>';
+        } else if (ch.type === 'device_list') {
+            html += ' <span class="badge bg-success">设备清单</span>';
+        }
+        
+        if (ch.children && ch.children.length > 0) {
+            html += '<ul class="list-group mt-2">';
+            ch.children.forEach(function(sub) {
+                html += '<li class="list-group-item py-1">';
+                html += '<small>' + sub.title + '</small>';
+                if (sub.type === 'device_ref') {
+                    html += ' <span class="badge bg-info badge-sm">设备引用</span>';
+                }
+                html += '</li>';
+            });
+            html += '</ul>';
+        }
+        html += '</li>';
+    });
+    
+    html += '</ul>';
+    container.innerHTML = html;
+}
+
+function saveChapterTree() {
+    fetch('/argumentation/template/edit', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            category: '{{ category }}',
+            chapter_tree: JSON.stringify(templateData)
+        })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        alert(data.message);
+        if (data.success) location.reload();
+    });
+}
+
+document.getElementById('uploadForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var formData = new FormData(this);
+    formData.append('category', '{{ category }}');
+    
+    fetch('/argumentation/template/upload', {
+        method: 'POST',
+        body: formData
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        alert(data.message);
+        if (data.success) location.reload();
+    });
+});
+</script>
+{% endblock %}

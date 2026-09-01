@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% include "components/preview_panel.html" %}
+{% include "components/list_preview_helper.html" %}
+
+{% block title %}审批单台账 - 报销助手 - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+    <div class="d-flex align-items-center mb-3">
+        <a href="/expense" class="btn btn-outline-secondary btn-sm me-3">返回</a>
+        <h2 class="mb-0"><i class="bi bi-file-earmark-word text-primary"></i> 审批单台账</h2>
+    </div>
+
+    <div class="alert alert-info mb-3">
+        <i class="bi bi-info-circle"></i>
+        结算单和审批单由系统在报销项确认后自动生成。
+        请在「<a href="/expense/records" class="alert-link">报销项列表</a>」中确认报销项后点击「生成文档」。
+    </div>
+
+    <!-- 状态统计 -->
+    <div class="row g-3 mb-4">
+        <div class="col-md-3">
+            <div class="card text-center" style="background:rgba(255,193,7,0.1); border:1px solid rgba(255,193,7,0.3);">
+                <div class="card-body py-3">
+                    <div class="text-warning fs-4 fw-bold" id="count-draft">-</div>
+                    <div class="text-muted small">草稿</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center" style="background:rgba(0,188,212,0.1); border:1px solid rgba(0,188,212,0.3);">
+                <div class="card-body py-3">
+                    <div class="text-info fs-4 fw-bold" id="count-confirmed">-</div>
+                    <div class="text-muted small">已确认</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center" style="background:rgba(76,175,80,0.1); border:1px solid rgba(76,175,80,0.3);">
+                <div class="card-body py-3">
+                    <div class="text-success fs-4 fw-bold" id="count-generated">-</div>
+                    <div class="text-muted small">已生成文档</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center" style="background:rgba(13,71,161,0.2); border:1px solid rgba(13,71,161,0.4);">
+                <div class="card-body py-3">
+                    <div class="text-primary fs-4 fw-bold" id="count-completed">-</div>
+                    <div class="text-muted small">已完成</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 列表 -->
+    <div class="card">
+        <div class="card-body p-0">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>编号</th>
+                        <th>标题</th>
+                        <th>总金额</th>
+                        <th>发票数</th>
+                        <th>支付记录</th>
+                        <th>状态</th>
+                        <th>时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="recordsBody">
+                    <tr><td colspan="8" class="text-center text-muted py-5">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function escapeHtml(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function loadRecords() {
+    fetch('/expense/api/reimbursements', { credentials: 'include' })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) return;
+            const list = data.reimbursements || [];
+            const counts = { '草稿': 0, '已确认': 0, '已生成文档': 0, '已完成': 0 };
+            list.forEach(r => { if (counts[r.status] !== undefined) counts[r.status]++; });
+
+            document.getElementById('count-draft').textContent = counts['草稿'];
+            document.getElementById('count-confirmed').textContent = counts['已确认'];
+            document.getElementById('count-generated').textContent = counts['已生成文档'];
+            document.getElementById('count-completed').textContent = counts['已完成'];
+
+            const tbody = document.getElementById('recordsBody');
+            if (!list.length) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-5">暂无报销项</td></tr>';
+                return;
+            }
+            tbody.innerHTML = list.map(r => `
+                <tr class="list-row-hover" onmouseenter="showDetailPopup(${JSON.stringify(r).replace(/"/g, '&quot;')}, event)" onmousemove="showDetailPopup(${JSON.stringify(r).replace(/"/g, '&quot;')}, event)" onmouseleave="hideDetailPopup()" style="cursor:pointer;">
+                    <td><small>${r.reimbursement_no || '-'}</small></td>
+                    <td>${escapeHtml(r.title || '-')}</td>
+                    <td class="text-warning fw-bold">¥${(r.total_amount||0).toFixed(2)}</td>
+                    <td>${r.invoice_count || 0}</td>
+                    <td>${r.payment_count || 0}</td>
+                    <td><span class="badge bg-${r.status==='已确认'?'success':r.status==='已生成文档'?'info':r.status==='已完成'?'primary':'warning'}">${r.status}</span></td>
+                    <td><small>${r.created_at ? r.created_at.slice(0,16) : '-'}</small></td>
+                    <td>
+                        <a href="/expense/records" class="btn btn-sm btn-outline-info">详情</a>
+                    </td>
+                </tr>`).join('');
+        })
+        .catch(err => { console.error('loadRecords失败:', err); });
+}
+
+loadRecords();
+</script>
+{% endblock %}

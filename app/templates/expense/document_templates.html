@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block title %}模板管理 - 报销单据 - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4 class="mb-0"><i class="bi bi-files text-info"></i> 报销单据模板</h4>
+        <a href="/expense/documents/" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i> 返回单据管理
+        </a>
+    </div>
+
+    <p class="text-muted small mb-3">
+        <i class="bi bi-info-circle"></i> 以下模板文件存储在 <code>app/document_templates/</code> 目录。
+        管理员可查看模板结构，不可编辑。如需修改模板请编辑对应目录下的 <code>template.json</code> 文件。
+    </p>
+
+    <div id="templateList" class="row g-3">
+        <div class="text-center text-muted py-5">加载中...</div>
+    </div>
+
+</div>
+
+<script>
+const templateDescs = {
+    '差旅费报销凭证': '用于报销出差期间的城市间交通费、住宿费、市内交通费等。发票数据可自动从关联的发票/支付记录填充。',
+    '因公出差审批单': '用于在出差前提交出差申请，列明出差事由、目的地、出行方式、人员信息。',
+    '伙食补助费申报表': '用于申报出差途中的伙食补助，按天计算，自动从出差日期推算天数。',
+    '科研物资采购申请单': '用于在采购科研物资前提交采购申请，列明物品名称、规格、数量、单价、金额。'
+};
+
+$(document).ready(function() {
+    loadTemplates();
+});
+
+function loadTemplates() {
+    fetch('/expense/documents/api/templates', { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (!d.success || !d.templates.length) {
+                document.getElementById('templateList').innerHTML =
+                    '<div class="col-12 text-center text-muted py-5">暂无可用模板</div>';
+                return;
+            }
+            let html = '';
+            d.templates.forEach(t => {
+                const desc = templateDescs[t.doc_type] || '暂无描述';
+                html += `<div class="col-md-6 col-lg-4">
+                    <div class="card h-100" style="background:rgba(255,255,255,0.05); border:1px solid rgba(0,255,255,0.2);">
+                        <div class="card-body">
+                            <h5 class="card-title"><i class="bi bi-file-earmark-word text-info"></i> ${t.doc_type}</h5>
+                            <p class="card-text text-white-50 small">${desc}</p>
+                            <div class="d-flex gap-2 mt-2">
+                                <button class="btn btn-outline-info btn-sm" onclick="showPreview('${t.doc_type}')">
+                                    <i class="bi bi-eye"></i> 预览字段
+                                </button>
+                                <span class="badge bg-secondary align-self-center">v${t.version || '1.0'}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+            });
+            document.getElementById('templateList').innerHTML = html;
+        })
+        .catch(err => {
+            console.error('加载模板失败:', err);
+            document.getElementById('templateList').innerHTML =
+                '<div class="col-12 text-center text-danger py-5">加载失败，请刷新重试</div>';
+        });
+}
+
+function showPreview(docType) {
+    fetch(`/expense/documents/api/templates/${encodeURIComponent(docType)}/preview`, { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (!d.success) { alert('预览失败: ' + d.error); return; }
+            const rows = d.preview || [];
+            if (!rows.length) { alert('无法预览此模板'); return; }
+            let html = '<table class="table table-sm table-bordered mb-0" style="font-size:12px;">';
+            html += '<thead><tr><th>行列</th><th>字段ID</th><th>内容预览</th></tr></thead><tbody>';
+            rows.slice(0, 30).forEach(r => {
+                html += `<tr><td>R${r.row} C${r.col}</td><td><code>${r.field_id}</code></td><td>${r.text}</td></tr>`;
+            });
+            html += '</tbody></table>';
+            const modal = new bootstrap.Modal(document.getElementById('previewModal'));
+            document.getElementById('previewModalBody').innerHTML = html;
+            modal.show();
+        })
+        .catch(err => {
+            console.error('预览失败:', err);
+            alert('预览加载失败，请重试');
+        });
+}
+</script>
+
+{# ============ 预览模态框 ============ #}
+<div class="modal fade" id="previewModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content" style="background:#1a1a2e; border:1px solid rgba(0,255,255,0.2);">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-eye text-info"></i> 模板字段预览</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="previewModalBody" style="max-height:70vh; overflow-y:auto;"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}

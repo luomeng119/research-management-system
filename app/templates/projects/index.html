@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+
+{% block title %}{{ project_type|default('科研项目') }} - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>{{ project_type_display|default(project_type) }}</h2>
+        <div>
+            {% if project_type in visible_directories or 'projects' in visible_directories or project_type == 'security_projects' or project_type == 'crypto_projects' %}
+            {% if project_type == 'security_projects' %}
+            <a href="{{ url_for('security_projects.add') }}" class="btn btn-primary">
+            {% elif project_type == 'crypto_projects' %}
+            <a href="{{ url_for('crypto_projects.add') }}" class="btn btn-primary">
+            {% else %}
+            <a href="{{ url_for('projects.add') }}" class="btn btn-primary">
+            {% endif %}
+                <i class="bi bi-plus-circle"></i> 新建项目
+            </a>
+            {% endif %}
+            <button type="button" class="btn btn-success" onclick="batchExportProjects()">
+                <i class="bi bi-file-zip"></i> 批量导出
+            </button>
+        </div>
+    </div>
+    <!-- 搜索框：即时响应 oninput -->
+    <form onsubmit="return false" class="mb-3">
+        <div class="row">
+            <div class="col-md-4">
+                <input type="text" id="searchInput" name="search" class="form-control" placeholder="搜索项目编号、名称、负责人" value="{{ search_keyword }}" oninput="instantSearch()">
+            </div>
+        </div>
+    </form>
+
+    <!-- 状态筛选（即时切换） -->
+    <input type="hidden" id="statusFilter" value="{{ status_filter }}">
+    <div class="mb-2">
+        <button class="btn btn-sm{{ ' btn-primary' if not status_filter else ' btn-outline-secondary' }}" onclick="setStatus('')">全部</button>
+        <button class="btn btn-sm{{ ' btn-primary' if status_filter == '任务下达' else ' btn-outline-secondary' }}" onclick="setStatus('任务下达')">任务下达</button>
+        <button class="btn btn-sm{{ ' btn-primary' if status_filter == '通过院内评审' else ' btn-outline-secondary' }}" onclick="setStatus('通过院内评审')">通过院内评审</button>
+        <button class="btn btn-sm{{ ' btn-primary' if status_filter == '通过机关评审' else ' btn-outline-secondary' }}" onclick="setStatus('通过机关评审')">通过机关评审</button>
+        <button class="btn btn-sm{{ ' btn-primary' if status_filter == '结题上报' else ' btn-outline-secondary' }}" onclick="setStatus('结题上报')">结题上报</button>
+    </div>
+
+    <!-- 搜索结果计数 -->
+    <div id="searchCount" class="mb-2 text-muted" style="font-size:0.9em">
+        {% if search_keyword or status_filter %}找到 {{ total }} 条结果{% endif %}
+    </div>
+
+
+    <!-- 项目列表（局部刷新） -->
+    <div id="projectTableContent">
+        {% if status_groups %}
+        <div class="accordion" id="projectAccordion">
+            {% for status, items in status_groups.items() %}
+            <div class="accordion-item">
+                <h2 class="accordion-header">
+                    <button class="accordion-button {{ 'collapsed' if status_filter else '' }}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ status }}">
+                        {{ status }} ({{ items|length }})
+                    </button>
+                </h2>
+                <div id="collapse-{{ status }}" class="accordion-collapse collapse {{ 'show' if not status_filter else '' }}" data-bs-parent="#projectAccordion">
+                    <div class="accordion-body">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th style="width:50px;"><input type="checkbox" onchange="toggleProjectsByStatus('{{ status }}', this.checked)" title="全选{{ status }}"></th>
+                                    <th>项目编号</th>
+                                    <th>项目名称</th>
+                                    <th>负责人</th>
+                                    <th>开始日期</th>
+                                    <th>计划结束日期</th>
+                                    <th>状态</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for p in items %}
+                                <tr>
+                                    <td><input type="checkbox" class="project-cb-{{ status }}" value="{{ p['project_id'] }}"></td>
+                                    <td>{{ p['project_id'] }}</td>
+                                    <td><a href="{{ url_for(project_type + '.detail', project_id=p['project_id']) }}">{{ p['name'] }}</a></td>
+                                    <td>{{ p['leader'] }}</td>
+                                    <td>{{ p['start_date'] or '-' }}</td>
+                                    <td>{{ p['planned_end_date'] or '-' }}</td>
+                                    <td><span class="badge bg-{{ 'success' if p['status']=='结题上报' else 'info' if p['status']=='通过机关评审' else 'warning' if p['status']=='通过院内评审' else 'primary' }}">{{ p['status'] }}</span></td>
+                                    <td>
+                                        <a href="{{ url_for(project_type + '.detail', project_id=p['project_id']) }}" class="btn btn-sm btn-outline-primary">查看</a>
+                                        {% if session.get('role') == '管理员' or p['leader'] == session.get('user') %}
+                                        <button class="btn btn-sm btn-outline-danger" onclick="deleteProject('{{ p['project_id'] }}')">删除</button>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center text-muted py-5">
+            <i class="bi bi-folder2 fs-1"></i>
+            <p class="mt-2">暂无项目</p>
+        </div>
+        {% endif %}
+    </div><!-- /#projectTableContent -->
+    
+    <!-- 分页 -->
+    {% if total_pages > 1 %}
+    <nav>
+        <ul class="pagination justify-content-center mt-3">
+            <li class="page-item {{ 'disabled' if page <= 1 else '' }}">
+                <a class="page-link" href="?page=1&status={{ status_filter or '' }}&search={{ search_keyword or '' }}">首页</a>
+            </li>
+            <li class="page-item {{ 'disabled' if page <= 1 else '' }}">
+                <a class="page-link" href="?page={{ page-1 }}&status={{ status_filter or '' }}&search={{ search_keyword or '' }}">上一页</a>
+            </li>
+            <li class="page-item disabled"><span class="page-link">第 {{ page }}/{{ total_pages }} 页</span></li>
+            <li class="page-item {{ 'disabled' if page >= total_pages else '' }}">
+                <a class="page-link" href="?page={{ page+1 }}&status={{ status_filter or '' }}&search={{ search_keyword or '' }}">下一页</a>
+            </li>
+            <li class="page-item {{ 'disabled' if page >= total_pages else '' }}">
+                <a class="page-link" href="?page={{ total_pages }}&status={{ status_filter or '' }}&search={{ search_keyword or '' }}">末页</a>
+            </li>
+        </ul>
+    </nav>
+    <div class="text-center text-muted">
+        共 {{ total }} 条
+    </div>
+    {% endif %}
+
+<script>
+// ========== 即时搜索（防抖 + AJAX 局部刷新） ==========
+var searchTimer = null;
+
+function instantSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(doSearch, 300);
+}
+
+function doSearch() {
+    var keyword = document.getElementById('searchInput') ? document.getElementById('searchInput').value.trim() : '';
+    var status = document.getElementById('statusFilter') ? document.getElementById('statusFilter').value : '';
+    var url = '{{ url_for(project_type + ".index") }}?'
+        + (status ? 'status=' + encodeURIComponent(status) + '&' : '')
+        + (keyword ? 'search=' + encodeURIComponent(keyword) : '');
+    fetch(url + '&partial=1', {credentials: 'same-origin'})
+        .then(r => r.text())
+        .then(html => {
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(html, 'text/html');
+            var accordion = doc.getElementById('projectAccordion');
+            if (accordion) {
+                // 有数据：替换手风琴内容
+                document.getElementById('projectAccordion').innerHTML = accordion.innerHTML;
+            } else {
+                // 无数据：直接替换整个 projectTableContent
+                var content = doc.getElementById('projectTableContent');
+                if (content) document.getElementById('projectTableContent').innerHTML = content.innerHTML;
+            }
+            window.scrollTo({top: 0, behavior: 'smooth'});
+        })
+        .catch(err => console.error('搜索失败:', err));
+}
+
+function setStatus(status) {
+    document.getElementById('statusFilter').value = status;
+    document.querySelectorAll('.mb-2 .btn').forEach(function(btn) {
+        var m = btn.getAttribute('onclick') ? btn.getAttribute('onclick').match(/setStatus\('([^']*)'\)/) : null;
+        var s = m ? m[1] : '';
+        if (s === status) {
+            btn.classList.remove('btn-outline-secondary');
+            btn.classList.add('btn-primary');
+        } else {
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-outline-secondary');
+        }
+    });
+    doSearch();
+}
+
+function gotoPage(p) {
+    if (p < 1) return;
+    var keyword = document.getElementById('searchInput') ? document.getElementById('searchInput').value.trim() : '';
+    var status = document.getElementById('statusFilter') ? document.getElementById('statusFilter').value : '';
+    var url = '{{ url_for(project_type + ".index") }}?page=' + p
+        + (status ? '&status=' + encodeURIComponent(status) : '')
+        + (keyword ? '&search=' + encodeURIComponent(keyword) : '');
+    fetch(url + '&partial=1', {credentials: 'same-origin'})
+        .then(r => r.text())
+        .then(html => {
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(html, 'text/html');
+            var accordion = doc.getElementById('projectAccordion');
+            if (accordion) {
+                document.getElementById('projectAccordion').innerHTML = accordion.innerHTML;
+            } else {
+                var content = doc.getElementById('projectTableContent');
+                if (content) document.getElementById('projectTableContent').innerHTML = content.innerHTML;
+            }
+            window.scrollTo({top: 0, behavior: 'smooth'});
+        })
+        .catch(err => console.error('加载失败:', err));
+}
+
+function deleteProject(projectId, projectName) {
+    if (confirm('确定删除项目 ' + projectName + '？')) {
+        fetch('/{{ project_type }}/delete/' + projectId, {method: 'GET', credentials: 'same-origin'})
+            .then(() => instantSearch())
+            .catch(() => location.reload());
+    }
+}
+
+// 按状态类别全选/取消
+function toggleProjectsByStatus(status, checked) {
+    document.querySelectorAll('.project-cb-' + status).forEach(cb => {
+        cb.checked = checked;
+    });
+}
+
+// 批量导出项目
+function batchExportProjects() {
+    const checked = document.querySelectorAll('.project-cb-任务下达:checked, .project-cb-通过院内评审:checked, .project-cb-通过机关评审:checked, .project-cb-结题上报:checked');
+    if (checked.length === 0) {
+        alert('请先选择要导出的项目');
+        return;
+    }
+    
+    const projectIds = Array.from(checked).map(cb => cb.value);
+    console.log('导出项目:', projectIds);
+    
+    // 发送导出请求
+    var fd = new FormData();
+    fd.append('project_ids', JSON.stringify(projectIds));
+    
+    fetch('/{{ project_type }}/batch_export', {method: 'POST', body: fd})
+    .then(r => r.blob())
+    .then(blob => {
+        // 下载zip文件
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'projects_export.zip';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    })
+    .catch(e => {
+        alert('导出失败: ' + e);
+    });
+}
+
+
+var projectType = '{{ project_type }}';
+
+function deleteProject(projectId) {
+    if(confirm('确定删除此项目？')) {
+        fetch('/' + projectType + '/delete/' + projectId, {
+            method: 'POST'
+        }).then(r => r.json()).then(data => {
+            if(data.success) {
+                location.reload();
+            } else {
+                alert(data.message || '删除失败');
+            }
+        });
+    }
+} 
+</script>
+{% endblock %}

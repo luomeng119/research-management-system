@@ -1,0 +1,241 @@
+{
+  "template_id": "tpl_lvli",
+  "doc_type": "差旅费报销凭证",
+  "docx_filename": "模板.docx",
+  "table_index": 0,
+  "version": "1.0.0",
+  "fields": [
+    {
+      "field_id": "T0[1,0]",
+      "label": "报销单位",
+      "type": "text",
+      "source": "session.dept",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[1,7]",
+      "label": "报销日期",
+      "type": "text",
+      "source": "auto:current_date",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[2,2]",
+      "label": "姓名",
+      "type": "text",
+      "source": "session.name",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[2,7]",
+      "label": "部职别",
+      "type": "text",
+      "source": "session.dept_title",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[3,2]",
+      "label": "到达地点",
+      "type": "text",
+      "source": "invoice:火车票.到达站",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[3,9]",
+      "label": "出差开始日期",
+      "type": "text",
+      "source": "invoice:火车票.出发日期",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[3,12]",
+      "label": "出差结束日期",
+      "type": "text",
+      "source": "invoice:火车票.到达日期",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T0[5,2]",
+      "label": "城市间交通费-车船票_张数",
+      "type": "number",
+      "source": "invoice:火车票.count",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[5,5]",
+      "label": "城市间交通费-车船票_申报金额",
+      "type": "amount",
+      "source": "invoice:火车票.amount_sum",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[5,6]",
+      "label": "城市间交通费-车船票_核准金额",
+      "type": "amount",
+      "source": "calculated:readonly",
+      "required": false,
+      "editable": false
+    },
+    {
+      "field_id": "T0[6,2]",
+      "label": "城市间交通费-机票_张数",
+      "type": "number",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[6,5]",
+      "label": "城市间交通费-机票_申报金额",
+      "type": "amount",
+      "source": "invoice:航空行程单.amount_sum",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[6,6]",
+      "label": "城市间交通费-机票_核准金额",
+      "type": "amount",
+      "source": "calculated:readonly",
+      "required": false,
+      "editable": false
+    },
+    {
+      "field_id": "T0[7,2]",
+      "label": "订退签票_张数",
+      "type": "number",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[7,5]",
+      "label": "订退签票_申报金额",
+      "type": "amount",
+      "source": "invoice:订票.amount_sum",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[8,6]",
+      "label": "城市间交通费小计_核准金额",
+      "type": "amount",
+      "source": "calculated:sum(T0[5,6],T0[6,6],T0[7,6])",
+      "required": false,
+      "editable": false
+    },
+    {
+      "field_id": "T0[9,2]",
+      "label": "市内交通费_张数",
+      "type": "number",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[9,5]",
+      "label": "市内交通费_申报金额",
+      "type": "amount",
+      "source": "payment:交通.amount_sum",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[9,6]",
+      "label": "市内交通费_核准金额",
+      "type": "amount",
+      "source": "calculated:readonly",
+      "required": false,
+      "editable": false
+    },
+    {
+      "field_id": "T0[10,9]",
+      "label": "计发伙食补助费_天数",
+      "type": "number",
+      "source": "calculated:days_from_dates",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[10,11]",
+      "label": "计发伙食补助费_标准",
+      "type": "amount",
+      "source": "fixed:100",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[10,13]",
+      "label": "计发伙食补助费_申报金额",
+      "type": "amount",
+      "source": "calculated:days×standard",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[10,14]",
+      "label": "计发伙食补助费_核准金额",
+      "type": "amount",
+      "source": "calculated:readonly",
+      "required": false,
+      "editable": false
+    },
+    {
+      "field_id": "T0[11,9]",
+      "label": "预借款",
+      "type": "amount",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    },
+    {
+      "field_id": "T0[12,2]",
+      "label": "申报金额大写",
+      "type": "text",
+      "source": "calculated:amount_to_cn",
+      "required": true,
+      "editable": false
+    },
+    {
+      "field_id": "T0[12,5]",
+      "label": "申报金额小写",
+      "type": "amount",
+      "source": "calculated:sum_all",
+      "required": true,
+      "editable": false
+    },
+    {
+      "field_id": "T0[13,2]",
+      "label": "核准金额大写",
+      "type": "text",
+      "source": "calculated:readonly",
+      "required": false,
+      "editable": false
+    },
+    {
+      "field_id": "T0[13,5]",
+      "label": "核准金额小写",
+      "type": "amount",
+      "source": "calculated:readonly",
+      "required": false,
+      "editable": false
+    },
+    {
+      "field_id": "T0[14,0]",
+      "label": "审签领导/业务经办人",
+      "type": "text",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    }
+  ]
+}

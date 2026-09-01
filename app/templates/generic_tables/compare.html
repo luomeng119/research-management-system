@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}{{ table.name }} - 版本对比{% endblock %}
+
+{% block extra_css %}
+<style>
+    .compare-header {
+        background: #f8fafc;
+        border-bottom: 1px solid #dee2e6;
+        padding: 12px 16px;
+    }
+    .compare-table-wrap {
+        overflow: auto;
+        max-height: calc(100vh - 180px);
+    }
+    table.compare-table {
+        border-collapse: collapse;
+        font-size: 13px;
+        min-width: 100%;
+    }
+    table.compare-table th {
+        background: #f1f5f9;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        padding: 8px 12px;
+        border: 1px solid #dee2e6;
+        text-align: left;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    table.compare-table td {
+        padding: 7px 12px;
+        border: 1px solid #e5e7eb;
+        vertical-align: top;
+    }
+    .row-added { background: #f0fdf4 !important; }
+    .row-deleted { background: #fef2f2 !important; }
+    .row-modified { background: #fefce8 !important; }
+    .row-unchanged { background: #fff; }
+    .cell-added { background: #dcfce7 !important; color: #15803d; }
+    .cell-deleted { background: #fee2e2 !important; color: #dc2626; text-decoration: line-through; }
+    .cell-modified { background: #fef9c3 !important; color: #a16207; }
+    .legend {
+        display: flex;
+        gap: 16px;
+        font-size: 12px;
+        padding: 8px 16px;
+        background: #f8fafc;
+        border-bottom: 1px solid #dee2e6;
+    }
+    .legend span { display: flex; align-items: center; gap: 4px; }
+    .badge-add { background: #16a34a; }
+    .badge-mod { background: #ca8a04; }
+    .badge-del { background: #dc2626; }
+    .empty-compare {
+        text-align: center;
+        padding: 60px;
+        color: #6c757d;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="compare-header">
+    <div class="d-flex align-items-center gap-3 flex-wrap">
+        <a href="{{ url_for('generic_tables.detail_page', table_id=table.table_id) }}" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-arrow-left"></i> 返回详情
+        </a>
+        <span style="font-weight:600;color:#2563eb;">{{ table.name }} — 版本对比</span>
+        <div class="d-flex align-items-center gap-2 ms-auto">
+            <label class="text-muted" style="font-size:13px;">基准版本：</label>
+            <select class="form-select form-select-sm" id="verA" style="width:130px;">
+                {% for v in versions %}
+                <option value="{{ v.version_id }}" {% if vid_a == v.version_id %}selected{% endif %}>
+                    {{ v.version_label or ('v'+v.version_number|string) }}
+                </option>
+                {% endfor %}
+            </select>
+            <span class="text-muted">vs</span>
+            <select class="form-select form-select-sm" id="verB" style="width:130px;">
+                {% for v in versions %}
+                <option value="{{ v.version_id }}" {% if vid_b == v.version_id %}selected{% endif %}>
+                    {{ v.version_label or ('v'+v.version_number|string) }}
+                </option>
+                {% endfor %}
+            </select>
+            <button class="btn btn-sm btn-primary" onclick="doCompare()">
+                <i class="bi bi-arrow-left-right"></i> 对比
+            </button>
+        </div>
+    </div>
+</div>
+
+{% if diff %}
+<div class="legend">
+    <span class="badge badge-add">🟩</span> 新增行
+    <span class="badge badge-mod">🟨</span> 修改行
+    <span class="badge badge-del">🟥</span> 删除行
+</div>
+
+<div class="compare-table-wrap">
+    <table class="compare-table" id="compareTable">
+        <thead id="compareHead"></thead>
+        <tbody id="compareBody"></tbody>
+    </table>
+</div>
+{% else %}
+<div class="empty-compare">
+    <i class="bi bi-arrow-left-right" style="font-size:40px;"></i>
+    <h6>选择两个版本开始对比</h6>
+    <p class="text-muted" style="font-size:13px;">选择上方两个版本，点击「对比」按钮查看差异</p>
+</div>
+{% endif %}
+
+<script>
+const DIFF = {{ diff | tojson }};
+const VERSION_A = '{{ vid_a or "" }}';
+const VERSION_B = '{{ vid_b or "" }}';
+
+function doCompare() {
+    const a = document.getElementById('verA').value;
+    const b = document.getElementById('verB').value;
+    if (a === b) { alert('请选择不同的版本'); return; }
+    location.href = `/tables/{{ table.table_id }}/compare?a=${a}&b=${b}`;
+}
+
+function renderDiff() {
+    if (!DIFF) return;
+    const cols_a = DIFF.cols_a || [];
+    const cols_b = DIFF.cols_b || [];
+    const allCols = [...new Set([...cols_a, ...cols_b])];
+    const colDiff = DIFF.col_diff || {};
+    const rowDiff = DIFF.row_diff || [];
+
+    // 表头
+    const thead = document.getElementById('compareHead');
+    let headerHtml = `<tr><th style="width:40px;">#</th><th>状态</th>`;
+    allCols.forEach(ck => {
+        const d = colDiff[ck] || '';
+        let cls = '';
+        if (d === 'added') cls = 'cell-added';
+        else if (d === 'deleted') cls = 'cell-deleted';
+        else if (d === 'modified') cls = 'cell-modified';
+        headerHtml += `<th class="${cls}">${ck}</th>`;
+    });
+    headerHtml += '</tr>';
+    thead.innerHTML = headerHtml;
+
+    // 表体
+    const tbody = document.getElementById('compareBody');
+    let html = '';
+    rowDiff.forEach((item, idx) => {
+        const rowClass = {
+            'added': 'row-added',
+            'deleted': 'row-added',
+            'modified': 'row-modified',
+            'unchanged': 'row-unchanged'
+        }[item.status] || 'row-unchanged';
+
+        const statusBadge = {
+            'added': '<span class="badge bg-success">新增</span>',
+            'deleted': '<span class="badge bg-danger">删除</span>',
+            'modified': '<span class="badge bg-warning text-dark">修改</span>',
+            'unchanged': '<span class="text-muted">—</span>'
+        }[item.status] || '';
+
+        let rowHtml = `<tr class="${rowClass}"><td>${idx + 1}</td><td>${statusBadge}</td>`;
+        allCols.forEach(ck => {
+            const oldVal = item.old ? (item.old[ck] ?? '') : '';
+            const newVal = item.new ? (item.new[ck] ?? '') : '';
+            let cellCls = '';
+            if (item.status === 'added') cellCls = 'cell-added';
+            else if (item.status === 'deleted') cellCls = 'cell-deleted';
+            else if (item.status === 'modified' && oldVal !== newVal) cellCls = 'cell-modified';
+            rowHtml += `<td class="${cellCls}">${item.status === 'deleted' ? oldVal : newVal}</td>`;
+        });
+        rowHtml += '</tr>';
+        html += rowHtml;
+    });
+    tbody.innerHTML = html || '<tr><td colspan="100" class="text-center text-muted py-4">无差异</td></tr>';
+}
+
+document.addEventListener('DOMContentLoaded', renderDiff);
+</script>
+{% endblock %}

@@ -1,0 +1,1298 @@
+{% extends "base.html" %}
+{% include "components/preview_panel.html" %}
+{% include "components/list_preview_helper.html" %}
+
+{% block title %}报销项列表 - 报销助手 - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+
+    {# ============ 顶部操作栏 ============ #}
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4 class="mb-0"><i class="bi bi-receipt text-warning"></i> 报销项列表</h4>
+        <div class="d-flex gap-2">
+            <button class="btn btn-primary btn-sm" onclick="showCreateModal()">
+                <i class="bi bi-plus-circle"></i> 新建
+            </button>
+            <a href="/expense/documents/" class="btn btn-outline-info btn-sm">
+                <i class="bi bi-file-earmark-word"></i> 报销单据
+            </a>
+            <button class="btn btn-success btn-sm" onclick="document.getElementById('fileInput').click()">
+                <i class="bi bi-upload"></i> 上传识别
+            </button>
+            <input type="file" id="fileInput" multiple accept=".jpg,.jpeg,.png,.pdf,.bmp,.gif,.webp" style="display:none" onchange="handleFiles(this.files)">
+        </div>
+    </div>
+
+    {# ============ 上传反馈区 ============ #}
+    <div id="uploadFeedback" class="alert alert-success alert-dismissible fade show" style="display:none;" role="alert">
+        <span id="uploadFeedbackText"></span>
+        <button type="button" class="btn-close" onclick="document.getElementById('uploadFeedback').style.display='none'"></button>
+    </div>
+    <div id="uploadError" class="alert alert-danger alert-dismissible fade show" style="display:none;" role="alert">
+        <span id="uploadErrorText"></span>
+        <button type="button" class="btn-close" onclick="document.getElementById('uploadError').style.display='none'"></button>
+    </div>
+
+    {# ============ 报销项列表区 ============ #}
+    <div class="card mb-2" style="background:rgba(255,255,255,0.05); border:1px solid rgba(0,255,255,0.2);">
+        <div class="card-body p-0">
+            {# 筛选栏 #}
+            <div class="d-flex gap-2 flex-wrap align-items-center p-2 border-bottom border-dark">
+                <input type="text" class="form-control" id="searchInput" placeholder="搜索编号/标题..." style="max-width:180px;" oninput="debounceLoad()">
+                <select class="form-select" id="statusFilter" style="max-width:130px;" onchange="loadRecords()">
+                    <option value="">全部状态</option>
+                    <option value="草稿">草稿</option>
+                    <option value="已确认">已确认</option>
+                    <option value="已生成文档">已生成文档</option>
+                    <option value="已完成">已完成</option>
+                    <option value="已作废">已作废</option>
+                </select>
+                <button class="btn btn-sm btn-outline-info" onclick="triggerAutoMatch()" title="对所有待整理发票和支付记录执行自动匹配">
+                    <i class="bi bi-lightning-charge"></i> 自动匹配
+                </button>
+                <span class="text-muted small ms-auto">
+                    共 <span id="totalCount">0</span> 项 &nbsp;|&nbsp; 合计 <span id="totalAmount">0.00</span> 元
+                </span>
+            </div>
+
+            {# 表头 #}
+            <div class="table-responsive" style="max-height:400px; overflow-y:auto;">
+                <table class="table table-hover table-sm mb-0">
+                    <thead class="sticky-top bg-white">
+                        <tr>
+                            <th style="width:36px"></th>
+                            <th>标题</th>
+                            <th>金额</th>
+                            <th>发票</th>
+                            <th>支付</th>
+                            <th>状态</th>
+                            <th>类型</th>
+                            <th>开支时间</th>
+                            <th style="text-align:right">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recordsBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    {# ============ 底部待整理区 ============ #}
+    {# 待整理发票 #}
+    <div class="card mb-2" style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,193,7,0.3);">
+        <div class="card-header d-flex justify-content-between align-items-center py-1" style="background:rgba(255,193,7,0.05);">
+            <span><i class="bi bi-file-earmark-break text-warning"></i> 待整理发票</span>
+            <span class="badge bg-warning text-dark" id="countUnmatchedInvoice">0</span>
+        </div>
+        <div class="table-responsive" style="max-height:280px; overflow-y:auto;">
+            <table class="table table-hover table-sm mb-0">
+                <thead>
+                    <tr>
+                        <th>销售方</th>
+                        <th>金额 <i class="bi bi-pencil text-muted small"></i></th>
+                        <th>日期 <i class="bi bi-pencil text-muted small"></i></th>
+                        <th>发票号</th>
+                        <th>内容</th>
+                        <th style="width:70px;text-align:center;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="listUnmatchedInvoice">
+                    <tr><td colspan="6" class="text-muted text-center">加载中…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {# 待整理支付记录 #}
+    <div class="card mb-2" style="background:rgba(255,255,255,0.05); border:1px solid rgba(76,175,80,0.3);">
+        <div class="card-header d-flex justify-content-between align-items-center py-1" style="background:rgba(76,175,80,0.05);">
+            <span><i class="bi bi-credit-card text-success"></i> 待整理支付记录</span>
+            <span class="badge bg-success" id="countUnmatchedPayment">0</span>
+        </div>
+        <div class="table-responsive" style="max-height:280px; overflow-y:auto;">
+            <table class="table table-hover table-sm mb-0">
+                <thead>
+                    <tr>
+                        <th>收款方</th>
+                        <th>金额 <i class="bi bi-pencil text-muted small"></i></th>
+                        <th>日期 <i class="bi bi-pencil text-muted small"></i></th>
+                        <th>凭证号</th>
+                        <th>收款方</th>
+                        <th style="width:70px;text-align:center;">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="listUnmatchedPayment">
+                    <tr><td colspan="6" class="text-muted text-center">加载中…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
+{# ============ 新建报销项弹窗 ============ #}
+<div class="modal fade" id="createModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">新建报销项</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="text" class="form-control" id="newReimbTitle" placeholder="请输入报销项名称" autofocus>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" onclick="createReimbursement()">创建</button>
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ============ 选择待整理记录弹窗 ============ #}
+<div class="modal fade" id="addToReimbModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">从待整理记录中选择</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" style="max-height:60vh; overflow-y:auto;">
+                {# 报销类型选择 #}
+                <div class="mb-2">
+                    <span class="me-3">报销类型：</span>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="modalReimbType" id="typeTrip" value="出差报销">
+                        <label class="form-check-label" for="typeTrip">✈️ 出差报销</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="modalReimbType" id="typePurchase" value="采购报销" checked>
+                        <label class="form-check-label" for="typePurchase">🛒 采购报销</label>
+                    </div>
+                    <span class="ms-2 text-muted small" id="typeHint"></span>
+                </div>
+
+                {# 待整理发票（上下排列，先发票后支付记录）#}
+                <div id="modalInvSection">
+                    <div class="text-muted small mb-1 fw-bold">📄 待整理发票（共 <span id="modalInvCount">0</span> 条）</div>
+                    <div id="modalInvList"><div class="text-muted text-center py-2">加载中…</div></div>
+                </div>
+                <hr class="border-dark opacity-25 my-2">
+                {# 待整理支付记录 #}
+                <div id="modalPaySection">
+                    <div class="text-muted small mb-1 fw-bold">💳 待整理支付记录（共 <span id="modalPayCount">0</span> 条）</div>
+                    <div id="modalPayList"><div class="text-muted text-center py-2">加载中…</div></div>
+                </div>
+
+                <div class="mt-2 text-muted small text-end">已选: <span id="selectedCount">0</span> 项</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="confirmAddBtn" onclick="confirmAddToReimb()">确定增加</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ============ 悬浮详情卡片 ============ #}
+<div id="hoverCard" class="position-fixed border rounded shadow-sm p-3 bg-white" style="display:none; z-index:1050; min-width:260px; max-width:320px; font-size:13px; line-height:1.6; cursor:pointer;"></div>
+
+<script>
+// ============================================================
+// 全局状态
+// ============================================================
+let records = [];
+let debounceTimer = null;
+let expandedRid = null;
+let deletingIds = new Set();
+
+// ============================================================
+// 报销项列表
+// ============================================================
+function debounceLoad() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(loadRecords, 400);
+}
+
+function loadRecords() {
+    const kw = document.getElementById('searchInput').value.trim();
+    const status = document.getElementById('statusFilter').value;
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (kw) params.set('keyword', kw);
+    const query = params.toString();
+    fetch(`/expense/api/reimbursements${query ? '?' + query : ''}`, { credentials: 'include' })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) return;
+            records = data.reimbursements || [];
+            renderTable();
+        })
+        .catch(err => { console.error('loadRecords失败:', err); });
+}
+
+function renderTable() {
+    const tbody = document.getElementById('recordsBody');
+    const totalCount = document.getElementById('totalCount');
+    const totalAmount = document.getElementById('totalAmount');
+    let total = 0;
+    records.forEach(r => total += parseFloat(r.total_amount || 0));
+    totalCount.textContent = records.length;
+    totalAmount.textContent = total.toFixed(2);
+
+    if (!records.length) {
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">暂无报销项</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = records.map(r => {
+        const invoiceCount = r.invoice_count || 0;
+        const paymentCount = r.payment_count || 0;
+        const isPaid = r.is_paid == 1;
+        const isExpanded = expandedRid === r.id;
+        const icon = isExpanded ? '▼' : '▶';
+        const paymentTime = r.payment_time ? r.payment_time.slice(0, 10) : '—';
+
+        return `
+        <tr class="reimb-row" onclick="toggleExpand(${r.id})">
+            <td class="text-center" style="color:#888;width:36px;">${icon}</td>
+            <td><span class="title-editable" data-id="${r.id}" onclick="event.stopPropagation();startEditTitle(${r.id},this,event)" title="点击编辑">${escapeHtml(r.title || '-')}</span></td>
+            <td class="text-warning fw-bold">¥${(r.total_amount || 0).toFixed(2)}</td>
+            <td>${invoiceCount}</td>
+            <td>${paymentCount}</td>
+            <td onclick="event.stopPropagation()">
+                <button class="btn btn-sm ${isPaid ? 'btn-success' : 'btn-outline-secondary'} py-0 px-2" onclick="togglePaid(${r.id})" title="点击切换状态">
+                    ${isPaid ? '● 已报销' : '○ 未报销'}
+                </button>
+            </td>
+            <td onclick="event.stopPropagation()">
+                ${r.status === '草稿'
+                    ? `<button class="btn btn-sm btn-outline-warning py-0 px-1" onclick="toggleType(${r.id},this)" title="点击切换报销类型">
+                         ${r.reimbursement_type === '出差报销' ? '✈️ 出差' : '🛒 采购'}
+                       </button>`
+                    : (r.reimbursement_type === '出差报销' ? '✈️ 出差' : '🛒 采购')}
+            </td>
+            <td><small>${paymentTime}</small></td>
+            <td style="text-align:right" onclick="event.stopPropagation()">
+                <span class="small text-muted">${r.reimbursement_type === '出差报销' ? '✈️' : '🛒'}</span>
+                ${r.status === '草稿' ? `<button class="btn btn-sm btn-outline-danger py-0 ms-1" onclick="deleteRecord(${r.id})">删除</button>` : ''}
+            </td>
+        </tr>
+        <tr id="expand-${r.id}" class="expand-row" style="display:none;">
+            <td colspan="9" style="padding:0;border-top:2px solid #dee2e6;">
+                <div class="expand-content p-3" id="expand-content-${r.id}" style="background:#f8f9fa;max-width:100%;overflow-x:auto;">
+                    <div class="text-muted text-center py-3">加载中…</div>
+                </div>
+            </td>
+        </tr>`;
+    }).join('');
+
+    // 显示当前展开的行（用 class 而非 inline style 控制显隐，避免 CSS defaulting 问题）
+    document.querySelectorAll('.expand-row').forEach(row => {
+        const rid = parseInt(row.id.replace('expand-', ''));
+        row.style.display = (rid === expandedRid) ? 'table-row' : 'none';
+    });
+}
+
+function toggleExpand(rid) {
+    if (expandedRid === rid) {
+        // 关闭时清空内容，避免关闭后仍显示旧内容残影
+        const closing = document.getElementById(`expand-content-${rid}`);
+        if (closing) closing.innerHTML = '<div class="text-muted text-center py-3">加载中…</div>';
+        expandedRid = null;
+        renderTable();
+    } else {
+        expandedRid = rid;
+        renderTable();
+        fetchDetail(rid);
+    }
+}
+
+function fetchDetail(rid) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    fetch(`/expense/api/reimbursements/${rid}`, { credentials: 'include', signal: controller.signal })
+        .then(r => { clearTimeout(timeoutId); return r.json(); })
+        .then(data => {
+            if (!data.success) {
+                const content = document.getElementById(`expand-content-${rid}`);
+                if (content) content.innerHTML = '<div class="text-danger px-3 py-2">加载失败：' + (data.error || '未知错误') + '</div>';
+                return;
+            }
+            const r = data.reimbursement;
+            const invoices = data.invoices || [];
+            const payments = data.payments || [];
+            const content = document.getElementById(`expand-content-${rid}`);
+            if (!content) return;
+
+            const invRows = invoices.length ? invoices.map(inv => `
+                <tr ${listRowAttrs(inv)}>
+                    <td><small>${escapeHtml(inv.invoice_no || '-')}</small></td>
+                    <td><span class="editable" data-type="invoice" data-id="${inv.id}" data-field="date" title="点击编辑">${inv.date || '-'}</span></td>
+                    <td><span class="editable text-warning" data-type="invoice" data-id="${inv.id}" data-field="amount" title="点击编辑">¥${(inv.amount||0).toFixed(2)}</span></td>
+                    <td><small>${escapeHtml(inv.seller || '-')}</small></td>
+                    <td><small>${escapeHtml(inv.content || '-')}</small></td>
+                    <td onclick="event.stopPropagation()">
+                        <button class="btn btn-sm btn-outline-info py-0 me-1" onclick="previewById('invoice', ${inv.id})" title="预览">👁</button>
+                        <button class="btn btn-sm btn-outline-danger py-0" onclick="removeInvoice(${rid}, ${inv.id})">移除</button>
+                    </td>
+                </tr>`).join('') : '<tr><td colspan="6" class="text-muted text-center py-2">暂无发票</td></tr>';
+
+            // 支付记录行（带点击编辑），列数与发票表对齐（colspan 填充空列）
+            const payRows = payments.length ? payments.map(pay => `
+                <tr ${listRowAttrs(pay)}>
+                    <td><small>${escapeHtml(pay.payment_no || '-')}</small></td>
+                    <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="pay_date" title="点击编辑">${pay.pay_date || '-'}</span></td>
+                    <td><span class="editable text-warning" data-type="payment" data-id="${pay.id}" data-field="amount" title="点击编辑">¥${(pay.amount||0).toFixed(2)}</span></td>
+                    <td><small class="text-muted">-</small></td>
+                    <td><small class="text-muted">-</small></td>
+                    <td onclick="event.stopPropagation()">
+                        <button class="btn btn-sm btn-outline-info py-0 me-1" onclick="previewById('payment', ${pay.id})" title="预览">👁</button>
+                        <button class="btn btn-sm btn-outline-danger py-0" onclick="removePayment(${rid}, ${pay.id})">移除</button>
+                    </td>
+                </tr>`).join('') : '<tr><td colspan="6" class="text-muted text-center py-2">暂无支付记录</td></tr>';
+
+            content.innerHTML = `
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div class="fw-bold text-muted">📋 单据列表</div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-primary py-0" onclick="gotoNewDocument(${rid})">
+                            <i class="bi bi-plus-circle"></i> 新建单据
+                        </button>
+                        <button class="btn btn-sm btn-outline-success py-0" onclick="mergePrintDocs(${rid})">
+                            <i class="bi bi-printer"></i> 汇总打印
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary py-0" onclick="generateReport(${rid})">
+                            <i class="bi bi-file-earmark-word"></i> 生成报销单
+                        </button>
+                    </div>
+                </div>
+                <div id="docs-list-${rid}" class="mb-3"></div>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div class="fw-bold text-muted">📄 发票明细 <span class="small">（金额/日期点击即可编辑）</span></div>
+                    <button class="btn btn-sm btn-outline-primary py-0" onclick="showAddToReimbModal(${rid}, '${r.reimbursement_type}')">
+                        <i class="bi bi-plus-circle"></i> 增加
+                    </button>
+                </div>
+                <table class="table table-sm table-hover mb-3" style="width:100%;min-width:500px;">
+                    <thead><tr><th>发票号</th><th>日期</th><th>金额</th><th>销售方</th><th>内容</th><th>操作</th></tr></thead>
+                    <tbody>${invRows}</tbody>
+                </table>
+                <div class="fw-bold text-muted mb-1">💳 支付记录 <span class="small">（金额/日期点击即可编辑）</span></div>
+                <table class="table table-sm table-hover mb-2" style="width:100%;min-width:500px;">
+                    <thead><tr><th>凭证号</th><th>日期</th><th>金额</th><th>销售方</th><th>内容</th><th>操作</th></tr></thead>
+                    <tbody>${payRows}</tbody>
+                </table>
+                <div class="d-flex justify-content-end gap-2">
+                    ${(r.status === '已确认' || r.status === '已生成文档') ? `<button class="btn btn-sm btn-primary" onclick="generateDocs(${rid})">生成文档</button>` : ''}
+                    <button class="btn btn-sm btn-outline-secondary" onclick="toggleExpand(${rid})">收起</button>
+                </div>`;
+            attachEditableListeners(content);
+            loadDocsList(rid);
+        })
+        .catch(err => {
+            clearTimeout(timeoutId);
+            console.error('fetchDetail失败:', err);
+            const content = document.getElementById(`expand-content-${rid}`);
+            if (content) {
+                const msg = err.name === 'AbortError' ? '请求超时（10秒），请检查网络' : '加载失败，请刷新重试';
+                content.innerHTML = '<div class="text-danger px-3 py-2">' + msg + '</div>';
+            }
+        });
+}
+
+// ============================================================
+// 发票/支付记录操作
+// ============================================================
+function removeInvoice(rid, iid) {
+    if (!confirm('确定移除该发票？')) return;
+    fetch(`/expense/api/reimbursements/${rid}/unmatch_invoice/${iid}`, { method: 'POST', credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) { fetchDetail(rid); loadRecords(); }
+            else alert('移除失败: ' + d.error);
+        })
+        .catch(() => alert('移除失败，请重试'));
+}
+
+function removePayment(rid, pid) {
+    if (!confirm('确定移除该支付记录？')) return;
+    fetch(`/expense/api/reimbursements/${rid}/unmatch_payment/${pid}`, { method: 'POST', credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) { fetchDetail(rid); loadRecords(); }
+            else alert('移除失败: ' + d.error);
+        })
+        .catch(() => alert('移除失败，请重试'));
+}
+
+function generateDocs(rid) {
+    fetch(`/expense/api/reimbursements/${rid}/generate_docs`, { method: 'POST', credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (!d.success) { alert('生成失败: ' + d.error); return; }
+            if (d.settlement) window.open(`/expense/api/download_approval/${rid}`, '_blank');
+            loadRecords();
+            if (expandedRid === rid) fetchDetail(rid);
+            alert('文档生成完成！');
+        }).catch(e => alert('生成失败: ' + e));
+}
+
+function deleteRecord(rid) {
+    if (!confirm('确定删除该报销项？')) return;
+    fetch(`/expense/api/reimbursements/${rid}`, { method: 'DELETE', credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) {
+                if (expandedRid === rid) expandedRid = null;
+                loadRecords();
+            } else alert('删除失败: ' + d.error);
+        })
+        .catch(() => alert('删除失败，请重试'));
+}
+
+function toggleReimbType(rid, event) {
+    event.stopPropagation();
+    fetch(`/expense/api/reimbursements/${rid}/toggle_type`, { method: 'POST', credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) {
+                loadRecords();
+            } else alert('切换失败: ' + d.error);
+        })
+        .catch(() => alert('切换失败，请重试'));
+}
+
+function startEditTitle(rid, spanEl, event) {
+    event.stopPropagation();
+    if (spanEl.querySelector('input')) return; // 防止重复
+    const currentTitle = spanEl.textContent.trim();
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentTitle;
+    input.className = 'form-control form-control-sm py-0';
+    input.style = 'width:auto;display:inline-block;';
+    spanEl.textContent = '';
+    spanEl.appendChild(input);
+    input.focus();
+    input.select();
+
+    function save() {
+        const newTitle = input.value.trim();
+        if (newTitle && newTitle !== currentTitle) {
+            fetch(`/expense/api/reimbursements/${rid}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title: newTitle}),
+                credentials: 'include'
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.success) {
+                    loadRecords();
+                } else alert('保存失败: ' + d.error);
+            })
+            .catch(() => alert('保存失败，请重试'));
+        } else {
+            spanEl.textContent = currentTitle;
+        }
+    }
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { spanEl.textContent = currentTitle; }
+    });
+}
+
+function togglePaid(rid) {
+    fetch(`/expense/api/reimbursements/${rid}/toggle_paid`, { method: 'POST', credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) {
+                loadRecords();
+            } else alert('切换失败: ' + d.error);
+        })
+        .catch(() => alert('切换失败，请重试'));
+}
+
+function toggleType(rid, el) {
+    el.disabled = true;
+    fetch(`/expense/api/reimbursements/${rid}/toggle_type`, { method: 'POST', credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) {
+                loadRecords();
+            } else alert('切换失败: ' + (d.error || d.message));
+        })
+        .catch(() => alert('切换失败，请重试'));
+}
+
+function triggerAutoMatch() {
+    const btn = event.target.closest('button');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 匹配中…';
+    fetch('/expense/api/match', { method: 'POST', credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) {
+                const inv = d.total_invoices_matched || 0;
+                const pay = d.total_payments_matched || 0;
+                const newCount = d.new_matches ? d.new_matches.length : 0;
+                if (newCount > 0) {
+                    alert(`匹配完成：新增 ${newCount} 个报销项，匹配发票 ${inv} 张、支付记录 ${pay} 条`);
+                } else {
+                    alert('匹配完成：无可匹配的新记录');
+                }
+                loadRecords();
+                loadPendingInvoices();
+                loadPendingPayments();
+            } else {
+                alert('匹配失败: ' + (d.error || '未知错误'));
+            }
+        })
+        .catch(() => alert('匹配失败，请重试'))
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-lightning-charge"></i> 自动匹配';
+        });
+}
+
+// ============================================================
+// 新建报销项
+// ============================================================
+function showCreateModal() {
+    document.getElementById('newReimbTitle').value = '';
+    new bootstrap.Modal(document.getElementById('createModal')).show();
+    setTimeout(() => document.getElementById('newReimbTitle').focus(), 300);
+}
+
+function createReimbursement() {
+    const title = document.getElementById('newReimbTitle').value.trim();
+    if (!title) { alert('请输入报销项名称'); return; }
+    fetch('/expense/api/reimbursements', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ title })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.success) {
+            bootstrap.Modal.getInstance(document.getElementById('createModal')).hide();
+            loadRecords();
+        } else {
+            alert('创建失败: ' + (d.error || d.message));
+        }
+    });
+}
+
+// ============================================================
+// 上传（顶部统一上传按钮 → 全局上传，文件自动分流）
+// ============================================================
+let uploadRid = null;  // 如果设了则上传到指定报销项，否则进入待整理区
+let _uploadedFiles = new Set();  // 已上传文件名（本会话，防止重复上传）
+
+function showUploadModal(rid) {
+    uploadRid = rid;
+    document.getElementById('fileInput').click();
+}
+
+function handleFiles(files) {
+    if (!files || files.length === 0) return;
+    // 过滤本会话已上传过的文件（防止重复上传）
+    const newFiles = Array.from(files).filter(f => {
+        if (_uploadedFiles.has(f.name)) {
+            showFeedback(`⏭ 已跳过重复文件：${f.name}`, false);
+            return false;
+        }
+        return true;
+    });
+    if (!newFiles.length) return;
+
+    // 标记为上传中（等收到成功响应后才加入已上传集合）
+    const count = newFiles.length;
+    showFeedback(count > 1 ? `正在识别 ${count} 个文件…` : `正在识别：${newFiles[0].name}…`, false);
+    let uploaded = 0, failed = 0, errors = [];
+    let results = [];
+
+    newFiles.forEach(file => {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('type', 'auto');
+        const url = uploadRid
+            ? `/expense/api/reimbursements/${uploadRid}/upload`
+            : '/expense/api/upload';
+        fetch(url, { method: 'POST', body: formData, credentials: 'include' })
+            .then(r => r.json())
+            .then(data => {
+                uploaded++;
+                if (!data.success) {
+                    failed++;
+                    errors.push(file.name + ': ' + (data.error || '失败'));
+                } else {
+                    _uploadedFiles.add(file.name);
+                    // 上传到报销项时返回结构不同
+                    if (data.results) {
+                        data.results.forEach(r => results.push({ name: r.filename || file.name, success: r.success, type: r.type, error: r.error, matched: r.matched || [] }));
+                    } else {
+                        // 收集 matched 信息用于展示
+                        if (data.matched && data.matched.length > 0) {
+                            if (!window._lastMatched) window._lastMatched = [];
+                            data.matched.forEach(m => window._lastMatched.push(m));
+                        }
+                        results.push({ name: file.name, success: true, type: data.type, fields: data.fields, matched: data.matched || [] });
+                    }
+                }
+                if (uploaded + failed === count) {
+                    if (failed > 0) {
+                        showFeedback('完成：' + (count - failed) + ' 个成功，' + failed + ' 个失败\n' + errors.join('；'), true);
+                    } else {
+                        showUploadResult(results);
+                    }
+                    uploadRid = null;
+                    loadAll();
+                }
+            })
+            .catch(() => {
+                uploaded++; failed++; errors.push(file.name + ': 网络错误');
+                if (uploaded + failed === count) { showFeedback('完成（部分失败）：' + errors.join('；'), true); loadAll(); uploadRid = null; }
+            });
+    });
+}
+
+function showUploadResult(results) {
+    // 取出本批次的匹配结果（已在 handleFiles 中写入 window._lastMatched）
+    const matched = window._lastMatched || [];
+    window._lastMatched = null;  // 用完即清
+
+    const html = results.map(r => {
+        const tag = r.type === 'payment'
+            ? '<span class="badge bg-success">支付记录</span>'
+            : '<span class="badge bg-warning text-dark">发票</span>';
+        const amt = r.fields?.amount || r.fields?.payment_no || '-';
+        return `<div class="border-bottom py-1 mb-1 small">${tag} <strong>${escapeHtml(r.name)}</strong> ${r.success ? '✓ 成功' : '<span class="text-danger">✗ ' + escapeHtml(r.error || '失败') + '</span>'}</div>`;
+    }).join('');
+
+    // 匹配信息
+    let matchHtml = '';
+    if (matched.length > 0) {
+        const groups = {};
+        matched.forEach(m => {
+            const rid = m.reimbursement_id;
+            if (!groups[rid]) groups[rid] = { rid, invoices: [], payment: null };
+            if (m.payment) groups[rid].payment = m.payment;
+            if (m.invoices) m.invoices.forEach(i => groups[rid].invoices.push(i));
+        });
+        matchHtml = Object.values(groups).map(g => {
+            const invNos = g.invoices.map(i => i.invoice_no || i.id).join('、');
+            const payNo = g.payment ? (g.payment.payment_no || g.payment.id) : '-';
+            const total = g.invoices.reduce((s, i) => s + parseFloat(i.amount || 0), 0) || (g.payment ? parseFloat(g.payment.amount || 0) : 0);
+            return `<div class="mt-2 p-2 bg-success-subtle border border-success rounded">
+                <strong class="text-success">✓ 已自动匹配到报销项 #${g.rid}</strong>：
+                发票 ${invNos || '-'} + 支付记录 ${payNo} = <strong>¥${total.toFixed(2)}</strong>
+                <button class="btn btn-sm btn-outline-success ms-2 py-0" onclick="jumpToReimb(${g.rid})">查看</button>
+            </div>`;
+        }).join('');
+    }
+
+    document.getElementById('uploadFeedback').style.display = 'block';
+    document.getElementById('uploadFeedback').className = 'alert alert-success alert-dismissible fade show';
+    document.getElementById('uploadFeedbackText').innerHTML = '<strong>识别完成：</strong>' + html + matchHtml;
+    document.getElementById('uploadError').style.display = 'none';
+}
+
+function showFeedback(msg, isError) {
+    document.getElementById('uploadFeedback').style.display = isError ? 'none' : 'block';
+    document.getElementById('uploadError').style.display = isError ? 'block' : 'none';
+    document.getElementById(isError ? 'uploadErrorText' : 'uploadFeedbackText').textContent = msg;
+}
+
+// ============================================================
+// 待整理区加载
+// ============================================================
+function loadAll() {
+    loadRecords();
+    loadPendingInvoices();
+    loadPendingPayments();
+}
+
+function loadPendingInvoices() {
+    fetch('/expense/api/invoices?reimbursement_id=', { credentials: 'include' })
+        .then(r => r.json())
+        .then(data => {
+            const items = (data.invoices || []).filter(i => !i.reimbursement_id);
+            document.getElementById('countUnmatchedInvoice').textContent = items.length;
+            const tb = document.getElementById('listUnmatchedInvoice');
+            if (!items.length) { tb.innerHTML = '<tr><td colspan="6" class="text-muted text-center">暂无可整理发票</td></tr>'; return; }
+            tb.innerHTML = items.map(inv => {
+                const fp = inv.file_path || '';
+                const fname = fp.split('/').pop() || '-';
+                const uploadUrl = fp.replace('/app/uploads/', '/uploads/').replace(/^.*?\/uploads\//, '/uploads/');
+                // 内容显示：items[0].name + spec > content > seller > invoice_type
+                let content = '-';
+                if (inv.items && inv.items.length > 0) {
+                    const first = inv.items[0];
+                    content = first.name || '-';
+                    if (first.spec) content += ' ' + first.spec;
+                } else if (inv.content) {
+                    content = inv.content;
+                } else if (inv.seller) {
+                    content = inv.seller;
+                } else if (inv.invoice_type) {
+                    content = inv.invoice_type;
+                }
+                return `<tr class="preview-row" data-file="${uploadUrl}" data-name="${fname}" data-type="invoice" onclick="previewRow(this)">
+                    <td title="${inv.seller || ''}">${escapeHtml(inv.seller || '-')}</td>
+                    <td><span class="editable" data-type="invoice" data-id="${inv.id}" data-field="amount">¥${(inv.amount||0).toFixed(2)}</span></td>
+                    <td><span class="editable" data-type="invoice" data-id="${inv.id}" data-field="date">${inv.date || '-'}</span></td>
+                    <td style="font-size:11px;">${escapeHtml(inv.invoice_no || '-')}</td>
+                    <td class="small text-truncate" style="max-width:120px;" title="${escapeHtml(content)}">${escapeHtml(content)}</td>
+                    <td class="text-center">
+                        <button class="btn btn-sm text-danger border-0 bg-transparent py-0" onclick="event.stopPropagation(); deleteInvoice(${inv.id},this)" title="删除"><i class="bi bi-trash"></i></button>
+                    </td>
+                </tr>`;
+            }).join('');
+            attachEditableListeners(tb);
+        })
+        .catch(err => {
+            console.error('loadPendingInvoices失败:', err);
+            const tb = document.getElementById('listUnmatchedInvoice');
+            if (tb) tb.innerHTML = '<tr><td colspan="6" class="text-danger text-center">加载失败</td></tr>';
+        });
+}
+
+function loadPendingPayments() {
+    fetch('/expense/api/payments', { credentials: 'include' })
+        .then(r => r.json())
+        .then(data => {
+            const items = (data.payments || []).filter(p => !p.reimbursement_id);
+            document.getElementById('countUnmatchedPayment').textContent = items.length;
+            const tb = document.getElementById('listUnmatchedPayment');
+            if (!items.length) { tb.innerHTML = '<tr><td colspan="6" class="text-muted text-center">暂无可整理支付记录</td></tr>'; return; }
+            tb.innerHTML = items.map(pay => {
+                const fp = pay.file_path || '';
+                const fname = fp.split('/').pop() || '-';
+                const uploadUrl = fp.replace('/app/uploads/', '/uploads/').replace(/^.*?\/uploads\//, '/uploads/');
+                return `<tr class="preview-row" data-file="${uploadUrl}" data-name="${fname}" data-type="payment" onclick="previewRow(this)">
+                    <td>${escapeHtml(pay.payer || '-')}</td>
+                    <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="amount">¥${(pay.amount||0).toFixed(2)}</span></td>
+                    <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="pay_date">${pay.pay_date || '-'}</span></td>
+                    <td style="font-size:11px;">${escapeHtml(pay.payment_no || '-')}</td>
+                    <td class="small text-truncate" style="max-width:120px;" title="${escapeHtml(pay.payer || '')}">${escapeHtml(pay.payer || '-')}</td>
+                    <td class="text-center">
+                        <button class="btn btn-sm text-danger border-0 bg-transparent py-0" onclick="event.stopPropagation(); deletePayment(${pay.id},this)" title="删除"><i class="bi bi-trash"></i></button>
+                    </td>
+                </tr>`;
+            }).join('');
+            attachEditableListeners(tb);
+        })
+        .catch(err => {
+            console.error('loadPendingPayments失败:', err);
+            const tb = document.getElementById('listUnmatchedPayment');
+            if (tb) tb.innerHTML = '<tr><td colspan="6" class="text-danger text-center">加载失败</td></tr>';
+        });
+}
+
+function deleteInvoice(id, btn) {
+    if (deletingIds.has(id)) return;
+    if (!confirm('确定删除该发票？')) return;
+    deletingIds.add(id);
+    btn.disabled = true;
+    fetch('/expense/api/invoices/' + id, { method: 'DELETE', credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            deletingIds.delete(id);
+            if (d.success || d.message) loadPendingInvoices();
+            else { btn.disabled = false; alert('删除失败'); }
+        })
+        .catch(() => { deletingIds.delete(id); btn.disabled = false; });
+}
+
+function deletePayment(id, btn) {
+    if (deletingIds.has(id)) return;
+    if (!confirm('确定删除该支付记录？')) return;
+    deletingIds.add(id);
+    btn.disabled = true;
+    fetch('/expense/api/payments/' + id, { method: 'DELETE', credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            deletingIds.delete(id);
+            if (d.success || d.message) loadPendingPayments();
+            else { btn.disabled = false; alert('删除失败'); }
+        })
+        .catch(() => { deletingIds.delete(id); btn.disabled = false; });
+}
+
+// ============================================================
+// 金额/日期点击编辑
+// ============================================================
+function attachEditableListeners(container) {
+    if (!container) return;
+    container.querySelectorAll('.editable').forEach(el => {
+        el.style.cursor = 'pointer';
+        el.title = '点击编辑';
+        el.addEventListener('click', function(e) {
+            e.stopPropagation();
+            startEdit(this);
+        });
+    });
+}
+
+function startEdit(el) {
+    const type = el.dataset.type;     // 'invoice' | 'payment'
+    const id = parseInt(el.dataset.id);
+    const field = el.dataset.field;   // 'amount' | 'date' | 'pay_date'
+    const currentValue = el.textContent.replace(/[¥\s]/g, '');
+
+    el.innerHTML = '';
+    el.style.cursor = 'default';
+    const input = document.createElement('input');
+    input.type = field === 'amount' ? 'number' : 'text';
+    input.value = field === 'amount' ? parseFloat(currentValue) || '' : currentValue;
+    input.className = 'form-control form-control-sm';
+    input.style = 'width:90px;display:inline;';
+    input.step = field === 'amount' ? '0.01' : undefined;
+
+    const save = () => {
+        const newVal = input.value.trim();
+        if (!newVal) {
+            el.innerHTML = currentValue;
+            attachEditableListeners(el.closest('tbody'));
+            return;
+        }
+        const payload = field === 'amount' ? { amount: parseFloat(newVal) } : { [field]: newVal };
+        const apiUrl = type === 'invoice'
+            ? `/expense/api/invoices/${id}`
+            : `/expense/api/payments/${id}`;
+        fetch(apiUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(payload)
+        })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) {
+                el.textContent = field === 'amount' ? `¥${parseFloat(newVal).toFixed(2)}` : newVal;
+            } else {
+                el.textContent = currentValue;
+                alert('保存失败: ' + (d.error || d.message));
+            }
+            attachEditableListeners(el.closest('tbody'));
+        })
+        .catch(() => {
+            el.textContent = currentValue;
+            attachEditableListeners(el.closest('tbody'));
+        });
+    };
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') {
+            el.textContent = field === 'amount' ? `¥${parseFloat(currentValue).toFixed(2)}` : currentValue;
+            attachEditableListeners(el.closest('tbody'));
+        }
+    });
+
+    el.appendChild(input);
+    input.focus();
+    input.select();
+}
+
+// ============================================================
+// 预览（适配 preview_panel.html 的 openPreview）
+// ============================================================
+function previewDocument(fileUrl, fileName) {
+    if (!fileUrl) return;
+    const ext = (fileName || fileUrl).split('.').pop().toLowerCase();
+    const imgExts = ['jpg','jpeg','png','gif','bmp','webp'];
+    const fileType = imgExts.includes(ext) ? 'image' : (ext === 'pdf' ? 'pdf' : 'other');
+    openPreview(fileUrl, fileName || fileUrl, fileType, fileUrl);
+}
+
+// 点击条目行直接预览（用于待整理区的 preview-row）
+function previewRow(row) {
+    const fileUrl = row.dataset.file;
+    const fname = row.dataset.name;
+    if (fileUrl) previewDocument(fileUrl, fname);
+}
+
+// 跳转到指定报销项并展开
+function jumpToReimb(rid) {
+    // 关闭上传反馈
+    document.getElementById('uploadFeedback').style.display = 'none';
+    // 滚动到报销列表顶部
+    document.querySelector('.reimb-row')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // 展开目标报销项
+    if (expandedRid !== rid) toggleExpand(rid);
+}
+
+function previewById(type, id) {
+    if (type === 'invoice') {
+        fetch(`/expense/api/invoices/${id}`, { credentials: 'include' })
+            .then(r => r.json())
+            .then(d => {
+                if (d.invoice && d.invoice.file_path) {
+                    const fp = d.invoice.file_path;
+                    const url = fp.replace('/app/uploads/', '/uploads/').replace(/^.*?\/uploads\//, '/uploads/');
+                    previewDocument(url, fp.split('/').pop());
+                }
+            });
+    } else {
+        fetch(`/expense/api/payments/${id}`, { credentials: 'include' })
+            .then(r => r.json())
+            .then(d => {
+                if (d.payment && d.payment.file_path) {
+                    const fp = d.payment.file_path;
+                    const url = fp.replace('/app/uploads/', '/uploads/').replace(/^.*?\/uploads\//, '/uploads/');
+                    previewDocument(url, fp.split('/').pop());
+                }
+            });
+    }
+}
+
+// ============================================================
+// 悬浮卡片（hover）
+// ============================================================
+let hoverTimer = null;
+
+document.addEventListener('mouseover', function(e) {
+    const row = e.target.closest('.preview-row');
+    if (!row) { hideHoverCard(); return; }
+    clearTimeout(hoverTimer);
+    const type = row.dataset.type;
+    const fp = row.dataset.file;
+    const fn = row.dataset.name;
+    showHoverCard(row, type, fp, fn);
+});
+
+document.addEventListener('mouseout', function(e) {
+    if (e.target.closest('.preview-row')) hoverTimer = setTimeout(hideHoverCard, 200);
+});
+
+document.addEventListener('mousemove', function(e) {
+    const hc = document.getElementById('hoverCard');
+    if (hc.style.display === 'none') return;
+    hc.style.top = (e.clientY + 12) + 'px';
+    hc.style.left = (e.clientX + 8) + 'px';
+});
+
+function showHoverCard(el, type, fileUrl, fname) {
+    const hc = document.getElementById('hoverCard');
+    hc.innerHTML = '<div class="text-muted small">加载中…</div>';
+    hc.style.display = 'block';
+    hc.style.top = (el.getBoundingClientRect().bottom + 8) + 'px';
+    hc.style.left = (el.getBoundingClientRect().left) + 'px';
+    // 存储文件路径，供点击预览使用
+    hc.dataset.file = fileUrl || '';
+    hc.dataset.name = fname || '';
+    hc.onclick = function() {
+        const f = hc.dataset.file, n = hc.dataset.name;
+        if (f) { hideHoverCard(); previewDocument(f, n); }
+    };
+
+    // 通过ID查详情
+    // 从当前行的tr获取ID（通过遍历临近的.editable）
+    const editable = el.querySelector('.editable');
+    if (!editable) return;
+    const id = editable.dataset.id;
+    if (!id) return;
+
+    const apiUrl = type === 'invoice'
+        ? `/expense/api/invoices/${id}`
+        : `/expense/api/payments/${id}`;
+    fetch(apiUrl, { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => {
+            const obj = type === 'invoice' ? (d.invoice || d) : (d.payment || d);
+            let html = `<div class="fw-bold mb-1">${escapeHtml(obj.seller || obj.payer || '-')}</div>`;
+            html += '<div class="row g-1 small">';
+            html += `<div class="col-5 text-muted">金额</div><div class="col-7 fw-bold text-warning">¥${(obj.amount||0).toFixed(2)}</div>`;
+            html += `<div class="col-5 text-muted">日期</div><div class="col-7">${obj.date || obj.pay_date || '-'}</div>`;
+            if (obj.invoice_no) { html += `<div class="col-5 text-muted">发票号</div><div class="col-7" style="font-size:11px;">${escapeHtml(obj.invoice_no)}</div>`; }
+            if (obj.payment_no) { html += `<div class="col-5 text-muted">凭证号</div><div class="col-7" style="font-size:11px;">${escapeHtml(obj.payment_no)}</div>`; }
+            html += '</div>';
+            html += `<div class="mt-1 pt-1 border-top small text-muted text-truncate" title="${escapeHtml(fname)}">文件: ${escapeHtml(fname)}</div>`;
+            const escapedFname = (fname || '').replace(/'/g, "\\'").replace(/"/g, '\\"');
+            html += `<button class="btn btn-sm btn-outline-info mt-2 w-100" onclick="event.stopPropagation(); hideHoverCard(); previewDocument('${(fileUrl||'').replace(/'/g,"\\'")}', '${escapedFname}')"><i class="bi bi-eye"></i> 预览文件</button>`;
+            hc.innerHTML = html;
+        })
+        .catch(() => {
+            hc.innerHTML = '<div class="text-danger small">加载失败</div>';
+        });
+}
+
+function hideHoverCard() {
+    document.getElementById('hoverCard').style.display = 'none';
+}
+
+// ============================================================
+// 从待整理记录中选择增加到报销项
+// ============================================================
+let addToReimbRid = null;
+let addSelectedInvoices = new Set();
+let addSelectedPayments = new Set();
+let modalLoadedInvoices = [];  // 加载的发票数据，用于自动分类
+
+function showAddToReimbModal(rid, currentType) {
+    addToReimbRid = rid;
+    addSelectedInvoices.clear();
+    addSelectedPayments.clear();
+    modalLoadedInvoices = [];
+    document.getElementById('selectedCount').textContent = '0';
+    document.getElementById('modalInvList').innerHTML = '<div class="text-muted text-center py-2">加载中…</div>';
+    document.getElementById('modalPayList').innerHTML = '<div class="text-muted text-center py-2">加载中…</div>';
+    // 预选当前报销类型
+    const type = currentType || '采购报销';
+    document.getElementById('typeTrip').checked = type === '出差报销';
+    document.getElementById('typePurchase').checked = type === '采购报销';
+    document.getElementById('typeHint').textContent = '';
+    new bootstrap.Modal(document.getElementById('addToReimbModal')).show();
+    loadModalInvoices();
+    loadModalPayments();
+}
+
+function loadModalInvoices() {
+    fetch('/expense/api/invoices?reimbursement_id=', { credentials: 'include' })
+        .then(r => r.json())
+        .then(data => {
+            const items = (data.invoices || []).filter(i => !i.reimbursement_id);
+            modalLoadedInvoices = items;  // 保存用于自动分类
+            document.getElementById('modalInvCount').textContent = items.length;
+            if (!items.length) {
+                document.getElementById('modalInvList').innerHTML = '<div class="text-muted text-center py-2">暂无可增加发票</div>';
+                return;
+            }
+            document.getElementById('modalInvList').innerHTML = items.map(inv => {
+                const invType = inv.invoice_type || '';
+                const typeIcon = invType === '火车票' || invType === '航空行程单' || invType === '出租车发票' || invType === '网约车' ? '✈️' : '🛒';
+                return `<div class="form-check border-bottom py-1">
+                    <input class="form-check-input" type="checkbox" id="inv-${inv.id}" value="${inv.id}"
+                        onchange="toggleAddInvoice(${inv.id})">
+                    <label class="form-check-label d-flex justify-content-between w-100" for="inv-${inv.id}">
+                        <span>${typeIcon} ${escapeHtml(inv.seller || invType || '无号')}</span>
+                        <span class="text-warning">¥${(inv.amount||0).toFixed(2)}</span>
+                        <span class="text-muted">${inv.date || '-'}</span>
+                    </label>
+                </div>`;
+            }).join('');
+        })
+        .catch(err => { console.error('loadModalInvoices失败:', err); document.getElementById('modalInvList').innerHTML = '<div class="text-danger text-center py-2">加载失败</div>'; });
+}
+
+function loadModalPayments() {
+    fetch('/expense/api/payments', { credentials: 'include' })
+        .then(r => r.json())
+        .then(data => {
+            const items = (data.payments || []).filter(p => !p.reimbursement_id);
+            document.getElementById('modalPayCount').textContent = items.length;
+            if (!items.length) {
+                document.getElementById('modalPayList').innerHTML = '<div class="text-muted text-center py-2">暂无可增加支付记录</div>';
+                return;
+            }
+            document.getElementById('modalPayList').innerHTML = items.map(pay => `
+                <div class="form-check border-bottom py-1">
+                    <input class="form-check-input" type="checkbox" id="pay-${pay.id}" value="${pay.id}"
+                        onchange="toggleAddPayment(${pay.id})">
+                    <label class="form-check-label d-flex justify-content-between w-100" for="pay-${pay.id}">
+                        <span>${escapeHtml(pay.payer || '-')}</span>
+                        <span class="text-warning">¥${(pay.amount||0).toFixed(2)}</span>
+                        <span class="text-muted">${pay.pay_date || '-'}</span>
+                    </label>
+                </div>`).join('');
+        })
+        .catch(err => { console.error('loadModalPayments失败:', err); document.getElementById('modalPayList').innerHTML = '<div class="text-danger text-center py-2">加载失败</div>'; });
+}
+
+function toggleAddInvoice(id) {
+    if (addSelectedInvoices.has(id)) addSelectedInvoices.delete(id);
+    else addSelectedInvoices.add(id);
+    updateSelectedCount();
+    // 自动提示类型切换
+    if (addSelectedInvoices.size > 0) {
+        const tripTypes = ['火车票', '航空行程单', '出租车发票', '网约车'];
+        const hasTrip = Array.from(addSelectedInvoices).some(id => {
+            const inv = modalLoadedInvoices.find(i => i.id === id);
+            return inv && tripTypes.includes(inv.invoice_type);
+        });
+        const selectedType = document.querySelector('input[name="modalReimbType"]:checked').value;
+        const hint = document.getElementById('typeHint');
+        if (hasTrip && selectedType === '采购报销') {
+            hint.textContent = '⚠️ 含出差类发票，建议选「出差报销」';
+            hint.style.color = '#ff9800';
+        } else if (hasTrip) {
+            hint.textContent = '✈️ 已选出差类发票';
+            hint.style.color = '#4CAF50';
+        } else {
+            hint.textContent = '';
+        }
+    } else {
+        document.getElementById('typeHint').textContent = '';
+    }
+}
+
+function toggleAddPayment(id) {
+    if (addSelectedPayments.has(id)) addSelectedPayments.delete(id);
+    else addSelectedPayments.add(id);
+    updateSelectedCount();
+}
+
+function updateSelectedCount() {
+    document.getElementById('selectedCount').textContent = addSelectedInvoices.size + addSelectedPayments.size;
+}
+
+function confirmAddToReimb() {
+    const invIds = Array.from(addSelectedInvoices);
+    const payIds = Array.from(addSelectedPayments);
+    if (!invIds.length && !payIds.length) {
+        alert('请至少选择一条记录');
+        return;
+    }
+    const btn = document.getElementById('confirmAddBtn');
+    btn.disabled = true;
+    btn.textContent = '处理中…';
+
+    // 1. 先更新报销类型（根据用户选择 + 自动检测）
+    const selectedType = document.querySelector('input[name="modalReimbType"]:checked').value;
+    let finalType = selectedType;
+    // 如果选了出差报销但还没选发票，提示
+    // 自动检测：如果选择了发票且含出差类发票，提示用户
+    if (invIds.length > 0) {
+        const tripTypes = ['火车票', '航空行程单', '出租车发票', '网约车'];
+        const hasTrip = invIds.some(id => {
+            const inv = modalLoadedInvoices.find(i => i.id === id);
+            return inv && tripTypes.includes(inv.invoice_type);
+        });
+        if (hasTrip && selectedType === '采购报销') {
+            // 提示用户：选中的发票含出差类，建议切换
+            const hint = document.getElementById('typeHint');
+            hint.textContent = '⚠️ 选中的发票含出差类，建议选「出差报销」';
+            hint.style.color = '#ff9800';
+        }
+    }
+
+    Promise.all([
+        ...invIds.map(iid => fetch(`/expense/api/invoices/${iid}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ reimbursement_id: addToReimbRid })
+        }).then(r => r.json())),
+        ...payIds.map(pid => fetch(`/expense/api/payments/${pid}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ reimbursement_id: addToReimbRid })
+        }).then(r => r.json())),
+        // 更新报销类型
+        fetch(`/expense/api/reimbursements/${addToReimbRid}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ reimbursement_type: finalType })
+        }).then(r => r.json())
+    ]).then(results => {
+        btn.disabled = false;
+        btn.textContent = '确定增加';
+        bootstrap.Modal.getInstance(document.getElementById('addToReimbModal')).hide();
+        if (expandedRid === addToReimbRid) fetchDetail(addToReimbRid);
+        loadRecords();
+    }).catch(err => {
+        console.error('confirmAddToReimb失败:', err);
+        btn.disabled = false;
+        btn.textContent = '确定增加';
+        alert('增加失败，请重试');
+    });
+}
+
+// ============================================================
+
+// ============================================================
+// 单据列表（005号需求）
+// ============================================================
+function gotoNewDocument(rid) {
+    window.location.href = `/expense/documents/?project_id=${rid}`;
+}
+
+function mergePrintDocs(rid) {
+    const btn = event.target.closest('button');
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 汇总中...';
+    fetch(`/expense/documents/api/reimbursements/${rid}/documents/merge_print_full`, {method:'POST'})
+        .then(r => r.ok ? r.blob() : Promise.reject('服务器错误'))
+        .then(b => {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(b);
+            a.download = '单据汇总.docx';
+            a.click();
+            URL.revokeObjectURL(a.href);
+        })
+        .catch(e => alert('汇总打印失败: ' + e))
+        .finally(() => { btn.disabled = false; btn.innerHTML = orig; });
+}
+
+function generateReport(rid) {
+    const btn = event.target.closest('button');
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 生成中...';
+    fetch(`/expense/documents/api/reimbursements/${rid}/generate_report`, {method:'POST'})
+        .then(r => r.ok ? r.blob() : Promise.reject('服务器错误'))
+        .then(b => {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(b);
+            a.download = '完整报销单.docx';
+            a.click();
+            URL.revokeObjectURL(a.href);
+            alert('报销单已生成');
+        })
+        .catch(e => alert('生成失败: ' + e))
+        .finally(() => { btn.disabled = false; btn.innerHTML = orig; });
+}
+
+function loadDocsList(rid) {
+    fetch(`/expense/documents/api/reimbursements/${rid}/documents`, {credentials:'include'})
+        .then(r => r.json())
+        .then(d => {
+            const el = document.getElementById('docs-list-' + rid);
+            if (!el) return;
+            if (d.documents && d.documents.length > 0) {
+                el.innerHTML = d.documents.map(doc =>
+                    `<div class="col-12"><a href="/expense/documents/api/reimbursements/${rid}/documents/${doc.id}/download" target="_blank" class="text-decoration-none"><i class="bi bi-file-earmark-word"></i> ${doc.doc_type || '单据'}</a></div>`
+                ).join('');
+            } else {
+                el.innerHTML = '<div class="text-muted small">暂无单据，请点击"新建单据"</div>';
+            }
+        })
+        .catch(() => {
+            const el = document.getElementById('docs-list-' + rid);
+            if (el) el.innerHTML = '<div class="text-muted small">加载失败</div>';
+        });
+}
+
+// 工具函数
+// ============================================================
+function escapeHtml(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ============================================================
+// 启动
+// ============================================================
+loadAll();
+setInterval(loadAll, 30000);
+</script>
+
+<style>
+.expand-row td { background: #f8f9fa; }
+.reimb-row > td { vertical-align: middle; }
+.editable { cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background 0.15s; }
+.editable:hover { background: #e9ecef; }
+#hoverCard { font-size: 13px; line-height: 1.6; max-height: 200px; overflow-y: auto; }
+</style>
+{% endblock %}

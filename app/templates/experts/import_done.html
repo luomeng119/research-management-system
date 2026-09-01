@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}批量导入专家信息 - 步骤 3/3{% endblock %}
+{% block extra_css %}
+<style>
+.step-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 20px 0 30px 0;
+    font-size: 14px;
+}
+.step-indicator .step {
+    display: flex;
+    align-items: center;
+    color: #999;
+}
+.step-indicator .step.done {
+    color: #198754;
+}
+.step-indicator .step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #e9ecef;
+    color: #999;
+    margin-right: 8px;
+    font-weight: bold;
+}
+.step-indicator .step.done .step-num {
+    background: #198754;
+    color: #fff;
+}
+.step-indicator .step-sep {
+    flex: 0 0 60px;
+    height: 1px;
+    background: #ddd;
+    margin: 0 12px;
+}
+.result-summary {
+    text-align: center;
+    margin: 20px 0 30px 0;
+}
+.result-summary h3 {
+    color: #198754;
+    font-size: 24px;
+    margin-bottom: 20px;
+}
+.result-card {
+    border-radius: 8px;
+    padding: 20px;
+    color: #fff;
+    margin-bottom: 16px;
+}
+.result-card.success { background: #198754; }
+.result-card.warning { background: #ffc107; color: #333; }
+.result-card.danger { background: #dc3545; }
+.result-card .num {
+    font-size: 36px;
+    font-weight: bold;
+    line-height: 1;
+}
+.result-card .label {
+    font-size: 14px;
+    margin-top: 8px;
+    opacity: 0.9;
+}
+.success-table th {
+    background: #f8f9fa;
+    font-weight: 600;
+    font-size: 13px;
+}
+.success-table td {
+    font-size: 13px;
+}
+.fail-table th {
+    background: #f8d7da;
+    font-weight: 600;
+    font-size: 13px;
+}
+.fail-table td {
+    font-size: 13px;
+}
+.action-bar {
+    position: sticky;
+    bottom: 0;
+    background: #fff;
+    border-top: 1px solid #e9ecef;
+    padding: 12px 20px;
+    margin: 30px -20px -20px -20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 100;
+}
+</style>
+{% endblock %}
+{% block content %}
+<div class="container mt-3">
+    <h4 class="mb-2">批量导入专家信息</h4>
+    <p class="text-muted small mb-1">文件：<code>{{ results.filename }}</code></p>
+
+    <div class="step-indicator">
+        <div class="step done">
+            <span class="step-num">✓</span>
+            <span>上传文件 + 列映射</span>
+        </div>
+        <div class="step-sep"></div>
+        <div class="step done">
+            <span class="step-num">✓</span>
+            <span>逐行预览确认</span>
+        </div>
+        <div class="step-sep"></div>
+        <div class="step done">
+            <span class="step-num">✓</span>
+            <span>导入结果</span>
+        </div>
+    </div>
+
+    <div class="result-summary">
+        <h3>✓ 导入完成</h3>
+        <div class="row">
+            <div class="col-md-4">
+                <div class="result-card success">
+                    <div class="num">{{ results.success|length }}</div>
+                    <div class="label">成功导入</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="result-card warning">
+                    <div class="num">{{ results.skip }}</div>
+                    <div class="label">跳过（缺姓名）</div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="result-card danger">
+                    <div class="num">{{ results.fail|length }}</div>
+                    <div class="label">失败</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% if results.success %}
+    <h6 class="mt-4">成功导入 {{ results.success|length }} 条（仅显示前 100 条）</h6>
+    <div class="table-responsive">
+        <table class="table table-sm table-bordered success-table">
+            <thead>
+                <tr>
+                    <th style="width: 60px;">#</th>
+                    <th>专家编号</th>
+                    <th>姓名</th>
+                    <th>单位</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for s in results.success[:100] %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td><code>{{ s.expert_id }}</code></td>
+                    <td>{{ s.name }}</td>
+                    <td>{{ s.unit }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if results.success|length > 100 %}
+    <p class="text-muted small">（还有 {{ results.success|length - 100 }} 条未显示）</p>
+    {% endif %}
+    {% endif %}
+
+    {% if results.fail %}
+    <h6 class="mt-4 text-danger">⚠ 失败 {{ results.fail|length }} 条</h6>
+    <div class="table-responsive">
+        <table class="table table-sm table-bordered fail-table">
+            <thead>
+                <tr>
+                    <th style="width: 80px;">行号</th>
+                    <th>姓名</th>
+                    <th>失败原因</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for f in results.fail %}
+                <tr>
+                    <td>{{ f.row_idx + 2 }}</td>
+                    <td>{{ f.name }}</td>
+                    <td><small>{{ f.reason }}</small></td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    <div class="action-bar">
+        <a href="/experts/import" class="btn btn-light">再导一批</a>
+        <a href="/experts/" class="btn btn-primary">返回列表 →</a>
+    </div>
+</div>
+{% endblock %}

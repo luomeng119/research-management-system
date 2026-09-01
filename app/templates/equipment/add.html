@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+
+{% block title %}添加设备 - 科研管理系统V2{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h2 class="mb-4">添加设备</h2>
+    
+    <form method="POST" enctype="multipart/form-data" class="row g-3" style="max-width: 900px;">
+        <!-- 第一行：设备名称 + 型号 -->
+        <div class="col-md-6">
+            <label class="form-label">设备名称 <span class="text-danger">*</span></label>
+            <input type="text" name="name" class="form-control" required>
+        </div>
+        
+        <div class="col-md-6">
+            <label class="form-label">型号</label>
+            <input type="text" name="model" class="form-control">
+        </div>
+        
+        <!-- 第二行：分类 + 设备子类 + 形态 + 单价 + 技术状态 -->
+        <div class="col-md-2">
+            <label class="form-label">分类</label>
+            <select name="category" id="addCategory" class="form-select" onchange="updateAddSubclassOptions()">
+                <option value="安全设备">安全设备</option>
+                <option value="密码设备">密码设备</option>
+                <option value="通用设备">通用设备</option>
+                <option value="其他设备">其他设备</option>
+            </select>
+        </div>
+
+        <div class="col-md-2">
+            <label class="form-label">设备子类</label>
+            <select name="subclass" id="addSubclass" class="form-select">
+                <option value="">--请先选择分类--</option>
+            </select>
+        </div>
+
+        <div class="col-md-2">
+            <label class="form-label">形态</label>
+            <select name="form" class="form-select">
+                <option value="便携式">便携式</option>
+                <option value="车载">车载</option>
+                <option value="舰载">舰载</option>
+                <option value="机载">机载</option>
+                <option value="固定式">固定式</option>
+                <option value="手持式">手持式</option>
+                <option value="板载">板载</option>
+            </select>
+        </div>
+        
+        <div class="col-md-3">
+            <label class="form-label">单价(万元)</label>
+            <input type="number" name="price" class="form-control" step="0.01">
+        </div>
+        
+        <div class="col-md-3">
+            <label class="form-label">技术状态</label>
+            <select name="tech_status" class="form-select">
+                <option value="已定型">已定型</option>
+                <option value="研制中">研制中</option>
+                <option value="不明">不明</option>
+            </select>
+        </div>
+        
+        <!-- 第三行：研制单位 + 曾用名 -->
+        <div class="col-md-6">
+            <label class="form-label">研制单位</label>
+            <input type="hidden" name="manufacturer" id="manufacturerHidden">
+            <div class="position-relative">
+                <div id="manufacturerTags" class="form-control" style="min-height:38px;cursor:pointer;display:flex;flex-wrap:wrap;gap:4px;align-items:center;" onclick="toggleMfgDropdown()">
+                    <span class="text-muted small" id="manufacturerPlaceholder">点击选择（可多选）</span>
+                </div>
+                <div id="manufacturerDropdown" class="dropdown-menu show" style="display:none;max-height:250px;overflow-y:auto;min-width:100%;">
+                    <div id="manufacturerOptions"></div>
+                </div>
+            </div>
+            <div class="form-text">已选：<span id="manufacturerSelectedCount">0</span> 个单位</div>
+        </div>
+        
+        <div class="col-md-6">
+            <label class="form-label">曾用名</label>
+            <input type="text" name="former_name" class="form-control">
+        </div>
+        
+        <!-- 设备图片 -->
+        <div class="col-md-12">
+            <label class="form-label">设备图片（可多选）</label>
+            <input type="file" name="equipment_images" class="form-control" accept="image/*" id="imageInput" multiple>
+            <div class="mt-2" id="imagePreviewContainer" style="display: flex; flex-wrap: wrap; gap: 10px;"></div>
+            <div class="form-text">支持点击上传多张图片或 Ctrl+V 粘贴图片</div>
+        </div>
+        
+        <!-- 功能技术指标 - 单占一行 -->
+        <div class="col-12">
+            <label class="form-label">功能技术指标</label>
+            <textarea name="tech_index" class="form-control" rows="5" placeholder="详细描述设备的技术指标和功能特性"></textarea>
+        </div>
+        
+        <!-- 主要用途 - 单占一行 -->
+        <div class="col-12">
+            <label class="form-label">主要用途</label>
+            <textarea name="main_purpose" class="form-control" rows="5" placeholder="描述设备的主要用途和应用场景"></textarea>
+        </div>
+        
+        <!-- 加装要求 - 单占一行 -->
+        <div class="col-12">
+            <label class="form-label">加装要求</label>
+            <textarea name="installation_requirements" class="form-control" rows="5" placeholder="描述设备加装所需的环境、电源、配套等要求"></textarea>
+        </div>
+        
+        <!-- 资源保障要求 - 单占一行 -->
+        <div class="col-12">
+            <label class="form-label">资源保障要求</label>
+            <textarea name="resource_guarantee" class="form-control" rows="5" placeholder="如：需要专用电池、配套软件、运维人员等"></textarea>
+        </div>
+        
+        <!-- 提交按钮 -->
+        <div class="col-12">
+            <button type="submit" class="btn btn-primary">保存</button>
+            <a href="{{ url_for('equipment.index') }}" class="btn btn-secondary">取消</a>
+        </div>
+    </form>
+</div>
+
+<script>
+// 图片预览和粘贴功能
+document.addEventListener('DOMContentLoaded', function() {
+    var imageInput = document.getElementById('imageInput');
+    var imagePreview = document.getElementById('imagePreview');
+    
+    // 文件选择预览 - 支持多图
+    imageInput.addEventListener('change', function(e) {
+        var files = e.target.files;
+        var container = document.getElementById('imagePreviewContainer');
+        container.innerHTML = ''; // 清空之前的预览
+        
+        for (var i = 0; i < files.length; i++) {
+            var file = files[i];
+            var reader = new FileReader();
+            reader.onload = function(e) {
+                var img = document.createElement('img');
+                img.src = e.target.result;
+                img.style.maxWidth = '150px';
+                img.style.maxHeight = '120px';
+                img.className = 'border rounded';
+                container.appendChild(img);
+            };
+            reader.readAsDataURL(file);
+        }
+    });
+    
+    // 粘贴图片 - 支持多图
+    document.addEventListener('paste', function(e) {
+        var items = e.clipboardData.items;
+        var container = document.getElementById('imagePreviewContainer');
+        var dt = new DataTransfer();
+        var fileCount = 0;
+        
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].type.indexOf('image') !== -1) {
+                var file = items[i].getAsFile();
+                dt.items.add(file);
+                fileCount++;
+                
+                // 预览
+                var reader = new FileReader();
+                reader.onload = function(e) {
+                    var img = document.createElement('img');
+                    img.src = e.target.result;
+                    img.style.maxWidth = '150px';
+                    img.style.maxHeight = '120px';
+                    img.className = 'border rounded';
+                    container.appendChild(img);
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+        
+        if (fileCount > 0) {
+            imageInput.files = dt.files;
+        }
+    });
+});
+
+// 研制单位多选下拉
+var selectedManufacturers = [];
+
+function loadManufacturerOptions() {
+    fetch('/research-units/api/list')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var units = data.units || [];
+            var html = '';
+            units.forEach(function(u) {
+                var checked = selectedManufacturers.indexOf(u.name) >= 0 ? 'checked' : '';
+                html += '<label class="dropdown-item" style="cursor:pointer;">';
+                html += '<input type="checkbox" value="' + escAttr(u.name) + '" ' + checked + ' onchange="toggleManufacturer(this)" style="margin-right:6px;">' + escHtml(u.name);
+                if (u.alias) html += ' <span class="text-muted small">(' + escHtml(u.alias) + ')</span>';
+                html += '</label>';
+            });
+            document.getElementById('manufacturerOptions').innerHTML = html || '<div class="dropdown-item text-muted">暂无数据</div>';
+        });
+}
+
+function toggleMfgDropdown() {
+    var dd = document.getElementById('manufacturerDropdown');
+    if (dd.style.display === 'none') {
+        dd.style.display = 'block';
+        loadManufacturerOptions();
+    } else {
+        dd.style.display = 'none';
+    }
+}
+
+function toggleManufacturer(cb) {
+    var name = cb.value;
+    if (cb.checked) {
+        if (selectedManufacturers.indexOf(name) < 0) selectedManufacturers.push(name);
+    } else {
+        selectedManufacturers = selectedManufacturers.filter(function(n) { return n !== name; });
+    }
+    updateManufacturerUI();
+    document.getElementById('manufacturerHidden').value = selectedManufacturers.join('、');
+}
+
+function updateManufacturerUI() {
+    var tagsEl = document.getElementById('manufacturerTags');
+    var placeholder = document.getElementById('manufacturerPlaceholder');
+    var countEl = document.getElementById('manufacturerSelectedCount');
+    countEl.textContent = selectedManufacturers.length;
+    if (selectedManufacturers.length === 0) {
+        tagsEl.innerHTML = '<span class="text-muted small" id="manufacturerPlaceholder">点击选择（可多选）</span>';
+    } else {
+        var html = '';
+        selectedManufacturers.forEach(function(name) {
+            html += '<span class="badge bg-primary" style="font-size:0.75em;">' + escHtml(name) + ' <span style="cursor:pointer;margin-left:2px;" onclick="removeManufacturer(\'' + escAttr(name) + '\', event)">&times;</span></span>';
+        });
+        tagsEl.innerHTML = html;
+    }
+}
+
+function removeManufacturer(name, e) {
+    e.stopPropagation();
+    selectedManufacturers = selectedManufacturers.filter(function(n) { return n !== name; });
+    // uncheck the checkbox
+    var cbs = document.querySelectorAll('#manufacturerOptions input[type=checkbox]');
+    cbs.forEach(function(cb) { if (cb.value === name) cb.checked = false; });
+    updateManufacturerUI();
+    document.getElementById('manufacturerHidden').value = selectedManufacturers.join('、');
+}
+
+function refreshManufacturerOptions() {
+    loadManufacturerOptions();
+}
+
+// 点击外部关闭下拉
+document.addEventListener('click', function(e) {
+    var tags = document.getElementById('manufacturerTags');
+    var dd = document.getElementById('manufacturerDropdown');
+    if (!tags.contains(e.target) && !dd.contains(e.target)) {
+        dd.style.display = 'none';
+    }
+});
+
+function escHtml(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escAttr(s) {
+    if (!s) return '';
+    return String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// 子类数据
+const subclassData = {{ subclasses_json | tojson }};
+
+function updateAddSubclassOptions() {
+    const category = document.getElementById('addCategory').value;
+    const subclassSelect = document.getElementById('addSubclass');
+    subclassSelect.innerHTML = '<option value="">--请选择--</option>';
+
+    if (!category || !subclassData[category]) return;
+
+    subclassData[category].forEach(function(sc) {
+        const opt = document.createElement('option');
+        opt.value = sc.subclass_name;
+        opt.textContent = sc.subclass_name;
+        subclassSelect.appendChild(opt);
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    initManufacturerFromValue();
+    loadManufacturerOptions();
+});
+</script>
+{% endblock %}

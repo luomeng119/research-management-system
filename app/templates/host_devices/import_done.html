@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}宿主设备库 - 导入完成{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>宿主设备库 - 导入完成</h4>
+        <a href="{{ url_for('host_devices.index') }}" class="btn btn-outline-secondary btn-sm">返回列表</a>
+    </div>
+
+    <div class="card">
+        <div class="card-body text-center" style="padding:60px 20px;">
+            <div style="font-size:64px; color:#52c41a; margin-bottom:20px;">✅</div>
+            <h4 style="margin-bottom:30px;">导入完成</h4>
+
+            <div class="row justify-content-center">
+                <div class="col-md-6">
+                    <table class="table table-bordered mb-0">
+                        <tbody>
+                            <tr>
+                                <td style="width:50%; text-align:right; font-weight:bold;">新增</td>
+                                <td style="text-align:left; color:#52c41a; font-size:18px;">
+                                    <strong>{{ new_count }}</strong> 条
+                                </td>
+                            </tr>
+                            {% if overwrite_count > 0 %}
+                            <tr>
+                                <td style="text-align:right; font-weight:bold;">覆盖</td>
+                                <td style="text-align:left; color:#1677ff; font-size:18px;">
+                                    <strong>{{ overwrite_count }}</strong> 条
+                                </td>
+                            </tr>
+                            {% endif %}
+                            {% if skip_count > 0 %}
+                            <tr>
+                                <td style="text-align:right; font-weight:bold;">跳过</td>
+                                <td style="text-align:left; color:#999; font-size:18px;">
+                                    <strong>{{ skip_count }}</strong> 条
+                                </td>
+                            </tr>
+                            {% endif %}
+                            <tr>
+                                <td style="text-align:right; font-weight:bold;">关联建立</td>
+                                <td style="text-align:left; color:#722ed1; font-size:18px;">
+                                    <strong>{{ relations_count }}</strong> 条
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            {% if skipped_relations %}
+            <div class="mt-4 text-start" style="max-width:600px; margin-left:auto; margin-right:auto;">
+                <div class="alert alert-warning mb-0">
+                    <strong>⚠ 以下关联未建立（目标设备不存在于库中）：</strong>
+                    <ul class="mb-0 mt-2">
+                        {% for rel in skipped_relations %}
+                        <li>「{{ rel.name }}」→「{{ rel.device }}」（目标设备不存在，已跳过）</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="mt-4">
+                <a href="{{ url_for('host_devices.index') }}" class="btn btn-primary me-2">
+                    查看宿主设备列表
+                </a>
+                <a href="{{ url_for('host_devices.import_page') }}" class="btn btn-outline-primary">
+                    继续导入
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

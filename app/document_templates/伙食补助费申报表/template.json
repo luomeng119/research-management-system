@@ -1,0 +1,81 @@
+{
+  "template_id": "tpl_huoshi",
+  "doc_type": "伙食补助费申报表",
+  "docx_filename": "模板.docx",
+  "table_index": 0,
+  "version": "1.0.0",
+  "fields": [
+    {
+      "field_id": "T1[3,0]",
+      "label": "序号",
+      "type": "text",
+      "source": "auto:index",
+      "required": true,
+      "editable": false
+    },
+    {
+      "field_id": "T1[3,1]",
+      "label": "姓名",
+      "type": "text",
+      "source": "session.name",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T1[3,2]",
+      "label": "开始日期",
+      "type": "text",
+      "source": "invoice:火车票.出发日期",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T1[3,4]",
+      "label": "结束日期",
+      "type": "text",
+      "source": "invoice:火车票.到达日期",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T1[3,5]",
+      "label": "天数",
+      "type": "number",
+      "source": "calculated:days_from_dates",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T1[3,6]",
+      "label": "标准",
+      "type": "amount",
+      "source": "fixed:100",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T1[3,8]",
+      "label": "申报金额",
+      "type": "amount",
+      "source": "calculated:days×standard",
+      "required": true,
+      "editable": true
+    },
+    {
+      "field_id": "T1[3,9]",
+      "label": "核准金额",
+      "type": "amount",
+      "source": "calculated:readonly",
+      "required": false,
+      "editable": false
+    },
+    {
+      "field_id": "T1[3,10]",
+      "label": "备注",
+      "type": "text",
+      "source": "user_input",
+      "required": false,
+      "editable": true
+    }
+  ]
+}

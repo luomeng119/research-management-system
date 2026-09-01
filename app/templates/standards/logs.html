@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block title %}{{ module_title }} - 操作日志{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h4 class="mb-4">
+        <i class="bi bi-clock-history"></i> {{ module_title }} - 操作日志
+    </h4>
+    
+    <!-- 标准列表（仅标准法规库显示） -->
+    {% if module_name == 'standards' and standards %}
+    <div class="card mb-4">
+        <div class="card-header bg-success text-white">
+            <i class="bi bi-book"></i> 标准法规列表
+        </div>
+        <div class="card-body">
+            {% if standards %}
+            <div class="table-responsive">
+                <table class="table table-hover table-striped">
+                    <thead>
+                        <tr>
+                            <th>文档名称</th>
+                            <th>分类</th>
+                            <th>文件类型</th>
+                            <th>上传人</th>
+                            <th>上传时间</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in standards %}
+                        <tr>
+                            <td>{{ s['name'] }}</td>
+                            <td>{{ s['category'] }}</td>
+                            <td>{{ s['file_type'] }}</td>
+                            <td>{{ s['uploader'] }}</td>
+                            <td>{{ s['upload_time'] if s['upload_time'] else '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-muted">暂无标准法规</p>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+    
+    <!-- 筛选表单 -->
+    <form method="get" class="row g-3 mb-4">
+        <div class="col-md-3">
+            <input type="text" name="operator" class="form-control" placeholder="操作人" value="{{ request.args.get('operator', '') }}">
+        </div>
+        <div class="col-md-3">
+            <input type="text" name="file_name" class="form-control" placeholder="文件名" value="{{ request.args.get('file_name', '') }}">
+        </div>
+        <div class="col-md-2">
+            <input type="date" name="start_date" class="form-control" value="{{ request.args.get('start_date', '') }}">
+        </div>
+        <div class="col-md-2">
+            <input type="date" name="end_date" class="form-control" value="{{ request.args.get('end_date', '') }}">
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary w-100">
+                <i class="bi bi-search"></i> 筛选
+            </button>
+        </div>
+    </form>
+    
+    <!-- 操作日志列表 -->
+    <div class="card">
+        <div class="card-header">
+            <i class="bi bi-clock-history"></i> 操作日志
+        </div>
+        <div class="card-body">
+            {% if logs %}
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>操作人</th>
+                            <th>操作类型</th>
+                            <th>文件名</th>
+                            <th>详情</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in logs %}
+                        <tr>
+                            <td>{{ log.timestamp }}</td>
+                            <td>{{ log.operator }}</td>
+                            <td>
+                                {% if log.operation_type == '上传文件' %}
+                                <span class="badge bg-success">{{ log.operation_type }}</span>
+                                {% elif log.operation_type == '删除文件' %}
+                                <span class="badge bg-danger">{{ log.operation_type }}</span>
+                                {% else %}
+                                <span class="badge bg-secondary">{{ log.operation_type }}</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ log.file_name }}</td>
+                            <td>{{ log.detail or '-' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-muted text-center py-4">暂无操作日志</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

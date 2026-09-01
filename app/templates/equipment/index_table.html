@@ -1,0 +1,42 @@
+<table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>设备名称</th>
+                    <th>曾用名</th>
+                    <th>型号</th>
+                    <th>分类</th>
+                    <th>形态</th>
+                    <th>单价(万元)</th>
+                    <th>主要用途</th>
+                    <th>资源保障要求</th>
+                    <th>技术状态</th>
+                    <th>加装要求</th>
+                    <th>研制单位</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in equipment %}
+                <tr>
+                    <td>{{ e[2] }}</td>
+                    <td>{{ e[15] or '-' }}</td>
+                    <td>{{ e[3] }}</td>
+                    <td>{{ e[4] }}</td>
+                    <td>{{ e[5] }}</td>
+                    <td>{{ e[6] }}</td>
+                    <td>{{ e[14] or '-' }}</td>
+                    <td>{{ e[16] or '-' }}</td>
+                    <td>{{ e[8] }}</td>
+                    <td>{{ e[13] or '-' }}</td>
+                    <td>{{ e[9] }}</td>
+                    <td>
+                        <a href="{{ url_for('equipment.detail', equipment_id=e[1]) }}" class="btn btn-sm btn-outline-primary" title="查看"><i class="bi bi-eye"></i></a>
+                        {% if session.get('role') == '管理员' %}
+                        <a href="{{ url_for('equipment.edit', equipment_id=e[1]) }}" class="btn btn-sm btn-outline-secondary" title="编辑"><i class="bi bi-pencil"></i></a>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteEquipment('{{ e[1] }}')" title="删除"><i class="bi bi-trash"></i></button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>

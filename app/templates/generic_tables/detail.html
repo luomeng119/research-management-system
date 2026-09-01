@@ -1,0 +1,1154 @@
+{% extends "base.html" %}
+{% block title %}{{ table.name }} - 通用表格{% endblock %}
+
+{% block extra_css %}
+<style>
+    .toolbar {
+        background: #f8fafc;
+        border-bottom: 1px solid #dee2e6;
+        padding: 8px 16px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    .toolbar .form-control,
+    .toolbar .form-select {
+        font-size: 13px;
+        padding: 4px 8px;
+    }
+    .stats-bar {
+        background: #f0f4ff;
+        border-bottom: 1px solid #dee2e6;
+        padding: 6px 16px;
+        font-size: 13px;
+        color: #2563eb;
+        display: flex;
+        gap: 20px;
+    }
+    .data-table-wrap {
+        overflow: auto;
+        max-height: calc(100vh - 200px);
+    }
+    table.data-table {
+        /* REQ-019: 去掉 min-width:100%（否则 table-layout:fixed 下列宽被等比放大填满容器） */
+        border-collapse: collapse;
+        font-size: 13px;
+        /* REQ-016 bugfix：table-layout fixed 让 th/td 的 style.width 严格生效
+           否则浏览器按内容撑开宽度，startW 用 getBoundingClientRect 时
+           第二次拖小会被 max 800 误钳制 */
+        table-layout: fixed;
+    }
+    table.data-table th {
+        background: #f1f5f9;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        white-space: nowrap;
+        text-align: left;
+        padding: 8px 12px;
+        border: 1px solid #dee2e6;
+        font-weight: 600;
+        color: #374151;
+    }
+    table.data-table td {
+        padding: 6px 12px;
+        border: 1px solid #e5e7eb;
+        vertical-align: middle;
+    }
+    table.data-table tr:hover td {
+        background: #f8fafc;
+    }
+    table.data-table td.cell-edit {
+        cursor: text;
+        /* REQ-019: 固定列（_checkbox/_color/_index）不强制 min-width，保持窄列 */
+        min-width: 80px;
+    }
+    /* REQ-019: 固定列的 cell-edit 不强制 min-width（覆盖上一行） */
+    table.data-table td.cell-edit[data-col-key^="_"] {
+        min-width: 0;
+    }
+    /* REQ-019: 固定列（_index）的 td 限死宽度，避免被内容撑开 */
+    table.data-table td[data-col-key="_index"] {
+        max-width: 35px;
+        overflow: hidden;
+        text-overflow: clip;
+    }
+    table.data-table td.cell-edit:not([data-col-key^="_"]) {
+        /* REQ-016 bugfix：fixed table-layout 下长内容用省略号，避免撑开列宽 */
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    table.data-table th > .col-label {
+        /* 表头也用省略号保持行为一致 */
+        display: inline-block;
+        max-width: calc(100% - 12px);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: middle;
+    }
+    table.data-table td.cell-edit:hover {
+        background: #e7f1ff;
+        outline: 2px solid #2563eb;
+        outline-offset: -2px;
+    }
+    .row-selected td {
+        background: #eff6ff !important;
+    }
+    .row-deleted td {
+        background: #fef2f2;
+        color: #dc2626;
+    }
+    .row-added td {
+        background: #f0fdf4;
+        color: #16a34a;
+    }
+    .row-modified td {
+        background: #fefce8;
+        color: #ca8a04;
+    }
+    .summary-row td {
+        background: #f1f5f9;
+        font-weight: 600;
+        color: #374151;
+    }
+    .drawer-overlay {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.3);
+        z-index: 1040;
+        display: none;
+    }
+    .drawer-overlay.show { display: block; }
+    .columns-drawer {
+        position: fixed;
+        top: 0; right: 0; bottom: 0;
+        width: 360px;
+        background: #fff;
+        border-left: 1px solid #dee2e6;
+        z-index: 1045;
+        transform: translateX(100%);
+        transition: transform 0.3s ease;
+        display: flex;
+        flex-direction: column;
+    }
+    .columns-drawer.show { transform: translateX(0); }
+    .drawer-header {
+        padding: 16px;
+        border-bottom: 1px solid #dee2e6;
+        background: #f8fafc;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .drawer-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px;
+    }
+    .col-item {
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        background: #fff;
+    }
+    .col-item:hover { border-color: #2563eb; }
+    .col-item .col-name { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+    .col-item .col-meta { font-size: 12px; color: #6c757d; }
+    .empty-table {
+        text-align: center;
+        padding: 60px;
+        color: #6c757d;
+    }
+    /* === REQ-016 行染色 === */
+    td.color-cells { white-space: nowrap; padding: 4px 6px; max-width: 80px; overflow: hidden; }
+    .color-chip {
+        display: inline-block;
+        width: 14px; height: 14px;
+        border-radius: 50%;
+        margin: 0 2px;
+        cursor: pointer;
+        vertical-align: middle;
+        transition: transform 0.1s, outline-color 0.1s;
+        outline: 2px solid transparent;
+        outline-offset: 1px;
+    }
+    .color-chip:hover { transform: scale(1.15); }
+    .color-chip.color-yellow { background: #fde68a; }
+    .color-chip.color-green { background: #86efac; }
+    .color-chip.color-red { background: #fca5a5; }
+    .color-chip.active { outline-color: #374151; }
+    tr.row-color-yellow { background: #fef3c7 !important; }
+    tr.row-color-green { background: #d1fae5 !important; }
+    tr.row-color-red { background: #fee2e2 !important; color: #991b1b; }
+    tr.row-color-red.row-selected,
+    tr.row-color-yellow.row-selected,
+    tr.row-color-green.row-selected { background: #dbeafe !important; }
+    /* === REQ-016 列管理拖拽手柄 === */
+    .col-item.dragging { opacity: 0.4; }
+    .col-item.drag-over-top { border-top: 2px solid #2563eb; }
+    .col-item.drag-over-bottom { border-bottom: 2px solid #2563eb; }
+    .drag-handle {
+        display: inline-block;
+        cursor: grab;
+        color: #6b7280;
+        font-size: 16px;
+        padding: 0 8px;
+        user-select: none;
+    }
+    .drag-handle:active { cursor: grabbing; }
+    /* === REQ-016 表头列宽拖拽 === */
+    table.data-table th { position: relative; }
+    th .resize-handle {
+        position: absolute;
+        right: 0; top: 0; bottom: 0;
+        width: 4px;
+        cursor: col-resize;
+        user-select: none;
+    }
+    th .resize-handle:hover,
+    th .resize-handle.dragging { background: #2563eb; }
+    body.resizing,
+    body.resizing * { cursor: col-resize !important; user-select: none !important; }
+    /* === REQ-016 分页下拉 === */
+    .page-size-select { width: 110px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- 顶部工具栏 -->
+<div class="toolbar">
+    <a href="{{ url_for('generic_tables.list_page') }}" class="btn btn-sm btn-outline-secondary">
+        <i class="bi bi-arrow-left"></i> 返回列表
+    </a>
+    <span class="text-secondary" style="font-size:13px;">|</span>
+    <span style="font-weight:600;color:#2563eb;">{{ table.name }}</span>
+
+    <!-- REQ-020: 版本下拉只列历史快照，current 单独显示在徽章里 -->
+    <select class="form-select" id="versionSelect" style="width:180px;" onchange="switchVersion(this.value)">
+        {% if is_current %}
+        <option value="" selected>🟢 当前编辑 ({{ current_version.version_label or ('v'+current_version.version_number|string) }})</option>
+        {% else %}
+        <option value="" data-href="/tables/{{ table.table_id }}">🟢 返回当前编辑</option>
+        {% endif %}
+        {% for v in versions %}
+            {% if not is_current and v.version_id == current_version.version_id %}
+            <option value="" data-href="/tables/{{ table.table_id }}">🟢 当前编辑 ({{ v.version_label or ('v'+v.version_number|string) }})</option>
+            {% elif v.version_id != current_version.version_id %}
+            <option value="{{ v.version_id }}" {% if not is_current and current_version.version_id == v.version_id %}selected{% endif %}>
+                📷 {{ v.version_label or ('v'+v.version_number|string) }} · {{ v.creator }}
+            </option>
+            {% endif %}
+        {% endfor %}
+    </select>
+    <!-- REQ-020: 徽章 — 当前编辑绿色 / 只读快照金色 -->
+    {% if is_current %}
+    <span class="badge bg-success" title="当前编辑版本，可修改">
+        <i class="bi bi-circle-fill"></i> 当前编辑 · 可修改
+    </span>
+    {% else %}
+    <span class="badge bg-warning text-dark" title="历史快照版本，行/列/单元格只读">
+        <i class="bi bi-lock-fill"></i> 只读快照 · 不可修改
+    </span>
+    {% endif %}
+    {% if is_current %}
+    <button class="btn btn-sm btn-outline-success" onclick="quickSaveSnapshot()" title="把当前编辑版本保存为历史快照（弹窗输入 label/note）">
+        <i class="bi bi-camera"></i> 保存快照
+    </button>
+    {% endif %}
+
+    {% if is_current %}
+    <button class="btn btn-sm btn-outline-primary" onclick="addRow()">
+        <i class="bi bi-plus-lg"></i> 添加行
+    </button>
+    <button class="btn btn-sm btn-outline-secondary" onclick="toggleDrawer()">
+        <i class="bi bi-columns"></i> 列管理
+    </button>
+    <label class="btn btn-sm btn-outline-success mb-0" style="cursor:pointer;">
+        <i class="bi bi-upload"></i> 导入Excel
+        <input type="file" accept=".xlsx,.xls" style="display:none;" id="importFile" onchange="importExcelNew(this)">
+    </label>
+    {% endif %}
+    <button class="btn btn-sm btn-outline-success" onclick="exportExcel()">
+        <i class="bi bi-download"></i> 导出Excel
+    </button>
+    {% if is_current and snapshots %}
+    <button class="btn btn-sm btn-outline-info" onclick="openCompareModal()" title="对比当前编辑版本和某个历史快照">
+        <i class="bi bi-arrow-left-right"></i> 对比
+    </button>
+    {% endif %}
+    <button class="btn btn-sm btn-outline-danger" id="deleteSelectedBtn" style="display:none;{% if not is_current %}display:none;{% endif %}" onclick="deleteSelected()">
+        <i class="bi bi-trash"></i> 删除所选
+    </button>
+
+    <!-- 搜索 + 分页下拉（REQ-016） -->
+    <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+        <select class="form-select form-select-sm page-size-select" id="pageSizeSelect">
+            <option value="10">每页 10</option>
+            <option value="20">每页 20</option>
+            <option value="50">每页 50</option>
+            <option value="100">每页 100</option>
+            <option value="-1">全部</option>
+        </select>
+        <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="快速搜索..." style="width:160px;" oninput="doSearch(this.value)">
+    </div>
+</div>
+
+<!-- 统计栏 -->
+<div class="stats-bar" id="statsBar">
+    <span>共 <strong id="rowCount">0</strong> 条</span>
+    {% for col, stat in stats.items() %}
+    {% if stat.type == 'sum' %}
+    <span>{{ cols_map.get(col, col) }} 合计：<strong>{{ stat.value }}</strong></span>
+    {% elif stat.type == 'avg' %}
+    <span>{{ cols_map.get(col, col) }} 平均：<strong>{{ stat.value }}</strong></span>
+    {% endif %}
+    {% endfor %}
+</div>
+
+<!-- REQ-020: 主内容 + 右侧版本侧边栏 -->
+<div class="main-content-row" style="display:flex;gap:16px;align-items:flex-start;">
+
+<!-- 数据表格 -->
+<div class="data-table-wrap" id="tableWrap" style="flex:1;min-width:0;">
+    {% if not columns %}
+    <div class="empty-table">
+        <i class="bi bi-table" style="font-size:40px;"></i>
+        <h6>暂无列定义</h6>
+        <p>点击「列管理」添加第一列，或「导入Excel」自动从文件提取列结构</p>
+    </div>
+    {% elif not rows %}
+    <div class="empty-table">
+        <i class="bi bi-inbox" style="font-size:40px;"></i>
+        <h6>暂无数据</h6>
+        <p>点击「添加行」或「导入Excel」录入数据</p>
+    </div>
+    {% else %}
+    <table class="data-table" id="dataTable">
+        <thead>
+            <tr>
+                <th style="width:30px;" data-col-key="_checkbox">
+                    <input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)">
+                    <span class="resize-handle" data-col-key="_checkbox"></span>
+                </th>
+                <th style="width:80px;" data-col-key="_color">配色<span class="resize-handle" data-col-key="_color"></span></th>
+                <th style="width:35px;" data-col-key="_index">#<span class="resize-handle" data-col-key="_index"></span></th>
+                {% for col in columns %}
+                <th style="width:{{ col.col_width or 120 }}px;" data-col-key="{{ col.col_key }}" data-col-type="{{ col.col_type }}">
+                    <span class="col-label">{{ col.col_name }}</span>
+                    <span class="resize-handle" data-col-key="{{ col.col_key }}"></span>
+                </th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody id="tableBody">
+        </tbody>
+    </table>
+    <div id="paginationWrap"></div>
+    {% endif %}
+</div>
+
+<!-- REQ-020: 右侧版本侧边栏 -->
+<aside class="version-sidebar" style="width:300px;flex-shrink:0;">
+    <!-- 当前编辑版本卡片 -->
+    <div class="card border-success mb-3" style="background:linear-gradient(135deg,#f0fdf4 0%,#dcfce7 100%);">
+        <div class="card-header bg-success text-white" style="padding:8px 12px;">
+            <i class="bi bi-circle-fill"></i> <strong>当前编辑版本</strong>
+        </div>
+        <div class="card-body" style="padding:12px;">
+            <h5 class="card-title mb-2" style="font-size:16px;">{{ current_version.version_label or ('v' + current_version.version_number|string) }}</h5>
+            <p class="card-text small text-muted mb-2" style="font-size:12px;line-height:1.6;">
+                <span id="rowCountSidebar">{{ rows|length }}</span> 行 / {{ columns|length }} 列<br>
+                创建于 {{ current_version.created_at[:16] if current_version.created_at else '?' }}<br>
+                创建人 {{ current_version.creator or '?' }}
+            </p>
+            {% if is_current %}
+            <button class="btn btn-success w-100" onclick="openSaveSnapshotModal()" style="font-size:13px;">
+                <i class="bi bi-camera"></i> 保存快照
+            </button>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- 历史快照列表 -->
+    <h6 class="text-secondary mb-2" style="font-size:13px;">
+        <i class="bi bi-camera"></i> 历史快照（{{ snapshots|length }}）
+    </h6>
+    {% if snapshots %}
+    <div style="max-height:60vh;overflow-y:auto;">
+        {% for v in snapshots %}
+        <div class="card mb-2" style="font-size:12px;">
+            <div class="card-body p-2">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div style="flex:1;min-width:0;">
+                        <i class="bi bi-camera"></i> <strong>{{ v.version_label or ('v' + v.version_number|string) }}</strong>
+                        {% if v.note %}<br>
+                        <small class="text-muted" style="font-size:11px;">{{ v.note[:30] }}{% if v.note|length > 30 %}...{% endif %}</small>
+                        {% endif %}<br>
+                        <small class="text-muted" style="font-size:11px;">{{ v.created_at[:16] }} · {{ v.creator }}</small>
+                    </div>
+                    <div class="d-flex flex-column gap-1">
+                        <a href="/tables/{{ table.table_id }}/version/{{ v.version_id }}" class="btn btn-sm btn-outline-secondary" style="font-size:11px;padding:2px 6px;" title="查看此历史快照（只读）">
+                            <i class="bi bi-eye"></i>
+                        </a>
+                        {% if is_current %}
+                        <button class="btn btn-sm btn-outline-warning" style="font-size:11px;padding:2px 6px;" onclick="openRollbackModal('{{ v.version_id }}', '{{ v.version_label or ('v' + v.version_number|string) }}', '{{ v.created_at[:16] }}', '{{ v.creator }}')" title="回滚到 {{ v.version_label }}">
+                            <i class="bi bi-arrow-counterclockwise"></i>
+                        </button>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-muted small" style="font-size:12px;">暂无历史快照</p>
+    <p class="text-muted small" style="font-size:12px;">点击上方"保存快照"按钮创建</p>
+    {% endif %}
+</aside>
+
+</div><!-- main-content-row 闭合 -->
+
+<!-- 列管理抽屉 -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="toggleDrawer()"></div>
+<div class="columns-drawer" id="columnsDrawer">
+    <div class="drawer-header">
+        <span style="font-weight:600;">列结构管理</span>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-primary" onclick="addColumn()">
+                <i class="bi bi-plus"></i> 添加列
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="toggleDrawer()">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+    </div>
+    <div class="drawer-body" id="columnList">
+        {% for col in columns %}
+        <div class="col-item" data-col-key="{{ col.col_key }}" draggable="true">
+            <div class="d-flex justify-content-between align-items-start">
+                <div class="d-flex align-items-start">
+                    <span class="drag-handle" title="拖动排序">≡</span>
+                    <div>
+                        <div class="col-name">{{ col.col_name }}</div>
+                        <div class="col-meta">
+                            {{ col.col_type }}
+                            {% if col.col_summary %} · {{ col.col_summary }}{% endif %}
+                        </div>
+                    </div>
+                </div>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-primary" onclick="editColumn('{{ col.col_key }}')">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    <button class="btn btn-outline-danger" onclick="deleteColumn('{{ col.col_key }}')">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+        {% if not columns %}
+        <div class="text-muted text-center py-4">暂无列定义</div>
+        {% endif %}
+    </div>
+    <div class="p-3 border-top">
+        <button class="btn btn-primary w-100" onclick="location.reload()">完成</button>
+    </div>
+</div>
+
+<!-- 添加/编辑列 Modal -->
+<div class="modal fade" id="colModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="colModalTitle">添加列</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-2">
+                    <label class="form-label">列名称 <span style="color:red">*</span></label>
+                    <input type="text" class="form-control" id="colName" placeholder="如：设备名称">
+                </div>
+                <div class="row mb-2">
+                    <div class="col">
+                        <label class="form-label">类型</label>
+                        <select class="form-select" id="colType">
+                            <option value="text">文本</option>
+                            <option value="number">数字</option>
+                            <option value="date">日期</option>
+                            <option value="select">下拉选项</option>
+                        </select>
+                    </div>
+                    <div class="col">
+                        <label class="form-label">对齐</label>
+                        <select class="form-select" id="colAlign">
+                            <option value="left">左对齐</option>
+                            <option value="center">居中</option>
+                            <option value="right">右对齐</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">汇总方式</label>
+                    <select class="form-select" id="colSummary">
+                        <option value="">不汇总</option>
+                        <option value="count">计数</option>
+                        <option value="sum">求和</option>
+                        <option value="avg">平均值</option>
+                    </select>
+                </div>
+                <div class="mb-2" id="colOptionsDiv" style="display:none;">
+                    <label class="form-label">选项（逗号分隔）</label>
+                    <input type="text" class="form-control" id="colOptions" placeholder="如：在用,维修中,报废,借出">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="colSaveBtn" onclick="saveColumn()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ---------- 全局状态 ----------
+const VERSION_ID = '{{ current_version.version_id if current_version else "" }}';
+// REQ-019: 快照版本锁定标志（1=锁定行数据，0=可编辑）
+const IS_LOCKED = {{ 'true' if (current_version and current_version.is_locked) else 'false' }};
+const COLUMNS = {{ columns | tojson }};
+const ROWS = {{ rows | tojson }};
+const STATS = {{ stats | tojson }};
+let editColKey = null;
+let colModal, selectedRows = new Set();
+// REQ-016：PAGE_SIZE 来自后端 version.page_size（-1 表示全部）
+let PAGE_SIZE = {{ (current_version.page_size if current_version and current_version.page_size is not none else 20) | tojson }};
+let currentPage = 1;
+
+document.addEventListener('DOMContentLoaded', () => {
+    colModal = new bootstrap.Modal(document.getElementById('colModal'));
+    // 同步下拉框与后端值
+    const sel = document.getElementById('pageSizeSelect');
+    if (sel) {
+        sel.value = String(PAGE_SIZE);
+        sel.addEventListener('change', onPageSizeChange);
+    }
+    // 恢复固定列宽度（从 localStorage）
+    try {
+        const map = JSON.parse(localStorage.getItem(`gt_fixed_width_${VERSION_ID}`) || '{}');
+        for (const [k, w] of Object.entries(map)) {
+            const th = document.querySelector(`th[data-col-key="${k}"]`);
+            if (th && w) {
+                th.style.width = w + 'px';
+                // 同步该列所有 td
+                const colIndex = Array.from(th.parentNode.children).indexOf(th);
+                document.querySelectorAll('#dataTable tbody tr').forEach(tr => {
+                    const td = tr.children[colIndex];
+                    if (td) td.style.width = w + 'px';
+                });
+            }
+        }
+    } catch (e) { /* 忽略 */ }
+    renderTable();
+    updateStats();
+    document.getElementById('colType').addEventListener('change', function() {
+        document.getElementById('colOptionsDiv').style.display = this.value === 'select' ? '' : 'none';
+    });
+    // REQ-016：初始化 3 个新交互模块
+    initRowColorChips();
+    initColumnReorder();
+    initColumnResize();
+    // REQ-019: 锁定时显示徽章
+    if (IS_LOCKED) {
+        const badge = document.getElementById('lockBadge');
+        if (badge) badge.style.display = '';
+    }
+});
+
+// ---------- 渲染表格 ----------
+function renderTable() {
+    const tbody = document.getElementById('tableBody');
+    if (!tbody) return;
+    const total = ROWS.length;
+    // REQ-016：-1 表示全部
+    const effPageSize = PAGE_SIZE === -1 ? Math.max(total, 1) : PAGE_SIZE;
+    const start = (currentPage - 1) * effPageSize;
+    const pageRows = ROWS.slice(start, start + effPageSize);
+    if (!pageRows.length) { tbody.innerHTML = ''; renderPagination(); return; }
+    tbody.innerHTML = pageRows.map((row, idx) => {
+        const checked = selectedRows.has(row.row_key) ? 'checked' : '';
+        const rowColor = row.row_color || '';
+        const classes = [];
+        if (selectedRows.has(row.row_key)) classes.push('row-selected');
+        if (rowColor) classes.push('row-color-' + rowColor);
+        const rowClass = classes.join(' ');
+        // 3 色块（REQ-016）：固定顺序 黄/绿/红，根据 rowColor 标 active
+        // 激活态占位色块也要带 data-row-key 以响应取消点击
+        const activeChip = rowColor ? `<span class="color-chip color-${rowColor} active" data-color="${rowColor}" data-row-key="${row.row_key}"></span>` : '';
+        let cells = `<td><input type="checkbox" ${checked} onchange="toggleRow('${row.row_key}')"></td>`;
+        cells += `<td class="color-cells" data-col-key="_color">${activeChip}`
+            + `<span class="color-chip color-yellow" data-row-key="${row.row_key}" data-color="yellow" title="注意"></span>`
+            + `<span class="color-chip color-green" data-row-key="${row.row_key}" data-color="green" title="确认"></span>`
+            + `<span class="color-chip color-red" data-row-key="${row.row_key}" data-color="red" title="警告"></span>`
+            + `</td>`;
+        cells += `<td data-col-key="_index">${start + idx + 1}</td>`;
+        COLUMNS.forEach(col => {
+            const val = row.row_data[col.col_key] ?? '';
+            const align = col.col_align || 'left';
+            cells += `<td class="cell-edit" style="text-align:${align};cursor:text;"
+                data-row-key="${row.row_key}" data-col-key="${col.col_key}"
+                onclick="startEdit(this)">${val}</td>`;
+        });
+        return `<tr class="${rowClass}" data-row-key="${row.row_key}">${cells}</tr>`;
+    }).join('');
+    renderPagination();
+}
+
+// ---------- 分页控件 ----------
+function renderPagination() {
+    const wrap = document.getElementById('paginationWrap');
+    if (!wrap) return;
+    const total = ROWS.length;
+    // REQ-016：-1 表示全部，无分页器
+    if (PAGE_SIZE === -1) {
+        wrap.innerHTML = `<div style="font-size:12px;color:#888;margin-top:12px;padding:6px 0;">共 ${total} 条（全部显示）</div>`;
+        return;
+    }
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const pg = currentPage;
+    let html = `<nav style="margin-top:12px;user-select:none;"><ul class="pagination pagination-sm mb-0" style="gap:2px;">`;
+    html += `<li class="page-item${pg<=1?' disabled':''}"><a class="page-link" href="javascript:void(0)" onclick="goToPage(${pg-1})">‹</a></li>`;
+    const range = [];
+    if (totalPages <= 7) { for(let i=1;i<=totalPages;i++) range.push(i); }
+    else { range.push(1); if(pg>3) range.push('...');
+        for(let i=Math.max(2,pg-1);i<=Math.min(totalPages-1,pg+1);i++) range.push(i);
+        if(pg<totalPages-2) range.push('...'); range.push(totalPages); }
+    range.forEach(p => {
+        if(p==='...') html += `<li class="page-item disabled"><span class="page-link">…</span></li>`;
+        else html += `<li class="page-item${p===pg?' active':''}"><a class="page-link" href="javascript:void(0)" onclick="goToPage(${p})">${p}</a></li>`;
+    });
+    html += `<li class="page-item${pg>=totalPages?' disabled':''}"><a class="page-link" href="javascript:void(0)" onclick="goToPage(${pg+1})">›</a></li>`;
+    html += `</ul></nav>`;
+    html += `<div style="font-size:12px;color:#888;margin-top:4px;">第 ${total>0?(pg-1)*PAGE_SIZE+1:0}–${Math.min(pg*PAGE_SIZE,total)} 条，共 ${total} 条${totalPages>1?'，'+totalPages+'页':''}</div>`;
+    wrap.innerHTML = html;
+}
+
+function goToPage(n) {
+    const totalPages = Math.max(1, Math.ceil(ROWS.length / PAGE_SIZE));
+    if (n < 1 || n > totalPages) return;
+    currentPage = n;
+    renderTable();
+}
+
+// ---------- 行内编辑 ----------
+function startEdit(td) {
+    // REQ-019: 快照版本锁定时禁止单元格编辑
+    if (IS_LOCKED) {
+        alert('快照已锁定，无法编辑行数据。如需修改，请先新建快照。');
+        return;
+    }
+    if (td.querySelector('input')) return;
+    const rowKey = td.dataset.rowKey;
+    const colKey = td.dataset.colKey;
+    const currentVal = td.textContent.trim();
+    const col = COLUMNS.find(c => c.col_key === colKey);
+    const input = document.createElement('input');
+    input.type = col && col.col_type === 'number' ? 'number' : 'text';
+    input.value = currentVal;
+    input.className = 'form-control form-control-sm';
+    input.style.cssText = 'padding:2px 6px;min-width:60px;';
+    td.textContent = '';
+    td.appendChild(input);
+    input.focus();
+    input.onblur = () => finishEdit(td, rowKey, colKey, input.value);
+    input.onkeydown = e => {
+        if (e.key === 'Enter') { input.blur(); }
+        if (e.key === 'Escape') { td.textContent = currentVal; }
+    };
+}
+
+async function finishEdit(td, rowKey, colKey, newVal) {
+    const row = ROWS.find(r => r.row_key === rowKey);
+    if (!row) return;
+    row.row_data[colKey] = newVal;
+    const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/rows/${rowKey}`, {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({row_data: row.row_data})
+    }).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (!r.error) {
+        updateStats();
+    }
+    renderTable();
+}
+
+// ---------- 添加行 ----------
+async function addRow() {
+    // REQ-019: 快照版本锁定时禁止添加行
+    if (IS_LOCKED) {
+        alert('快照已锁定，无法添加行。如需修改，请先新建快照。');
+        return;
+    }
+    const rowKey = 'GTR' + Math.random().toString(36).substr(2, 10);
+    const emptyData = {};
+    COLUMNS.forEach(c => emptyData[c.col_key] = '');
+    const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/rows`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({row_key: rowKey, row_data: emptyData})
+    }).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (r.error) { alert(r.error); return; }
+    location.reload();
+}
+
+// ---------- 快速搜索 ----------
+async function doSearch(kw) {
+    const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/rows?q=${encodeURIComponent(kw)}`)
+        .then(r=>r.json()).catch(()=>({rows:[], stats:{}}));
+    ROWS.length = 0;
+    ROWS.push(...r.rows);
+    Object.assign(STATS, r.stats);
+    currentPage = 1;
+    renderTable();
+    updateStats();
+}
+
+// ---------- 统计栏 ----------
+function updateStats() {
+    document.getElementById('rowCount').textContent = ROWS.length;
+}
+
+// ---------- 选择行 ----------
+function toggleRow(rowKey) {
+    if (selectedRows.has(rowKey)) selectedRows.delete(rowKey);
+    else selectedRows.add(rowKey);
+    updateDeleteButton();
+    const tr = document.querySelector(`tr[data-row-key="${rowKey}"]`);
+    if (tr) tr.classList.toggle('row-selected', selectedRows.has(rowKey));
+}
+
+function toggleSelectAll(cb) {
+    if (cb.checked) {
+        ROWS.forEach(r => selectedRows.add(r.row_key));
+    } else {
+        selectedRows.clear();
+    }
+    renderTable();
+    updateDeleteButton();
+}
+
+function updateDeleteButton() {
+    const btn = document.getElementById('deleteSelectedBtn');
+    btn.style.display = selectedRows.size ? '' : 'none';
+    btn.textContent = `删除所选 (${selectedRows.size})`;
+}
+
+async function deleteSelected() {
+    // REQ-019: 快照版本锁定时禁止删除行
+    if (IS_LOCKED) {
+        alert('快照已锁定，无法删除行。如需修改，请先新建快照。');
+        return;
+    }
+    if (!confirm(`确定删除 ${selectedRows.size} 行？`)) return;
+    for (const rowKey of selectedRows) {
+        await fetch(`/api/generic-tables/versions/${VERSION_ID}/rows/${rowKey}`, {method:'DELETE'})
+            .then(r=>r.json()).catch(()=>({error:null}));
+    }
+    selectedRows.clear();
+    location.reload();
+}
+
+// ---------- 版本切换（REQ-020） ----------
+function switchVersion(vid) {
+    if (!vid) {
+        // 空 value = "返回当前编辑"
+        location.href = `/tables/{{ table.table_id }}`;
+        return;
+    }
+    // 跳到历史快照只读页（新路由）
+    location.href = `/tables/{{ table.table_id }}/version/${vid}/`;
+}
+
+// ---------- 列管理抽屉 ----------
+function toggleDrawer() {
+    document.getElementById('columnsDrawer').classList.toggle('show');
+    document.getElementById('drawerOverlay').classList.toggle('show');
+}
+
+// ---------- 添加/编辑列 ----------
+function addColumn() {
+    editColKey = null;
+    document.getElementById('colModalTitle').textContent = '添加列';
+    document.getElementById('colName').value = '';
+    document.getElementById('colType').value = 'text';
+    document.getElementById('colAlign').value = 'left';
+    document.getElementById('colSummary').value = '';
+    document.getElementById('colOptions').value = '';
+    document.getElementById('colOptionsDiv').style.display = 'none';
+    colModal.show();
+}
+
+function editColumn(colKey) {
+    const col = COLUMNS.find(c => c.col_key === colKey);
+    if (!col) return;
+    editColKey = colKey;
+    document.getElementById('colModalTitle').textContent = '编辑列';
+    document.getElementById('colName').value = col.col_name;
+    document.getElementById('colType').value = col.col_type;
+    document.getElementById('colAlign').value = col.col_align || 'left';
+    document.getElementById('colSummary').value = col.col_summary || '';
+    document.getElementById('colOptions').value = col.col_options ? col.col_options.join(',') : '';
+    document.getElementById('colOptionsDiv').style.display = col.col_type === 'select' ? '' : 'none';
+    colModal.show();
+}
+
+async function saveColumn() {
+    const colName = document.getElementById('colName').value.trim();
+    if (!colName) { alert('请输入列名称'); return; }
+    const colType = document.getElementById('colType').value;
+    const colAlign = document.getElementById('colAlign').value;
+    const colSummary = document.getElementById('colSummary').value;
+    let colOptions = null;
+    if (colType === 'select') {
+        colOptions = document.getElementById('colOptions').value.split(',').map(s=>s.trim()).filter(Boolean);
+    }
+    // 生成 col_key
+    let colKey = editColKey;
+    if (!colKey) {
+        colKey = colName.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_').substring(0, 30);
+        if (/^\d/.test(colKey)) colKey = 'c_' + colKey;
+        colKey = colKey || 'col';
+    }
+    const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/columns${editColKey ? '/'+editColKey : ''}`, {
+        method: editColKey ? 'PUT' : 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({col_key: colKey, col_name: colName, col_type: colType,
+                             col_align: colAlign, col_summary: colSummary, col_options: colOptions})
+    }).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (r.error) { alert(r.error); return; }
+    colModal.hide();
+    location.reload();
+}
+
+async function deleteColumn(colKey) {
+    if (!confirm('确定删除该列？该列数据将一并删除。')) return;
+    const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/columns/${colKey}`, {method:'DELETE'})
+        .then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (r.error) { alert(r.error); return; }
+    location.reload();
+}
+
+// ---------- Excel 导入（REQ-020: 直接导入到 current，不再先建 snapshot） ----------
+async function importExcelNew(input) {
+    if (!input.files.length) return;
+    const mode = ROWS.length > 0
+        ? prompt('导入模式选择：\n  输入 1  → 替换（清空当前数据，导入新数据）\n  输入 2  → 追加（在现有数据基础上增加新行）\n\n直接确定 → 替换（默认）')
+        : '1';
+    if (mode === null) { input.value = ''; return; }  // cancel
+    const importMode = (mode === '2') ? 'append' : 'replace';
+
+    if (importMode === 'replace' && ROWS.length > 0) {
+        if (!confirm('替换模式：将清空当前版本所有数据，用 Excel 新数据替代。\n建议先点「保存快照」存档。\n\n确定继续？')) {
+            input.value = '';
+            return;
+        }
+    }
+
+    const formData = new FormData();
+    formData.append('file', input.files[0]);
+    formData.append('mode', importMode);
+
+    // REQ-020: 直接导入到 current（VERSION_ID），不建中间 snapshot
+    const ur = await fetch(`/api/generic-tables/versions/${VERSION_ID}/rows/import`, {
+        method: 'POST',
+        body: formData
+    }).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (ur.error) { alert(ur.error); return; }
+    alert(`成功${importMode === 'replace' ? '替换' : '追加'}导入 ${ur.imported} 行`);
+    location.reload();
+}
+
+// ---------- 保存快照（REQ-020: 用新 save_snapshot 流程） ----------
+function openSaveSnapshotModal() {
+    const label = prompt('请输入快照名称（必填，最长 50 字）：');
+    if (!label || !label.trim()) return;
+    if (label.length > 50) { alert('名称过长（>50字）'); return; }
+
+    const note = prompt('请输入快照说明（选填，最长 500 字）：') || '';
+    if (note.length > 500) { alert('说明过长（>500字）'); return; }
+
+    doSaveSnapshot(label.trim(), note.trim());
+}
+
+function quickSaveSnapshot() {
+    // 顶部工具栏按钮 → 用默认 label
+    openSaveSnapshotModal();
+}
+
+async function doSaveSnapshot(label, note) {
+    const TABLE_ID = '{{ table.table_id }}';
+    try {
+        const vr = await fetch(`/api/generic-tables/${TABLE_ID}/versions`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                method: 'snapshot',
+                source_version_id: VERSION_ID,
+                label: label,
+                note: note
+            })
+        });
+        const data = await vr.json();
+        if (data.error) { alert('保存失败：' + data.error); return; }
+        alert(`快照保存成功！\n历史快照：${label}\n新的当前版本：v${data.new_current_id.slice(-6)}`);
+        location.reload();
+    } catch (e) {
+        alert('保存失败：' + e.message);
+    }
+}
+
+// ---------- 回滚（REQ-020） ----------
+function openRollbackModal(vid, label, createdAt, creator) {
+    if (!confirm(`确认回滚到快照 ${label}？\n\n创建人：${creator}\n创建时间：${createdAt}\n\n回滚将基于该快照创建新的编辑版本，原数据不丢失。`)) return;
+    doRollback(vid);
+}
+
+async function doRollback(sourceVid) {
+    const TABLE_ID = '{{ table.table_id }}';
+    try {
+        const r = await fetch(`/api/generic-tables/${TABLE_ID}/rollback`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source_version_id: sourceVid})
+        });
+        const data = await r.json();
+        if (data.error) { alert('回滚失败：' + data.error); return; }
+        alert(`回滚成功！\n新当前版本：v${data.new_current_id.slice(-6)}`);
+        location.reload();
+    } catch (e) {
+        alert('回滚失败：' + e.message);
+    }
+}
+
+// ---------- 对比（REQ-020） ----------
+async function openCompareModal() {
+    const TABLE_ID = '{{ table.table_id }}';
+    try {
+        const r = await fetch(`/api/generic-tables/${TABLE_ID}/versions`);
+        const data = await r.json();
+        const snaps = (data.versions || []).filter(v => v.version_id !== VERSION_ID);
+        if (snaps.length === 0) {
+            alert('没有可对比的历史快照');
+            return;
+        }
+        const choices = snaps.map((v, i) =>
+            `${i+1}. ${v.version_label || ('v'+v.version_number)} (${v.created_at ? v.created_at.slice(0,16) : '?'} · ${v.creator})`
+        ).join('\n');
+        const idx = prompt(`选择要对比的快照编号：\n${choices}`);
+        const i = parseInt(idx) - 1;
+        if (isNaN(i) || i < 0 || i >= snaps.length) return;
+        location.href = `/tables/${TABLE_ID}/compare/${snaps[i].version_id}/`;
+    } catch (e) {
+        alert('对比失败：' + e.message);
+    }
+}
+
+// ---------- Excel 导出 ----------
+async function exportExcel() {
+    // 通知后端，当前版本所有数据导出
+    window.location.href = `/api/generic-tables/versions/${VERSION_ID}/export`;
+}
+
+// =================== REQ-016 增强 ===================
+
+// ---------- (1) 行 3 色块 ----------
+function initRowColorChips() {
+    const tbody = document.getElementById('tableBody');
+    if (!tbody) return;
+    tbody.addEventListener('click', async function(e) {
+        const chip = e.target.closest('.color-chip');
+        if (!chip || !chip.dataset.rowKey) return;
+        e.stopPropagation();
+        const rowKey = chip.dataset.rowKey;
+        const color = chip.dataset.color;  // yellow/green/red
+        const tr = chip.closest('tr');
+        const row = ROWS.find(r => r.row_key === rowKey);
+        if (!row) return;
+        // toggle：当前已激活 = 取消
+        const newColor = (row.row_color === color) ? '' : color;
+        const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/rows/${rowKey}/color`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({row_color: newColor})
+        }).then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(new Error(j.error || ('HTTP ' + r.status)))))
+          .catch(err => ({error: err.message || '网络错误'}));
+        if (r.error) { alert('设置行颜色失败：' + r.error); return; }
+        // 更新内存 + 重渲染该行（同步后端返回的最终值）
+        row.row_color = r.row_color ?? newColor;
+        renderTable();
+    });
+}
+
+// ---------- (2) 列管理拖拽排序 ----------
+function initColumnReorder() {
+    const list = document.getElementById('columnList');
+    if (!list) return;
+    let draggingEl = null;
+    list.addEventListener('dragstart', function(e) {
+        const item = e.target.closest('.col-item');
+        if (!item) return;
+        draggingEl = item;
+        item.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', item.dataset.colKey);
+    });
+    list.addEventListener('dragover', function(e) {
+        if (!draggingEl) return;
+        e.preventDefault();
+        const target = e.target.closest('.col-item');
+        if (!target || target === draggingEl) return;
+        // 清除其他高亮
+        list.querySelectorAll('.col-item').forEach(el => {
+            el.classList.remove('drag-over-top', 'drag-over-bottom');
+        });
+        const rect = target.getBoundingClientRect();
+        const isTop = (e.clientY - rect.top) < rect.height / 2;
+        target.classList.add(isTop ? 'drag-over-top' : 'drag-over-bottom');
+    });
+    list.addEventListener('drop', function(e) {
+        if (!draggingEl) return;
+        e.preventDefault();
+        const target = e.target.closest('.col-item');
+        if (!target || target === draggingEl) return;
+        const rect = target.getBoundingClientRect();
+        const isTop = (e.clientY - rect.top) < rect.height / 2;
+        if (isTop) list.insertBefore(draggingEl, target);
+        else list.insertBefore(draggingEl, target.nextSibling);
+    });
+    list.addEventListener('dragend', async function() {
+        if (!draggingEl) return;
+        // 收集新顺序
+        const order = Array.from(list.querySelectorAll('.col-item')).map(el => el.dataset.colKey);
+        draggingEl.classList.remove('dragging');
+        list.querySelectorAll('.col-item').forEach(el => {
+            el.classList.remove('drag-over-top', 'drag-over-bottom');
+        });
+        draggingEl = null;
+        // 调 API 保存
+        const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/columns/reorder`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({col_keys: order})
+        }).then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(new Error(j.error || ('HTTP ' + r.status)))))
+          .catch(err => ({error: err.message || '网络错误'}));
+        if (r.error) { alert('列排序保存失败：' + r.error); location.reload(); return; }
+        // 成功：刷新主表（用新顺序）
+        location.reload();
+    });
+}
+
+// ---------- (3) 表头列宽拖拽 ----------
+function initColumnResize() {
+    const table = document.getElementById('dataTable');
+    if (!table) return;
+    let resizing = null;  // {colKey, th, startX, startW}
+    table.querySelectorAll('th .resize-handle').forEach(handle => {
+        handle.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const th = handle.closest('th');
+            const colKey = handle.dataset.colKey;
+            // REQ-016 bugfix：优先用 style.width 解析值（table-layout:fixed 下准确），
+            // 回退到 getBoundingClientRect 防御
+            const styleW = parseFloat(th.style.width);
+            const startW = !isNaN(styleW) && styleW > 0 ? styleW : th.getBoundingClientRect().width;
+            resizing = {
+                colKey: colKey,
+                th: th,
+                startX: e.clientX,
+                startW: startW,
+                _startW: startW
+            };
+            document.body.classList.add('resizing');
+            handle.classList.add('dragging');
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+    });
+    function onMove(e) {
+        if (!resizing) return;
+        // REQ-016 bugfix：用 style.width 解析值作为 startW
+        // table-layout:auto 下 getBoundingClientRect 返回内容撑开宽度，
+        // 第二次拖小时会因 startW 偏大被 max 800 误钳
+        const startW = resizing._startW || resizing.startW;
+        // 最小 10 取消原 60 限制（保留最大 800）
+        const newW = Math.max(10, Math.min(800, Math.round(startW + (e.clientX - resizing.startX))));
+        // 改 th width
+        resizing.th.style.width = newW + 'px';
+        // 同步该列所有 td
+        const colIndex = Array.from(resizing.th.parentNode.children).indexOf(resizing.th);
+        table.querySelectorAll(`tbody tr`).forEach(tr => {
+            const td = tr.children[colIndex];
+            if (td) td.style.width = newW + 'px';
+        });
+        resizing._lastW = newW;
+    }
+    async function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.classList.remove('resizing');
+        if (!resizing) return;
+        const handle = resizing.th.querySelector('.resize-handle');
+        if (handle) handle.classList.remove('dragging');
+        const newW = resizing._lastW || resizing.startW;
+        const colKey = resizing.colKey;
+        resizing = null;
+        // 固定列 (_checkbox / _color / _index) 宽度存 localStorage
+        if (colKey.startsWith('_')) {
+            try {
+                const key = `gt_fixed_width_${VERSION_ID}`;
+                const map = JSON.parse(localStorage.getItem(key) || '{}');
+                map[colKey] = newW;
+                localStorage.setItem(key, JSON.stringify(map));
+            } catch (e) { /* localStorage 不可用忽略 */ }
+            return;
+        }
+        // 调 API 保存（普通列）
+        const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/columns/${encodeURIComponent(colKey)}/width`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({col_width: newW})
+        }).then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(new Error(j.error || ('HTTP ' + r.status)))))
+          .catch(err => ({error: err.message || '网络错误'}));
+        if (r.error) { alert('列宽保存失败：' + r.error); location.reload(); return; }
+    }
+}
+
+// ---------- (4) 分页下拉 ----------
+async function onPageSizeChange() {
+    const sel = document.getElementById('pageSizeSelect');
+    const newVal = parseInt(sel.value, 10);
+    const oldVal = PAGE_SIZE;
+    // 乐观更新
+    PAGE_SIZE = newVal;
+    currentPage = 1;
+    const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/page-size`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({page_size: newVal})
+    }).then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(new Error(j.error || ('HTTP ' + r.status)))))
+      .catch(err => ({error: err.message || '网络错误'}));
+    if (r.error) {
+        alert('分页数保存失败：' + r.error);
+        PAGE_SIZE = oldVal;
+        sel.value = String(oldVal);
+        return;
+    }
+    renderTable();
+}
+</script>
+{% endblock %}

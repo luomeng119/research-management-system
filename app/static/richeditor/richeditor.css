@@ -1,0 +1,44 @@
+/* RichEditor 样式 */
+.rich-editor-toolbar select {
+    background: #fff;
+    border: 1px solid #ced4da;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 13px;
+    cursor: pointer;
+    max-width: 95px;
+    color: #333;
+}
+.rich-editor-toolbar select:focus {
+    outline: none;
+    border-color: #86b7fe;
+    box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.15);
+}
+.rich-editor-content table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin: 8px 0;
+}
+.rich-editor-content table td,
+.rich-editor-content table th {
+    border: 1px solid #ccc;
+    padding: 6px 10px;
+    min-width: 60px;
+}
+.rich-editor-content table th {
+    background: #f8f9fa;
+    font-weight: bold;
+}
+.rich-editor-content img {
+    max-width: 100%;
+    height: auto;
+}
+.rich-editor-content a {
+    color: #0d6efd;
+}
+.rich-editor-content[contenteditable="true"]:empty:before {
+    content: attr(data-placeholder);
+    color: #aaa;
+    pointer-events: none;
+}

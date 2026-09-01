@@ -1,0 +1,96 @@
+{# REQ-015: AJAX 局部刷新用的纯表格片段模板 #}
+{# 由 /equipment?fragment=1 调用，仅返回 #equipmentTableWrap 内容 #}
+<div id="equipmentTableWrap">
+    {% if category_filter or form_filter or tech_status_filter or keyword %}
+    <div class="mb-3">
+        {% if category_filter %}<span class="badge bg-primary fs-6">{{ category_filter }}</span>{% endif %}
+        {% if form_filter %}<span class="badge bg-info fs-6">{{ form_filter }}</span>{% endif %}
+        {% if tech_status_filter %}<span class="badge bg-warning fs-6">{{ tech_status_filter }}</span>{% endif %}
+        {% if keyword %}<span class="badge bg-success fs-6">关键字: {{ keyword }}</span>{% endif %}
+    </div>
+    {% endif %}
+
+    {% if equipment %}
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th style="min-width:120px;">设备名称</th>
+                    <th style="min-width:80px;">型号</th>
+                    <th style="min-width:100px;">曾用名</th>
+                    <th style="min-width:80px;">分类</th>
+                    <th style="min-width:80px;">设备子类</th>
+                    <th style="min-width:70px;">形态</th>
+                    <th style="min-width:80px;">单价(万元)</th>
+                    <th style="min-width:80px;">技术状态</th>
+                    <th style="min-width:120px;">研制单位</th>
+                    <th style="min-width:120px;">主要用途</th>
+                    <th style="min-width:150px;">功能技术指标</th>
+                    <th style="min-width:150px;">加装要求</th>
+                    <th style="min-width:150px;">资源保障要求</th>
+                    <th style="min-width:120px;white-space:nowrap;">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in equipment %}
+                <tr data-tooltip-html="设备名称: {{ e['name'] or '-' }}
+型号: {{ e['model'] or '-' }}
+曾用名: {{ e['former_name'] or '-' }}
+分类: {{ e['category'] or '-' }}
+设备子类: {{ e['subclass'] or '-' }}
+形态: {{ e['form'] or '-' }}
+单价: {{ e['price'] }} 万元
+技术状态: {{ e['tech_status'] or '-' }}
+研制单位: {{ e['manufacturer'] or '-' }}
+主要用途: {{ e['main_purpose'] or '-' }}
+功能技术指标: {{ e['tech_index'] or '-' }}
+加装要求: {{ e['installation_requirements'] or '-' }}
+资源保障: {{ e['resource_guarantee'] or '-' }}">
+                    <td>{% if e['name'] %}{{ e['name'][:20] }}{% if e['name']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{{ e['model'] }}</td>
+                    <td>{% if e['former_name'] %}{{ e['former_name'][:20] }}{% if e['former_name']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{{ e['category'] }}</td>
+                    <td>{{ e['subclass'] or '-' }}</td>
+                    <td>{{ e['form'] }}</td>
+                    <td>{{ e['price'] }}</td>
+                    <td>{{ e['tech_status'] or '-' }}</td>
+                    <td>{% if e['manufacturer'] %}{{ e['manufacturer'][:20] }}{% if e['manufacturer']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{% if e['main_purpose'] %}{{ e['main_purpose'][:20] }}{% if e['main_purpose']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{% if e['tech_index'] %}{{ e['tech_index'][:20] }}{% if e['tech_index']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{% if e['installation_requirements'] %}{{ e['installation_requirements'][:20] }}{% if e['installation_requirements']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{% if e['resource_guarantee'] %}{{ e['resource_guarantee'][:20] }}{% if e['resource_guarantee']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td style="white-space:nowrap;">
+                        <a href="{{ url_for('equipment.detail', equipment_id=e['equipment_id']) }}" class="btn btn-sm btn-outline-primary" title="查看"><i class="bi bi-eye"></i></a>
+                        <a href="{{ url_for('equipment.edit', equipment_id=e['equipment_id']) }}" class="btn btn-sm btn-outline-secondary" title="编辑"><i class="bi bi-pencil"></i></a>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteEquipment('{{ e['equipment_id'] }}')" title="删除"><i class="bi bi-trash"></i></button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-center text-muted py-5">
+        <i class="bi bi-pc-display fs-1"></i>
+        <p class="mt-2">暂无设备数据</p>
+    </div>
+    {% endif %}
+
+    {# 分页 #}
+    {% if total_pages > 1 %}
+    <nav style="display:flex;justify-content:center;margin-top:15px;">
+        <ul style="display:flex;list-style:none;padding:0;margin:0;gap:5px;">
+            {% if page > 1 %}
+            <li><a href="?page=1&category={{ category_filter }}&keyword={{ keyword }}" style="padding:6px 12px;border:1px solid #ddd;text-decoration:none;">首页</a></li>
+            <li><a href="?page={{ page-1 }}&category={{ category_filter }}&keyword={{ keyword }}" style="padding:6px 12px;border:1px solid #ddd;text-decoration:none;">上一页</a></li>
+            {% endif %}
+            <li style="padding:6px 12px;">第 {{ page }}/{{ total_pages }} 页</li>
+            {% if page < total_pages %}
+            <li><a href="?page={{ page+1 }}&category={{ category_filter }}&keyword={{ keyword }}" style="padding:6px 12px;border:1px solid #ddd;text-decoration:none;">下一页</a></li>
+            <li><a href="?page={{ total_pages }}&category={{ category_filter }}&keyword={{ keyword }}" style="padding:6px 12px;border:1px solid #ddd;text-decoration:none;">末页</a></li>
+            {% endif %}
+        </ul>
+    </nav>
+    <p style="text-align:center;color:#888;margin-top:10px;">共 {{ total }} 条</p>
+    {% endif %}
+</div>

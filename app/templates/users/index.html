@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}用户管理 - 科研管理系统V2{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h2 class="mb-4">用户管理</h2>
+    
+    <!-- 待审核用户 -->
+    <div class="card mb-4 border-warning">
+        <div class="card-header bg-warning bg-opacity-10">
+            <h5 class="mb-0"><i class="bi bi-clock"></i> 待审核用户</h5>
+        </div>
+        <div class="card-body">
+            <table class="table" id="pendingTable">
+                <thead>
+                    <tr>
+                        <th>用户名</th>
+                        <th>姓名</th>
+                        <th>注册时间</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in users %}
+                    {% if u['status'] == 'pending' %}
+                    <tr>
+                        <td>{{ u['username'] }}</td>
+                        <td>{{ u['name'] }}</td>
+                        <td>{{ u['created_at'] }}</td>
+                        <td><span class="badge bg-warning">待审核</span></td>
+                        <td>
+                            <button class="btn btn-sm btn-success" onclick="approveUser('{{ u['username'] }}')">通过</button>
+                            <button class="btn btn-sm btn-danger" onclick="rejectUser('{{ u['username'] }}')">拒绝</button>
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% set pending_count = users|selectattr('5', 'equalto', 'pending')|list|length %}
+            {% if pending_count == 0 %}
+            <p class="text-muted mb-0">暂无待审核用户</p>
+            {% endif %}
+        </div>
+    </div>
+    
+    <!-- 所有用户 -->
+    <div class="card">
+        <div class="card-header">
+            <h5 class="mb-0"><i class="bi bi-people"></i> 所有用户</h5>
+        </div>
+        <div class="card-body">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>用户名</th>
+                        <th>姓名</th>
+                        <th>角色</th>
+                        <th>目录权限</th>
+                        <th>注册时间</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in users %}
+                    {% if u['status'] != 'pending' %}
+                    <tr>
+                        <td>{{ u['username'] }}</td>
+                        <td>{{ u['name'] }}</td>
+                        <td><span class="badge bg-{{ 'primary' if u['role']=='管理员' else 'secondary' }}">{{ u['role'] }}</span></td>
+                        <td>
+                            <a href="{{ url_for('users.permissions', username=u['username']) }}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-gear"></i> 设置
+                            </a>
+                        </td>
+                        <td>{{ u['created_at'] }}</td>
+                        <td><span class="badge bg-{{ 'success' if u['status']=='active' else 'secondary' }}">{{ u['status'] }}</span></td>
+                        <td>
+                            {% if u['username'] != session.get('user') %}
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteUser('{{ u['username'] }}')">删除</button>
+                            {% else %}
+                            <span class="text-muted">当前用户</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+function approveUser(username) {
+    if (confirm('确定通过 ' + username + ' 的注册申请？')) {
+        fetch('/users/approve/' + username, { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.message);
+                }
+            });
+    }
+}
+
+function rejectUser(username) {
+    if (confirm('确定拒绝 ' + username + ' 的注册申请？')) {
+        fetch('/users/reject/' + username, { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.message);
+                }
+            });
+    }
+}
+
+function deleteUser(username) {
+    if (confirm('确定删除用户 ' + username + '？')) {
+        fetch('/users/delete/' + username, { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.message);
+                }
+            });
+    }
+}
+</script>
+{% endblock %}

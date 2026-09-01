@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+
+{% block title %}模型配置 - 辅助工具 - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex align-items-center mb-4">
+        <a href="/utils" class="btn btn-outline-secondary btn-sm me-3">返回</a>
+        <h2 class="mb-0"><i class="bi bi-gear text-secondary"></i> 模型配置</h2>
+    </div>
+
+    <!-- 新建模型 -->
+    <div class="card mb-4" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span>添加模型</span>
+            <button class="btn btn-outline-primary btn-sm" onclick="showAddForm()">+ 新建</button>
+        </div>
+        <div class="card-body">
+            <div id="addForm" style="display:none;">
+                <div class="row g-3">
+                    <div class="col-md-3">
+                        <label class="form-label">模型名称 *</label>
+                        <input type="text" class="form-control" id="new_name" placeholder="如：中文文本纠错模型">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">类型</label>
+                        <select class="form-select" id="new_type">
+                            <option value="corrector">纠错</option>
+                            <option value="qwen">Qwen</option>
+                            <option value="embedding">Embedding</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">文件路径</label>
+                        <input type="text" class="form-control" id="new_path" placeholder="如：models/chinese-text-correction-1.5b.Q4_K_M.gguf">
+                    </div>
+                    <div class="col-md-1">
+                        <label class="form-label">上下文</label>
+                        <input type="number" class="form-control" id="new_ctx" value="512">
+                    </div>
+                    <div class="col-md-1">
+                        <label class="form-label">线程</label>
+                        <input type="number" class="form-control" id="new_threads" value="4">
+                    </div>
+                    <div class="col-md-1">
+                        <label class="form-label">温度</label>
+                        <input type="number" class="form-control" id="new_temp" value="0.3" step="0.1">
+                    </div>
+                </div>
+                <div class="row g-3 mt-2">
+                    <div class="col-md-6">
+                        <label class="form-label">Prompt 模板</label>
+                        <input type="text" class="form-control" id="new_prompt" placeholder="如：请纠正以下文本中的错别字和语法错误，只输出纠正后的文本：{text}">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">描述</label>
+                        <input type="text" class="form-control" id="new_desc" placeholder="模型描述">
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button class="btn btn-primary w-100" onclick="createModel()">保存</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模型列表 -->
+    <div class="card" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+        <div class="card-header">已配置模型</div>
+        <div class="card-body p-0">
+            <table class="table table-dark table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>状态</th>
+                        <th>名称</th>
+                        <th>类型</th>
+                        <th>文件路径</th>
+                        <th>上下文</th>
+                        <th>线程</th>
+                        <th>温度</th>
+                        <th>描述</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="modelsTable"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+let models = [];
+
+function loadModels() {
+    fetch('/utils/api/models', { credentials: 'include' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                models = data.models;
+                renderTable();
+            } else {
+                showError(data.error);
+            }
+        });
+}
+
+function renderTable() {
+    const tb = document.getElementById('modelsTable');
+    if (!models.length) {
+        tb.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">暂无模型配置，点击上方「新建」添加</td></tr>';
+        return;
+    }
+    tb.innerHTML = models.map(m => `
+        <tr id="row-${m.id}">
+            <td>
+                ${m.is_active
+                    ? '<span class="badge bg-success">已激活</span>'
+                    : '<span class="badge bg-secondary">未激活</span>'}
+            </td>
+            <td>${escapeHtml(m.name)}</td>
+            <td><span class="badge bg-info">${m.model_type}</span></td>
+            <td><small>${escapeHtml(m.file_path || '-')}</small></td>
+            <td>${m.n_ctx}</td>
+            <td>${m.n_threads}</td>
+            <td>${m.temperature}</td>
+            <td><small>${escapeHtml(m.description || '-')}</small></td>
+            <td>
+                <button class="btn btn-sm btn-outline-success me-1" onclick="activateModel(${m.id})" ${m.is_active ? 'disabled' : ''}>激活</button>
+                <button class="btn btn-sm btn-outline-warning me-1" onclick="editModel(${m.id})">编辑</button>
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteModel(${m.id})">删除</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function showAddForm() {
+    document.getElementById('addForm').style.display = 'block';
+}
+
+function createModel() {
+    const payload = {
+        name: document.getElementById('new_name').value.trim(),
+        model_type: document.getElementById('new_type').value,
+        file_path: document.getElementById('new_path').value.trim(),
+        n_ctx: parseInt(document.getElementById('new_ctx').value) || 512,
+        n_threads: parseInt(document.getElementById('new_threads').value) || 4,
+        temperature: parseFloat(document.getElementById('new_temp').value) || 0.3,
+        prompt_template: document.getElementById('new_prompt').value.trim(),
+        description: document.getElementById('new_desc').value.trim(),
+    };
+
+    if (!payload.name) {
+        alert('模型名称不能为空');
+        return;
+    }
+
+    fetch('/utils/api/models', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+        credentials: 'include',
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            document.getElementById('addForm').style.display = 'none';
+            ['new_name','new_path','new_prompt','new_desc'].forEach(id => document.getElementById(id).value = '');
+            loadModels();
+        } else {
+            alert(data.error);
+        }
+    });
+}
+
+function activateModel(id) {
+    fetch(`/utils/api/models/activate/${id}`, { method: 'POST', credentials: 'include' })
+        .then(r => r.json())
+        .then(data => data.success && loadModels());
+}
+
+function editModel(id) {
+    const m = models.find(x => x.id === id);
+    if (!m) return;
+
+    const newName = prompt('模型名称:', m.name);
+    if (newName === null) return;
+    const newPath = prompt('文件路径:', m.file_path || '');
+    if (newPath === null) return;
+    const newCtx = prompt('上下文(n_ctx):', m.n_ctx);
+    if (newCtx === null) return;
+    const newThreads = prompt('线程数:', m.n_threads);
+    if (newThreads === null) return;
+    const newTemp = prompt('温度:', m.temperature);
+    if (newTemp === null) return;
+
+    fetch(`/utils/api/models/${id}`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            name: newName.trim() || m.name,
+            file_path: newPath.trim(),
+            n_ctx: parseInt(newCtx) || m.n_ctx,
+            n_threads: parseInt(newThreads) || m.n_threads,
+            temperature: parseFloat(newTemp) || m.temperature,
+        }),
+        credentials: 'include',
+    })
+    .then(r => r.json())
+    .then(data => data.success ? loadModels() : alert(data.error));
+}
+
+function deleteModel(id) {
+    if (!confirm('确定删除该模型配置？')) return;
+    fetch(`/utils/api/models/${id}`, { method: 'DELETE', credentials: 'include' })
+        .then(r => r.json())
+        .then(data => data.success ? loadModels() : alert(data.error));
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+loadModels();
+</script>
+{% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}新建设备组{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>新建设备组</h2>
+        <a href="{{ url_for('equipment_groups.index') }}" class="btn btn-outline-secondary">返回</a>
+    </div>
+    
+    <form method="POST" class="card" style="max-width: 600px;">
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label">关联项目（可选）</label>
+                <select name="project_id" class="form-select" id="projectSelect" onchange="onProjectChange()">
+                    <option value="">不关联项目</option>
+                    {% for p in my_projects %}
+                    <option value="{{ p.id }}|{{ p.name }}">{{ p.name }} ({{ p.leader }}) [{{ p.type }}]</option>
+                    {% endfor %}
+                </select>
+                <div class="form-text">选择项目后，设备组名称将自动填入项目名称</div>
+            </div>
+            
+            <div class="mb-3">
+                <label class="form-label">设备组名称</label>
+                <input type="text" name="project_name" class="form-control" id="projectName" placeholder="留空则使用默认名称">
+                <div class="form-text">留空将自动生成为"2026-xx-xx项目"格式</div>
+            </div>
+        </div>
+        <div class="card-footer">
+            <button type="submit" class="btn btn-primary">创建并添加设备</button>
+        </div>
+    </form>
+</div>
+
+<script>
+function onProjectChange() {
+    var select = document.getElementById('projectSelect');
+    var nameInput = document.getElementById('projectName');
+    var value = select.value;
+    
+    if (value) {
+        // 格式: project_id|project_name
+        var parts = value.split('|');
+        if (parts.length >= 2) {
+            nameInput.value = parts[1];
+        }
+    }
+}
+</script>
+{% endblock %}

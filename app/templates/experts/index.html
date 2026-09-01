@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}专家信息库 - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>专家信息库</h2>
+        <div>
+            <a href="{{ url_for('experts.add') }}" class="btn btn-primary">
+                <i class="bi bi-plus-circle"></i> 添加专家
+            </a>
+            <a href="{{ url_for('experts.import_page') }}" class="btn btn-outline-primary">
+                <i class="bi bi-upload"></i> 导入
+            </a>
+            <a href="{{ url_for('expert_groups.index') }}" class="btn btn-info">
+                <i class="bi bi-people"></i> 专家组
+            </a>
+            <button class="btn btn-success" onclick="exportSelected('word')">
+                <i class="bi bi-download"></i> 导出Word
+            </button>
+        </div>
+    </div>
+    
+    <!-- 搜索框：即时响应 oninput -->
+    <div class="mb-3">
+        <div class="row">
+            <div class="col-md-6">
+                <div class="input-group">
+                    <input type="text" id="searchInput" class="form-control" placeholder="搜索姓名、单位，专业领域" value="{{ search_keyword }}" oninput="instantSearch()">
+                    {% if search_keyword %}
+                    <button class="btn btn-outline-secondary" onclick="clearSearch()">清除</button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 专家列表（局部刷新） -->
+    <div id="expertTable">
+        {% include 'experts/partial_table.html' %}
+    </div>
+</div>
+
+<script>
+// ========== 即时搜索（防抖 + AJAX 局部刷新） ==========
+var searchTimer = null;
+
+function instantSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(doSearch, 300);
+}
+
+function doSearch() {
+    var keyword = document.getElementById('searchInput').value.trim();
+    var url = '{{ url_for("experts.index") }}' + (keyword ? '?search=' + encodeURIComponent(keyword) : '') + '&partial=1';
+    fetch(url, {credentials: 'same-origin'})
+        .then(r => r.text())
+        .then(html => {
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(html, 'text/html');
+            var newTable = doc.getElementById('expertTable');
+            if (newTable) {
+                document.getElementById('expertTable').innerHTML = newTable.innerHTML;
+            }
+        })
+        .catch(err => console.error('搜索失败:', err));
+}
+
+function clearSearch() {
+    document.getElementById('searchInput').value = '';
+    instantSearch();
+}
+
+// ========== 原有功能 ==========
+function deleteExpert(expertId) {
+    if (confirm('确定删除此专家信息？')) {
+        fetch('/experts/delete/' + expertId, {method: 'GET', credentials: 'same-origin'})
+            .then(() => location.reload())
+            .catch(() => location.reload());
+    }
+}
+
+function toggleSelectAll() {
+    var cb = document.getElementById('selectAll');
+    var checks = document.querySelectorAll('.expert-cb');
+    checks.forEach(function(c) { c.checked = cb.checked; });
+}
+
+function exportSelected(format) {
+    var checks = document.querySelectorAll('.expert-cb:checked');
+    var ids = Array.from(checks).map(c => c.value);
+    if (ids.length === 0) {
+        alert('请先选择要导出的专家');
+        return;
+    }
+    var action = format === 'word' ? '/experts/export/selected/word' : '/experts/export/selected';
+    var form = document.createElement('form');
+    form.method = 'POST';
+    form.action = action;
+    ids.forEach(function(id) {
+        var input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'expert_ids';
+        input.value = id;
+        form.appendChild(input);
+    });
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
+}
+</script>
+{% endblock %}

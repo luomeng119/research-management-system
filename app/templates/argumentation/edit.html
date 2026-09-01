@@ -1,0 +1,932 @@
+{% extends "base.html" %}
+
+{% block title %}方案论证编辑 - {{ project.name }}{% endblock %}
+
+{% block extra_css %}<style>
+    .modal .form-check { margin-bottom: 0.1rem; }
+    .modal .form-check label { font-size: 0.85rem; }
+    .device-select-card { cursor: pointer; padding: 0.5rem; }
+    .device-select-card:hover { background: #f8f9fa; }
+    #deviceModalContent .form-check { padding: 0.25rem 0.5rem; border: 1px solid #dee2e6; border-radius: 0.25rem; margin: 0.1rem; }
+    #deviceModalContent .form-check:hover { background: #f8f9fa; }
+    .form-control, .form-select { padding: 0.25rem 0.5rem; font-size: 0.875rem; }
+    .btn { padding: 0.25rem 0.75rem; font-size: 0.875rem; }
+    .input-group-text { padding: 0.25rem 0.5rem; font-size: 0.875rem; }
+    .row>[class*=col-] { padding: 0 0.25rem; }
+</style>
+<link href="/static/quill/quill.snow.css" rel="stylesheet">
+<style>
+    .chapter-section {
+        margin-bottom: 0.5rem;
+        padding: 0.75rem;
+        border-radius: 4px;
+        background: #fff;
+        border: 1px solid #dee2e6;
+    }
+    .chapter-section.device-ref {
+        border-left: 4px solid #17a2b8;
+    }
+    .chapter-section.device-list {
+        border-left: 4px solid #28a745;
+    }
+    .chapter-title {
+        font-weight: 600;
+        margin-bottom: 0.1rem;
+        padding-bottom: 0.125rem;
+        border-bottom: 2px solid #007bff;
+    }
+    .chapter-section.device-ref .chapter-title {
+        border-bottom-color: #17a2b8;
+    }
+    .chapter-section.device-list .chapter-title {
+        border-bottom-color: #28a745;
+    }
+    .sub-chapter {
+        margin-bottom: 0.1rem;
+    }
+    .sub-chapter-title {
+        font-weight: 500;
+        color: #495057;
+        margin-bottom: 0.125rem;
+    }
+    .device-select-card {
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .device-select-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .device-select-card.selected {
+        border: 2px solid #007bff;
+        background: #e7f1ff;
+    }
+    .version-tag {
+        font-size: 0.75rem;
+        padding: 0.25rem 0.5rem;
+    }
+    .editor-container {
+        min-height: 60px;
+    }
+    .device-info-table th {
+        width: 150px;
+        background: #f8f9fa;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <!-- 顶部操作栏 -->
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+            <a href="{{ back_url }}" class="btn btn-outline-secondary btn-sm">
+                <i class="bi bi-arrow-left"></i> 返回
+            </a>
+            <span class="ms-3">
+                <strong>{{ project.name }}</strong>
+                <span class="text-muted">- {{ category_name }}方案论证</span>
+            </span>
+        </div>
+        <div>
+            {% if versions %}
+            <div class="dropdown d-inline-block me-2">
+                <button class="btn btn-outline-info btn-sm dropdown-toggle" data-bs-toggle="dropdown">
+                    <i class="bi bi-clock-history"></i> 版本 v{{ versions[0].version_num if versions else 1 }}
+                </button>
+                <ul class="dropdown-menu">
+                    {% for v in versions %}
+                    <li><a class="dropdown-item" href="{{ url_for('argumentation.view_version', doc_id=document.doc_id, version_num=v.version_num) }}">
+                        v{{ v.version_num }} - {{ v.created_at[:10] }} {% if v.editor %}by {{ v.editor }}{% endif %}
+                    </a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+            <button class="btn btn-success btn-sm" onclick="generateWord()">
+                <i class="bi bi-file-earmark-word"></i> 生成Word
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="saveDocument()">
+                <i class="bi bi-save"></i> 保存
+            <button class="btn btn-warning btn-sm" onclick="saveAsTemplate()">
+                <i class="bi bi-save"></i> 保存为模板
+            </button>
+            <button class="btn btn-info btn-sm" onclick="addNewChapter()">
+                <i class="bi bi-plus-circle"></i> 新增章节
+            </button>
+            </button>
+        </div>
+    </div>
+    
+    {% if template.chapters or template.get('chapters') %}
+    <div class="row">
+        <!-- 左侧：章节编辑 -->
+        <div class="col-lg-12">
+            <form id="argumentationForm">
+                <input type="hidden" name="project_id" value="{{ project.project_id }}">
+                <input type="hidden" name="category" value="{{ category }}">
+                
+                {% for chapter in template.chapters %}
+                <div class="chapter-section {% if chapter.type == 'device_ref' %}device-ref{% elif chapter.type == 'device_list' %}device-list{% endif %}" 
+                     data-chapter-id="{{ chapter.id }}" 
+                     data-chapter-type="{{ chapter.type }}">
+                    
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="chapter-title mb-0">
+                            {{ chapter.title }}
+                            {% if chapter.type == 'device_ref' %}
+                            <span class="badge bg-info">设备引用</span>
+                            {% elif chapter.type == 'device_list' %}
+                            <span class="badge bg-success">设备清单</span>
+                            {% endif %}
+                        </h5>
+                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="editChapter('{{ chapter.id }}')">
+                            <i class="bi bi-pencil"></i> 编辑章节
+                        </button>
+                    </div>
+                    
+                    {% if chapter.children %}
+                        <div class="sub-chapters-container">
+                        {% for sub in chapter.children %}
+                        <div class="sub-chapter" data-sub-id="{{ sub.id }}" data-sub-type="{{ sub.type }}">
+                            <div class="sub-chapter-title">{{ sub.title }}</div>
+                            {% if sub.type == 'text' or chapter.type == 'text' %}
+                            <div class="editor-container">
+                                <div class="editor" data-field="{{ sub.id }}"></div>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                        </div>
+                    {% else %}
+                        {% if chapter.type == 'device_list' %}
+                        <!-- 设备清单 -->
+                        <div class="device-list-selector">
+                            <button type="button" class="btn btn-outline-success btn-sm mb-2" onclick="selectDevicesForList('{{ chapter.id }}')">
+                                <i class="bi bi-plus-circle"></i> 添加设备到清单
+                            </button>
+                            <input type="hidden" name="device_list_{{ chapter.id }}" id="device_list_{{ chapter.id }}">
+                            <div id="device_list_content_{{ chapter.id }}" class="mt-2"></div>
+                        </div>
+                        {% elif chapter.type == 'device_ref' %}
+                        <!-- 设备引用 - 自动从项目设备选型获取 -->
+                        <div class="device-ref-auto" data-chapter="{{ chapter.id }}">
+                            <input type="hidden" name="device_ref_{{ chapter.id }}" id="device_ref_{{ chapter.id }}">
+                            <button type="button" class="btn btn-outline-primary btn-sm" onclick="selectDevice('{{ chapter.id }}')">选择设备</button>
+                            <div id="device_info_{{ chapter.id }}" class="mt-2"></div>
+                        </div>
+                        {% else %}
+                        <!-- 顶级文本 -->
+                        <div class="editor-container">
+                            <div class="editor" data-field="{{ chapter.id }}"></div>
+                        </div>
+                        {% endif %}
+                    {% endif %}
+                </div>
+                {% endfor %}
+                </div>
+            </form>
+        </div>
+    </div>
+    {% else %}
+    <div class="alert alert-warning">
+        <i class="bi bi-exclamation-triangle"></i> 尚未配置论证模板，请先在项目列表页面配置模板。
+    </div>
+    {% endif %}
+</div>
+
+<!-- 设备选择弹窗 -->
+<div class="modal" id="deviceModal" tabindex="-1">
+    <input type="hidden" id="currentDeviceRef" value="">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">选择设备（可多选）</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- 搜索过滤 -->
+                <div class="row g-2 mb-2">
+                    <div class="col-auto">
+                        <input type="text" class="form-control form-control-sm" id="deviceSearch" placeholder="搜索设备名称/型号..." onkeyup="filterDevice()">
+                    </div>
+                    <div class="col-auto">
+                        <select class="form-select form-select-sm" id="deviceCategoryFilter" onchange="filterDevice()">
+                            <option value="">全部分类</option>
+                            {% for c in categories %}
+                            <option value="{{ c }}">{{ c }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-auto">
+                        <span class="text-muted small" id="deviceCount"></span>
+                    </div>
+                </div>
+                <!-- 已选设备列表（始终显示） -->
+                <div class="alert alert-info mb-2 d-flex justify-content-between align-items-center" id="selectedDevicesHeader">
+                    <strong>已选设备：</strong><span id="selectedDevicesCount">0</span>台
+                </div>
+                <div class="table-responsive mb-2" id="selectedDevicesTable">
+                    <table class="table table-bordered table-sm table-striped table-hover">
+                        <thead class="table-light"><tr><th style="width:30px;"></th><th>设备名称</th><th>型号</th><th>分类</th><th>形态</th><th>单价(万)</th><th>研制单位</th><th style="width:60px;">操作</th></tr></thead>
+                        <tbody id="selectedDevicesBody"></tbody>
+                    </table>
+                </div>
+                    </table>
+                </div>
+                <!-- 待选设备列表 - 表格风格 -->
+                <div class="table-responsive" id="deviceModalContent" style="max-height: 40vh; overflow-y: auto;">
+                    <table class="table table-bordered table-sm table-hover">
+                        <thead class="table-light"><tr><th style="width:30px;"></th><th>设备名称</th><th>型号</th><th>分类</th><th>形态</th><th>单价(万)</th><th>研制单位</th></tr></thead>
+                        <tbody>
+                            {% for e in equipment_list %}
+                            <tr class="device-item-row" data-device-id="{{ e['id'] }}">
+                                <td><input class="form-check-input device-checkbox" type="checkbox" name="deviceSelect" value="{{ e['id'] }}" 
+                                   data-name="{{ e['name'] }}" data-model="{{ e['model'] }}" data-category="{{ e['category'] }}" 
+                                   data-form="{{ e['form'] }}" data-price="{{ e['price'] }}"
+                                   data-tech_index="{{ e['tech_index'] }}" data-tech_status="{{ e['tech_status'] }}"
+                                   data-manufacturer="{{ e['manufacturer'] }}"></td>
+                                <td><strong>{{ e['name'] }}</strong></td>
+                                <td><small class="text-muted">{{ e['model'] }}</small></td>
+                                <td><span class="badge bg-secondary">{{ e['category'] }}</span></td>
+                                <td><small>{{ e['form'] or '-' }}</small></td>
+                                <td><small>{{ e['price'] or '-' }}</small></td>
+                                <td><small>{{ e['manufacturer'] or '-' }}</small></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="selectDeviceConfirm2()">确定</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 设备清单弹窗 -->
+<div class="modal" id="deviceListModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">添加设备到清单</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row" id="deviceListModalContent">
+                    {% for e in equipment_list %}
+                    <div class="col-6 col-lg-4 mb-1">
+                        <div class="form-check">
+                            <input class="form-check-input device-list-check" type="checkbox" 
+                                   value="{{ e.id }}" id="dl_{{ e.id }}"
+                                   data-name="{{ e.name }}" data-model="{{ e.model }}" data-category="{{ e.category }}" data-category="{{ e.category }}" 
+                                   data-tech_index="{{ e.tech_index }}" data-tech_status="{{ e.tech_status }}"
+                                   data-manufacturer="{{ e.manufacturer }}">
+                            <label class="form-check-label small" for="dl_{{ e.id }}">
+                                {{ e.name }} <small class="text-muted">({{ e.model }})</small>
+                            </label>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="confirmDeviceList()">确认添加</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 保存弹窗 -->
+<div class="modal" id="saveModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">保存文档</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">本次修改说明</label>
+                    <textarea class="form-control" id="changeNote" rows="3" placeholder="请简要说明本次修改内容..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="confirmSave()">确认保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 章节编辑弹窗 -->
+<div class="modal" id="chapterEditModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">编辑章节结构</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">一级章节标题</label>
+                    <input type="text" class="form-control" id="editChapterTitle" placeholder="如：二、需求分析">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">二级章节（子章节）</label>
+                    <div id="subChapterList"></div>
+                    <button type="button" class="btn btn-outline-primary btn-sm mt-2" onclick="addSubChapter()">+ 添加子章节</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-danger me-auto" onclick="deleteChapter()">删除章节</button>
+                <button type="button" class="btn btn-primary" onclick="confirmEditChapter()">确认修改</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/static/quill/quill.min.js"></script>
+<script>
+// 全局变量
+var editors = {};
+var templateContent = {{ (template_content | tojson | safe) }};
+var currentDeviceRef = null;
+var currentDeviceList = null;
+
+// 初始化编辑器
+
+// 自动从项目设备选型填充设备引用
+function initDeviceRefAuto() {
+    var projectEquipment = {{ project_equipment | tojson | safe }};
+    document.querySelectorAll('.device-ref-auto').forEach(function(el) {
+        var btn = el.querySelector('button');
+        if (btn) {
+            var chapterId = btn.dataset.chapter || el.parentElement.dataset.chapterId;
+            btn.onclick = function() { selectDevice(chapterId); };
+        }
+        if (!projectEquipment || projectEquipment.length === 0) {
+            return;
+        }
+        var html = '<table class="table table-bordered table-sm"><thead><tr><th>设备名称</th><th>型号</th><th>适配要求</th><th>资源保障方式</th></tr></thead><tbody>';
+        projectEquipment.forEach(function(eq) {
+            html += '<tr>';
+            html += '<td>' + (eq.name || eq.equipment_id || '') + '</td>';
+            html += '<td>' + (eq.model || '-') + '</td>';
+            html += '<td>' + (eq.tech_index || '-') + '</td>';
+            html += '<td>' + (eq.tech_status || '-') + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        el.innerHTML = html;
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    // 初始化设备过滤（确保在页面加载时就运行）
+    initDeviceFilter();
+    
+    // 自动填充设备引用
+    initDeviceRefAuto();
+    
+    // 初始化所有文本编辑器
+    initEditors();
+});
+
+
+
+function filterDevice() {
+    var search = document.getElementById('deviceSearch').value.toLowerCase();
+    var category = document.getElementById('deviceCategoryFilter').value;
+    var rows = document.querySelectorAll('#deviceModalContent tr.device-item-row');
+    var count = 0;
+    var selectedIds = getSelectedDeviceIds();
+    rows.forEach(function(row) {
+        var input = row.querySelector('input');
+        var name = (input.dataset.name || '').toLowerCase();
+        var model = (input.dataset.model || '').toLowerCase();
+        var cat = input.dataset.category || '';
+        var match = (search === '' || name.includes(search) || model.includes(search)) && (category === '' || cat === category);
+        // 已选中的设备始终显示
+        var isSelected = selectedIds.indexOf(input.value) !== -1;
+        if (isSelected) {
+            row.style.display = '';
+            count++;
+        } else {
+            row.style.display = match ? '' : 'none';
+            if (match) count++;
+        }
+    });
+    document.getElementById('deviceCount').textContent = count + ' 条';
+    updateSelectedDevicesDisplay();
+}
+
+function getSelectedDeviceIds() {
+    var ids = [];
+    document.querySelectorAll('#deviceModalContent .device-checkbox:checked').forEach(function(cb) {
+        ids.push(cb.value);
+    });
+    return ids;
+}
+
+function updateSelectedDevicesDisplay() {
+    var tbody = document.getElementById('selectedDevicesBody');
+    var header = document.getElementById('selectedDevicesHeader');
+    var table = document.getElementById('selectedDevicesTable');
+    var countSpan = document.getElementById('selectedDevicesCount');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    var count = 0;
+    document.querySelectorAll('#deviceModalContent .device-checkbox:checked').forEach(function(cb) {
+        count++;
+        var row = document.createElement('tr');
+        var input = cb;
+        row.innerHTML = '<td><input type="checkbox" checked disabled></td>' +
+            '<td>' + (input.dataset.name || '') + '</td>' +
+            '<td>' + (input.dataset.model || '-') + '</td>' +
+            '<td><span class="badge bg-secondary">' + (input.dataset.category || '-') + '</span></td>' +
+            '<td>' + (input.dataset.form || '-') + '</td>' +
+            '<td>' + (input.dataset.price || '-') + '</td>' +
+            '<td>' + (input.dataset.manufacturer || '-') + '</td>' +
+            '<td><button type="button" class="btn btn-sm btn-outline-danger" onclick="removeDevice(\'' + input.value + '\')">移除</button></td>';
+        tbody.appendChild(row);
+    });
+    countSpan.textContent = count;
+    table.style.display = count > 0 ? '' : 'none';
+    header.style.display = count > 0 ? '' : 'none';
+}
+
+function removeDevice(deviceId) {
+    var cb = document.querySelector('#deviceModalContent input[value="' + deviceId + '"]');
+    if (cb) {
+        cb.checked = false;
+        updateSelectedDevicesDisplay();
+    }
+}
+
+function initDeviceFilter() {
+    // Add data attributes to items and add change event listeners
+    document.querySelectorAll('#deviceModalContent tr.device-item-row').forEach(function(row) {
+        var input = row.querySelector('input');
+        if (input) {
+            row.dataset.name = input.dataset.name || '';
+            row.dataset.model = input.dataset.model || '';
+            row.dataset.category = input.dataset.category || '';
+            row.dataset.form = input.dataset.form || '';
+            row.dataset.price = input.dataset.price || '';
+            row.dataset.manufacturer = input.dataset.manufacturer || '';
+            // 添加change事件监听
+            input.addEventListener('change', function() {
+                updateSelectedDevicesDisplay();
+            });
+        }
+    });
+    filterDevice();
+}
+function selectDevice(refId) {
+    document.getElementById('currentDeviceRef').value = refId;
+    document.getElementById('deviceModal').dataset.currentRef = refId;
+    setTimeout(initDeviceFilter, 100);
+    var modal = new bootstrap.Modal(document.getElementById('deviceModal'));
+    modal.show();
+}
+
+function selectDeviceConfirm2() {
+    var refId = document.getElementById('currentDeviceRef').value;
+    if (!refId) {
+        alert('请先点击"选择设备"按钮再选择');
+        return;
+    }
+    // 从选中的checkbox获取设备信息（支持多选）
+    var checkedList = document.querySelectorAll('#deviceModalContent .device-checkbox:checked');
+    if (checkedList.length === 0) {
+        alert('请先选择至少一个设备');
+        return;
+    }
+    console.log('refId:', refId, 'el:', document.getElementById('device_ref_' + refId));
+    var deviceIds = [];
+    var deviceInfos = [];
+    checkedList.forEach(function(checked) {
+        deviceIds.push(checked.value);
+        deviceInfos.push('<strong>' + checked.dataset.name + '</strong> <small class="text-muted">(' + checked.dataset.model + ')</small>');
+    });
+    
+    // 隐藏弹窗 - 先移除焦点
+    document.activeElement.blur();
+    document.getElementById('deviceModal').style.display = 'none';
+    document.getElementById('deviceModal').setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('modal-open');
+    document.body.style.overflow = '';
+    
+    // 保存设备ID（多ID用逗号分隔）
+    var refInput = document.getElementById('device_ref_' + refId);
+    var infoDiv = document.getElementById('device_info_' + refId);
+    if (refInput) refInput.value = deviceIds.join(',');
+    if (infoDiv) infoDiv.innerHTML = deviceInfos.join('<br>');
+}
+
+function quickSelectDevice(id, name, model, techIndex, techStatus, manufacturer) {
+    alert('请先点击"选择设备"按钮后再选择设备');
+}
+
+function selectDevicesForList(chapterId) {
+    currentDeviceList = chapterId;
+    
+    // 回显已选设备
+    var existing = document.getElementById('device_list_' + chapterId).value;
+    if (existing) {
+        var ids = existing.split(',');
+        document.querySelectorAll('.device-list-check').forEach(function(cb) {
+            cb.checked = ids.includes(cb.value);
+        });
+    }
+    
+    var modal = new bootstrap.Modal(document.getElementById('deviceListModal'));
+    modal.show();
+}
+
+function confirmDeviceList() {
+    var chapterId = currentDeviceList;
+    var selected = [];
+    var displayHtml = '<table class="table table-sm">';
+    displayHtml += '<thead><tr><th>设备名称</th><th>型号</th><th>技术指标</th><th>技术状态</th><th>研制单位</th></tr></thead>';
+    displayHtml += '<tbody>';
+    
+    document.querySelectorAll('.device-list-check:checked').forEach(function(cb) {
+        selected.push(cb.value);
+        displayHtml += '<tr>';
+        displayHtml += '<td>' + cb.dataset.name + '</td>';
+        displayHtml += '<td>' + cb.dataset.model + '</td>';
+        displayHtml += '<td>' + (cb.dataset.tech_index || '-') + '</td>';
+        displayHtml += '<td>' + (cb.dataset.tech_status || '-') + '</td>';
+        displayHtml += '<td>' + (cb.dataset.manufacturer || '-') + '</td>';
+        displayHtml += '</tr>';
+    });
+    displayHtml += '</tbody></table>';
+    
+    document.getElementById('device_list_' + chapterId).value = selected.join(',');
+    document.getElementById('device_list_content_' + chapterId).innerHTML = displayHtml;
+    
+    bootstrap.Modal.getInstance(document.getElementById('deviceListModal')).hide();
+}
+
+function saveDocument() {
+    var modal = new bootstrap.Modal(document.getElementById('saveModal'));
+    modal.show();
+}
+
+function confirmSave() {
+    var content = {};
+    
+    // 收集所有编辑器内容
+    Object.keys(editors).forEach(function(field) {
+        content[field] = editors[field].root.innerHTML;
+    });
+    
+    // 收集所有设备引用
+    document.querySelectorAll('[name^="device_ref_"]').forEach(function(el) {
+        if (el.value) {
+            content[el.name] = el.value;
+        }
+    });
+    
+    // 收集所有设备清单
+    document.querySelectorAll('[name^="device_list_"]').forEach(function(el) {
+        if (el.value) {
+            content[el.name] = el.value;
+        }
+    });
+    
+    var changeNote = document.getElementById('changeNote').value;
+    
+    fetch('/argumentation/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            project_name: '{{ project.name }}',
+            category: '{{ category }}',
+        template: template,
+            content: content,
+            change_note: changeNote
+        })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        alert(data.message);
+        if (data.success) {
+            bootstrap.Modal.getInstance(document.getElementById('saveModal')).hide();
+            location.reload();
+        }
+    });
+}
+
+function generateWord() {
+    if (!confirm('是否确认生成Word文档?')) { return; }
+    
+    // 1. 收集编辑器内容
+    var content = {};
+    Object.keys(editors).forEach(function(field) {
+        content[field] = editors[field].root.innerHTML;
+    });
+    
+    // 2. 收集模板和内容
+    var template = [];
+    document.querySelectorAll('.chapter-section').forEach(function(chEl) {
+        var chTitleEl = chEl.querySelector('.chapter-title');
+        var chId = chTitleEl ? chTitleEl.dataset.id : '';
+        var chTitle = chTitleEl ? chTitleEl.childNodes[0].textContent.trim() : '';
+        
+        var subChapters = [];
+        var subEls = chEl.querySelectorAll('.sub-chapter');
+        subEls.forEach(function(subEl) {
+            var subTitleEl = subEl.querySelector('.sub-chapter-title');
+            var editorEl = subEl.querySelector('.editor');
+            var subId = editorEl ? editorEl.dataset.field : (subTitleEl ? subTitleEl.dataset.id : '');
+            var subTitle = subTitleEl ? subTitleEl.textContent.trim() : '';
+            var subContent = '';
+            if (editorEl && editors[editorEl.dataset.field]) {
+                subContent = editors[editorEl.dataset.field].root.innerHTML;
+                content[subId] = subContent;
+            }
+            if (subId && subTitle) subChapters.push({id: subId, title: subTitle});
+        });
+        
+        // 顶级内容
+        var topEditor = chEl.querySelector('.editor-container > .editor');
+        if (topEditor && editors[topEditor.dataset.field]) {
+            content[chId] = editors[topEditor.dataset.field].root.innerHTML;
+        }
+        
+        if (chTitle) template.push({id: chId, title: chTitle, children: subChapters});
+    });
+    
+    // 3. 组装数据
+    var postData = {
+        project_name: '{{ project.name }}',
+        category: '{{ category }}',
+        template: template,
+        content: content
+    };
+    // 4. 发送到后端
+    fetch('/argumentation/generate_word', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(postData)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.success) {
+            // 显示调试信息
+            var debugMsg = '生成成功!\\n';
+            if (data.debug) {
+                debugMsg += '项目: ' + (data.debug.project || '') + '\\n';
+                debugMsg += '章节: ' + (data.debug.template || 0) + '\\n';
+                debugMsg += '内容: ' + (data.debug.content || 0) + '\\n';
+                debugMsg += '文档: ' + JSON.stringify(data.debug.doc_text || []).substring(0, 100);
+            }
+            alert(debugMsg);
+            
+            if (data.word_path) {
+                var link = document.createElement('a');
+                link.href = '/argumentation/download?path=' + encodeURIComponent(data.word_path).replace(/%2F/g, '/');
+                link.download = data.word_path.split('/').pop();
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+        } else {
+            alert('生成失败: ' + data.message);
+        }
+    })
+    .catch(function(err) {
+        alert('生成失败: ' + err);
+    });
+}// ==================== 章节编辑功能 ====================
+var currentEditChapterId = null;
+
+function initEditors() {
+    var savedContent = null;
+    try {
+        savedContent = {{ (saved_content_str | tojson | safe) }};
+    } catch(e) {}
+    
+    document.querySelectorAll('.editor').forEach(function(el) {
+        var field = el.dataset.field;
+        if (!field || editors[field]) return;
+        
+        var quill = new Quill(el, {
+            theme: 'snow',
+            placeholder: '请输入内容...',
+            modules: {
+                toolbar: [
+                    ['bold', 'italic', 'underline', 'strike'],
+                    [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+                    [{ 'header': [1, 2, 3, false] }],
+                    ['clean']
+                ]
+            }
+        });
+        editors[field] = quill;
+        
+        // 加载模板内容 - 使用 Quill API
+        if (templateContent && templateContent[field]) {
+            var content = templateContent[field];
+            if (content && content !== '<p><br></p>') {
+                quill.clipboard.dangerouslyPasteHTML(0, content);
+            }
+        }
+    });
+}
+
+function editChapter(chapterId) {
+    currentEditChapterId = chapterId;
+    var chapterEl = document.querySelector('[data-chapter-id="' + chapterId + '"]');
+    if (!chapterEl) return;
+    
+    var titleEl = chapterEl.querySelector('.chapter-title');
+    var chapterTitle = titleEl ? titleEl.childNodes[0].textContent.trim() : '';
+    
+    document.getElementById('editChapterTitle').value = chapterTitle;
+    
+    // 加载子章节
+    var subList = document.getElementById('subChapterList');
+    subList.innerHTML = '';
+    var subChapters = chapterEl.querySelectorAll('.sub-chapter');
+    subChapters.forEach(function(subEl) {
+        var subTitleEl = subEl.querySelector('.sub-chapter-title');
+        if (subTitleEl) {
+            var subId = subTitleEl.dataset.id || '';
+            var subTitle = subTitleEl.textContent.trim();
+            addSubChapterInput(subId, subTitle);
+        }
+    });
+    
+    var modal = new bootstrap.Modal(document.getElementById('chapterEditModal'));
+    modal.show();
+}
+
+function addSubChapterInput(id, title) {
+    var div = document.createElement('div');
+    div.className = 'input-group mb-2';
+    div.innerHTML = '<input type="text" class="form-control" value="' + (title || '') + '" placeholder="子章节标题">';
+    if (id) {
+        div.innerHTML += '<input type="hidden" value="' + id + '">';
+    }
+    div.innerHTML += '<button type="button" class="btn btn-outline-danger" onclick="this.parentElement.remove()">删除</button>';
+    document.getElementById('subChapterList').appendChild(div);
+}
+
+function addSubChapter() {
+    addSubChapterInput('', '');
+}
+
+function confirmEditChapter() {
+    var newTitle = document.getElementById('editChapterTitle').value.trim();
+    if (!newTitle) {
+        alert('请输入章节标题');
+        return;
+    }
+    
+    var subInputs = document.querySelectorAll('#subChapterList input[type="text"]');
+    var subChapters = [];
+    subInputs.forEach(function(input) {
+        if (input.value.trim()) {
+            var id = input.nextElementSibling && input.nextElementSibling.tagName === 'INPUT' ? input.nextElementSibling.value : '';
+            subChapters.push({
+                id: id || 'sub_' + new Date().getTime() + Math.random().toString(36).substr(2, 9),
+                title: input.value.trim(),
+                type: 'text'
+            });
+        }
+    });
+    
+    var chapterEl = document.querySelector('[data-chapter-id="' + currentEditChapterId + '"]');
+    if (chapterEl) {
+        var titleEl = chapterEl.querySelector('.chapter-title');
+        if (titleEl) {
+            titleEl.childNodes[0].textContent = newTitle + ' ';
+        }
+        
+        var oldSubs = chapterEl.querySelectorAll('.sub-chapter');
+        oldSubs.forEach(function(el) { el.remove(); });
+        
+        var container = chapterEl.querySelector('.sub-chapters-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.className = 'sub-chapters-container';
+            chapterEl.appendChild(container);
+        }
+        
+        container.innerHTML = '';
+        subChapters.forEach(function(sub) {
+            var subDiv = document.createElement('div');
+            subDiv.className = 'sub-chapter';
+            subDiv.dataset.subId = sub.id;
+            subDiv.dataset.subType = 'text';
+            subDiv.innerHTML = '<div class="sub-chapter-title" data-id="' + sub.id + '">' + sub.title + '</div><div class="editor-container"><div class="editor" data-field="' + sub.id + '"></div></div>';
+            container.appendChild(subDiv);
+        });
+    }
+    
+    bootstrap.Modal.getInstance(document.getElementById('chapterEditModal')).hide();
+    setTimeout(initEditors, 200);
+}
+
+function deleteChapter() {
+    if (!confirm('确定要删除这个章节吗？')) return;
+    var chapterEl = document.querySelector('[data-chapter-id="' + currentEditChapterId + '"]');
+    if (chapterEl) {
+        chapterEl.remove();
+    }
+    bootstrap.Modal.getInstance(document.getElementById('chapterEditModal')).hide();
+}
+
+function addNewChapter() {
+    var newId = 'ch_new_' + new Date().getTime();
+    var form = document.getElementById('argumentationForm');
+    var newChapter = document.createElement('div');
+    newChapter.className = 'chapter-section';
+    newChapter.dataset.chapterId = newId;
+    newChapter.dataset.chapterType = 'text';
+    newChapter.innerHTML = '<div class="d-flex justify-content-between align-items-center"><h5 class="chapter-title mb-0">新章节</h5><button type="button" class="btn btn-outline-primary btn-sm" onclick="editChapter(\'' + newId + '\')">编辑章节</button></div><div class="sub-chapters-container"></div>';
+    form.appendChild(newChapter);
+    setTimeout(initEditors, 200);
+    alert('新增章节成功，请点击"编辑章节"按钮编辑章节标题');
+}
+
+function saveAsTemplate() {
+    if (!confirm('是否确认将当前页面内容保存为模板？\n保存后，同类型（密码/科研/安全）的其他项目将使用此模板。')) {
+        return;
+    }
+    
+    var chapters = [];
+    document.querySelectorAll('.chapter-section').forEach(function(chEl) {
+        var chapterId = chEl.dataset.chapterId;
+        var chapterTitle = chEl.querySelector('.chapter-title') ? chEl.querySelector('.chapter-title').childNodes[0].textContent.trim() : '';
+        var chapterType = chEl.dataset.chapterType || 'text';
+        
+        var subChapters = [];
+        chEl.querySelectorAll('.sub-chapter').forEach(function(subEl) {
+            var subTitleEl = subEl.querySelector('.sub-chapter-title');
+            if (subTitleEl) {
+                // 使用编辑器字段ID而不是标题
+                var editorEl = subEl.querySelector('.editor');
+                var subId = editorEl ? editorEl.dataset.field : (subTitleEl.dataset.id || subTitleEl.textContent.trim());
+                var content = '';
+                if (editorEl && editors[editorEl.dataset.field]) {
+                    content = editors[editorEl.dataset.field].root.innerHTML;
+                }
+                subChapters.push({
+                    id: subId,
+                    title: subTitleEl.textContent.trim(),
+                    type: 'text',
+                    content: content
+                });
+            }
+        });
+        
+        // 如果没有子章节，检查顶级编辑器
+        var topContent = '';
+        if (subChapters.length === 0) {
+            var topEditor = chEl.querySelector('.chapter-section > .editor-container > .editor');
+            if (topEditor && editors[topEditor.dataset.field]) {
+                topContent = editors[topEditor.dataset.field].root.innerHTML;
+            }
+        }
+        
+        var chapter = { id: chapterId, title: chapterTitle, type: chapterType, content: topContent };
+        if (subChapters.length > 0) {
+            chapter.children = subChapters;
+        }
+        chapters.push(chapter);
+    });
+    
+    if (chapters.length === 0) {
+        alert('没有可保存的章节');
+        return;
+    }
+    
+    var templateData = { chapters: chapters };
+    
+    fetch('/argumentation/template/edit', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            category: '{{ category }}',
+            chapter_tree: JSON.stringify(templateData)
+        })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        alert(data.message || '模板保存成功');
+    })
+    .catch(function(err) {
+        alert('保存失败: ' + err);
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,117 @@
+<!-- 项目列表局部刷新片段（partial=1 时返回此片段） -->
+{% if status_groups %}
+<div class="accordion" id="projectAccordion">
+    {% for status, project_list in status_groups.items() %}
+    <div class="accordion-item">
+        <h2 class="accordion-header" id="heading{{ loop.index }}">
+            <button class="accordion-button{% if status_filter and status_filter != status %} collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse{{ loop.index }}">
+                {{ status }} ({{ project_list|length }})
+            </button>
+        </h2>
+        <div id="collapse{{ loop.index }}" class="accordion-collapse collapse{% if not status_filter or status_filter == status %} show{% endif %}" data-bs-parent="#projectAccordion">
+            <div class="accordion-body">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th style="width:50px;"><input type="checkbox" id="selectAll-{{ loop.index }}" onchange="toggleProjectsByStatus('{{ status }}', this.checked, '{{ loop.index }}')" title="全选{{ status }}"></th>
+                            <th>项目编号</th>
+                            <th>项目名称</th>
+                            <th>负责人</th>
+                            <th>开始日期</th>
+                            <th>结束日期</th>
+                            <th>状态</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for p in project_list %}
+                        <tr>
+                            <td><input type="checkbox" class="project-cb-{{ status }}-{{ loop.index }}" value="{{ p['project_id'] }}"></td>
+                            <td><strong>{{ p['project_id'] }}</strong></td>
+                            <td>
+                                <a href="{{ url_for(project_type + '.detail', project_id=p['project_id']) }}">{{ p['name'] }}</a>
+                            </td>
+                            <td>{{ p['leader'] or '-' }}</td>
+                            <td>{{ p['start_date'] or '-' }}</td>
+                            <td>{{ p['planned_end_date'] or '-' }}</td>
+                            <td><span class="badge bg-{% if p['status']=='进行中' %}primary{% elif p['status']=='已完成' %}success{% else %}secondary{% endif %}">{{ p['status'] }}</span></td>
+                            <td>
+                                <a href="{{ url_for(project_type + '.detail', project_id=p['project_id']) }}" class="btn btn-sm btn-outline-primary">详情</a>
+                                {% if session.get('role') == '管理员' %}
+                                <a href="{{ url_for(project_type + '.delete', project_id=p['project_id']) }}" class="btn btn-sm btn-outline-danger" onclick="return confirm('确定删除？')">删除</a>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-info">暂无{% if project_type_display %}{{ project_type_display }}{% else %}项目{% endif %}信息</div>
+{% endif %}
+
+<!-- 分页 -->
+{% if total_pages > 1 %}
+<nav class="mt-3">
+    <ul class="pagination justify-content-center">
+        <li class="page-item{% if page <= 1 %} disabled{% endif %}">
+            <a class="page-link" href="#" onclick="gotoPage({{ page-1 }});return false;">上一页</a>
+        </li>
+        {% for p in range(1, total_pages + 1) %}
+        <li class="page-item{% if p == page %} active{% endif %}">
+            <a class="page-link" href="#" onclick="gotoPage({{ p }});return false;">{{ p }}</a>
+        </li>
+        {% endfor %}
+        <li class="page-item{% if page >= total_pages %} disabled{% endif %}">
+            <a class="page-link" href="#" onclick="gotoPage({{ page+1 }});return false;">下一页</a>
+        </li>
+    </ul>
+</nav>
+{% endif %}
+
+<script>
+// 全选/取消（按分组）
+function toggleProjectsByStatus(status, checked, loopIndex) {
+    document.querySelectorAll('.project-cb-' + status + '-' + loopIndex).forEach(cb => {
+        cb.checked = checked;
+    });
+}
+
+// 分页跳转
+function gotoPage(p) {
+    if (p < 1) return;
+    var keyword = document.getElementById('searchInput') ? document.getElementById('searchInput').value.trim() : '';
+    var status = document.querySelector('input[name=status_filter]') ? document.querySelector('input[name=status_filter]').value : '{{ status_filter }}';
+    var indexUrl = '{{ url_for(project_type + ".index") }}?page=' + p
+        + (keyword ? '&search=' + encodeURIComponent(keyword) : '')
+        + (status ? '&status=' + encodeURIComponent(status) : '');
+    fetch(indexUrl + '&partial=1', {credentials: 'same-origin'})
+        .then(r => r.text())
+        .then(html => {
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(html, 'text/html');
+            var accordion = doc.getElementById('projectAccordion');
+            if (accordion) {
+                document.getElementById('projectAccordion').innerHTML = accordion.innerHTML;
+            } else {
+                var content = doc.getElementById('projectTableContent');
+                if (content) document.getElementById('projectTableContent').innerHTML = content.innerHTML;
+            }
+            window.scrollTo({top: 0, behavior: 'smooth'});
+        })
+        .catch(err => console.error('加载失败:', err));
+}
+
+// 删除项目
+function deleteProject(projectId, projectName) {
+    if (confirm('确定删除项目 ' + projectName + '？')) {
+        fetch('/{{ project_type }}/delete/' + projectId, {method: 'GET', credentials: 'same-origin'})
+            .then(() => instantSearch())
+            .catch(() => location.reload());
+    }
+}
+</script>

@@ -1,0 +1,302 @@
+{% extends "base.html" %}
+{% block title %}批量导入专家信息 - 步骤 2/3{% endblock %}
+{% block extra_css %}
+<style>
+.step-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 20px 0 30px 0;
+    font-size: 14px;
+}
+.step-indicator .step {
+    display: flex;
+    align-items: center;
+    color: #999;
+}
+.step-indicator .step.active {
+    color: #198754;
+    font-weight: bold;
+}
+.step-indicator .step.done {
+    color: #198754;
+}
+.step-indicator .step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #e9ecef;
+    color: #999;
+    margin-right: 8px;
+    font-weight: bold;
+}
+.step-indicator .step.active .step-num, .step-indicator .step.done .step-num {
+    background: #198754;
+    color: #fff;
+}
+.step-indicator .step-sep {
+    flex: 0 0 60px;
+    height: 1px;
+    background: #ddd;
+    margin: 0 12px;
+}
+.statistics-bar {
+    background: #f8f9fa;
+    border-radius: 6px;
+    padding: 12px 20px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.statistics-bar .stat {
+    display: inline-block;
+    margin-right: 20px;
+    font-size: 14px;
+}
+.batch-actions {
+    margin-bottom: 12px;
+}
+.preview-table th {
+    background: #f8f9fa;
+    font-weight: 600;
+    white-space: nowrap;
+    font-size: 13px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+.preview-table td {
+    font-size: 13px;
+    vertical-align: middle;
+}
+.preview-table input.form-control-sm {
+    font-size: 13px;
+    padding: 2px 6px;
+}
+.row-skip td {
+    background: #fff8e1;
+}
+.row-confirm td {
+    background: #f0fff4;
+}
+.row-edit-mode {
+    background: #e7f1ff !important;
+}
+.edit-form {
+    display: none;
+    padding: 8px 12px;
+    background: #f8f9fa;
+    border-top: 1px solid #dee2e6;
+}
+.row-edit-mode .edit-form {
+    display: table-row;
+}
+.edit-form td {
+    padding: 12px;
+}
+.action-bar {
+    position: sticky;
+    bottom: 0;
+    background: #fff;
+    border-top: 1px solid #e9ecef;
+    padding: 12px 20px;
+    margin: 30px -20px -20px -20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 100;
+}
+.action-bar .middle {
+    color: #666;
+    font-size: 14px;
+}
+</style>
+{% endblock %}
+{% block content %}
+<div class="container mt-3">
+    <h4 class="mb-2">批量导入专家信息</h4>
+    <p class="text-muted small mb-1">文件：<code>{{ filename }}</code></p>
+
+    <div class="step-indicator">
+        <div class="step done">
+            <span class="step-num">✓</span>
+            <span>上传文件 + 列映射</span>
+        </div>
+        <div class="step-sep"></div>
+        <div class="step active">
+            <span class="step-num">2</span>
+            <span>逐行预览确认</span>
+        </div>
+        <div class="step-sep"></div>
+        <div class="step">
+            <span class="step-num">3</span>
+            <span>导入结果</span>
+        </div>
+    </div>
+
+    <div id="alertBox"></div>
+
+    <div class="statistics-bar">
+        <div>
+            <span class="stat text-success">✓ <span id="validCount">{{ statistics.valid }}</span> 待确认</span>
+            <span class="stat text-warning">⊘ <span id="skipCount">{{ statistics.skip }}</span> 跳过（缺姓名）</span>
+            <span class="stat text-muted">共 {{ statistics.total }} 行</span>
+        </div>
+        <div class="batch-actions">
+            <button type="button" class="btn btn-sm btn-outline-primary" id="selectAllBtn">全选</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="selectNoneBtn">反选</button>
+        </div>
+    </div>
+
+    <form id="commitForm" method="POST" action="/experts/import/commit">
+        <div class="table-responsive" style="max-height: 60vh; overflow-y: auto;">
+            <table class="table table-sm table-bordered preview-table" id="previewTable">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">#</th>
+                        <th style="width: 130px;">状态</th>
+                        <th style="width: 100px;">姓名 *</th>
+                        <th>单位</th>
+                        <th>职务</th>
+                        <th>专长</th>
+                        <th>电话</th>
+                        <th>身份证号</th>
+                        <th>银行卡号</th>
+                        <th>开户行</th>
+                        <th style="width: 180px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for row in processed %}
+                    {% set has_name = row.name|default('')|trim != '' %}
+                    <tr class="{{ 'row-skip' if not has_name else 'row-confirm' }}" data-row-idx="{{ row._row_idx }}">
+                        <td>{{ loop.index }}</td>
+                        <td>
+                            {% if has_name %}
+                            <span class="text-success">✓ 待确认</span>
+                            {% else %}
+                            <span class="text-warning">⊘ 跳过</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <input type="text" class="form-control form-control-sm" name="name_{{ row._row_idx }}" value="{{ row.name|default('') }}" {{ 'readonly' if not has_name else '' }}>
+                        </td>
+                        <td><input type="text" class="form-control form-control-sm" name="unit_{{ row._row_idx }}" value="{{ row.unit|default('') }}" {{ 'readonly' if not has_name else '' }}></td>
+                        <td><input type="text" class="form-control form-control-sm" name="position_{{ row._row_idx }}" value="{{ row.position|default('') }}" {{ 'readonly' if not has_name else '' }}></td>
+                        <td><input type="text" class="form-control form-control-sm" name="expertise_{{ row._row_idx }}" value="{{ row.expertise|default('') }}" {{ 'readonly' if not has_name else '' }}></td>
+                        <td><input type="text" class="form-control form-control-sm" name="phone_{{ row._row_idx }}" value="{{ row.phone|default('') }}" {{ 'readonly' if not has_name else '' }}></td>
+                        <td><input type="text" class="form-control form-control-sm" name="id_card_{{ row._row_idx }}" value="{{ row.id_card|default('') }}" {{ 'readonly' if not has_name else '' }}></td>
+                        <td><input type="text" class="form-control form-control-sm" name="bank_card_{{ row._row_idx }}" value="{{ row.bank_card|default('') }}" {{ 'readonly' if not has_name else '' }}></td>
+                        <td><input type="text" class="form-control form-control-sm" name="bank_name_{{ row._row_idx }}" value="{{ row.bank_name|default('') }}" {{ 'readonly' if not has_name else '' }}></td>
+                        <td>
+                            {% if has_name %}
+                            <div class="form-check d-inline-block">
+                                <input class="form-check-input confirm-check" type="checkbox" name="confirm_{{ row._row_idx }}" id="confirm_{{ row._row_idx }}" checked>
+                                <label class="form-check-label" for="confirm_{{ row._row_idx }}">确认</label>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-link p-0 ms-1 edit-btn" data-row-idx="{{ row._row_idx }}">修改</button>
+                            {% else %}
+                            <span class="text-muted small">--</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </form>
+
+    <div class="action-bar">
+        <a href="/experts/import" class="btn btn-light">← 返回上一步</a>
+        <span class="middle" id="confirmCount">确认 0 条</span>
+        <button type="button" class="btn btn-success" id="commitBtn">确认导入 →</button>
+    </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+const FIELDS = ['name', 'unit', 'position', 'expertise', 'phone', 'id_card', 'bank_card', 'bank_name'];
+
+function updateConfirmCount() {
+    const checked = document.querySelectorAll('.confirm-check:checked').length;
+    document.getElementById('confirmCount').textContent = `确认 ${checked} 条`;
+}
+
+function showAlert(msg, type='danger') {
+    const box = document.getElementById('alertBox');
+    box.innerHTML = `<div class="alert alert-${type} alert-dismissible fade show" role="alert">${msg}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
+    if (type === 'success') {
+        setTimeout(() => { box.innerHTML = ''; }, 3000);
+    }
+}
+
+// 全选/反选
+document.getElementById('selectAllBtn').addEventListener('click', () => {
+    document.querySelectorAll('.confirm-check').forEach(cb => cb.checked = true);
+    updateConfirmCount();
+});
+document.getElementById('selectNoneBtn').addEventListener('click', () => {
+    document.querySelectorAll('.confirm-check').forEach(cb => cb.checked = false);
+    updateConfirmCount();
+});
+
+// 监听每个 checkbox 变化
+document.querySelectorAll('.confirm-check').forEach(cb => {
+    cb.addEventListener('change', updateConfirmCount);
+});
+
+// 修改按钮（行内编辑展开/折叠）
+document.querySelectorAll('.edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const tr = btn.closest('tr');
+        tr.classList.toggle('row-edit-mode');
+        btn.textContent = tr.classList.contains('row-edit-mode') ? '收起' : '修改';
+    });
+});
+
+// 提交
+document.getElementById('commitBtn').addEventListener('click', async () => {
+    const confirmed = [];
+    document.querySelectorAll('.confirm-check:checked').forEach(cb => {
+        const rowIdx = cb.name.replace('confirm_', '');
+        const record = { _row_idx: parseInt(rowIdx) };
+        FIELDS.forEach(f => {
+            const input = document.querySelector(`input[name="${f}_${rowIdx}"]`);
+            if (input && input.value.trim()) record[f] = input.value.trim();
+        });
+        confirmed.push(record);
+    });
+    if (confirmed.length === 0) {
+        showAlert('没有勾选任何行');
+        return;
+    }
+    if (!confirm(`确认导入 ${confirmed.length} 条记录？`)) return;
+    const btn = document.getElementById('commitBtn');
+    btn.disabled = true;
+    btn.textContent = '导入中...';
+    const fd = new FormData();
+    fd.append('confirmed_rows', JSON.stringify(confirmed));
+    try {
+        const r = await fetch('/experts/import/commit', { method: 'POST', body: fd });
+        const data = await r.json();
+        if (data.success) {
+            window.location.href = data.redirect;
+        } else {
+            showAlert(data.message);
+            btn.disabled = false;
+            btn.textContent = '确认导入 →';
+        }
+    } catch (e) {
+        showAlert('提交失败：' + e.message);
+        btn.disabled = false;
+        btn.textContent = '确认导入 →';
+    }
+});
+
+updateConfirmCount();
+</script>
+{% endblock %}

@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+
+{% block title %}文档校对 - 辅助工具 - 科研管理系统{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex align-items-center mb-4">
+        <a href="/utils" class="btn btn-outline-secondary btn-sm me-3">返回</a>
+        <h2 class="mb-0"><i class="bi bi-file-earmark-check text-info"></i> 文档校对</h2>
+    </div>
+
+    <!-- 模式切换 -->
+    <ul class="nav nav-tabs mb-4" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#file-mode" type="button">文件上传</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#text-mode" type="button">文本输入</button>
+        </li>
+    </ul>
+
+    <div class="tab-content">
+        <!-- 文件上传模式 -->
+        <div class="tab-pane fade show active" id="file-mode">
+            <div class="card" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">选择文件</label>
+                        <input type="file" class="form-control" id="fileInput" accept=".txt,.md,.docx,.pdf">
+                        <div class="form-text">支持 .txt, .md, .docx, .pdf，最大 10MB</div>
+                    </div>
+                    <button class="btn btn-primary" onclick="uploadAndCorrect()">
+                        <i class="bi bi-upload"></i> 上传并校对
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 文本输入模式 -->
+        <div class="tab-pane fade" id="text-mode">
+            <div class="card" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">输入文本</label>
+                        <textarea class="form-control" id="textInput" rows="10" placeholder="请输入需要校对的文本..."></textarea>
+                        <div class="form-text">单次校对上限 2000 字符</div>
+                    </div>
+                    <button class="btn btn-primary" onclick="correctText()">
+                        <i class="bi bi-check-circle"></i> 校对
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 加载状态 -->
+    <div id="loading" class="mt-4 text-center" style="display:none;">
+        <div class="spinner-border text-info" role="status"></div>
+        <p class="mt-2 text-light">校对中，请稍候...</p>
+    </div>
+
+    <!-- 结果区域 -->
+    <div id="result" class="mt-4" style="display:none;">
+        <div class="card" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
+            <div class="card-header">
+                <span id="resultTitle">校对结果</span>
+            </div>
+            <div class="card-body">
+                <div id="resultContent"></div>
+                <div class="mt-3">
+                    <button class="btn btn-outline-light btn-sm" onclick="copyResult()">复制结果</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 错误提示 -->
+    <div id="error" class="alert alert-danger mt-4" style="display:none;"></div>
+</div>
+
+<script>
+function uploadAndCorrect() {
+    const fileInput = document.getElementById('fileInput');
+    if (!fileInput.files.length) {
+        showError('请先选择文件');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    showLoading(true);
+    hideResult();
+    hideError();
+
+    fetch('/utils/api/upload_and_correct', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        showLoading(false);
+        if (data.success) {
+            showResult(data.filename || '文件', data.original || '', data.corrected || '', data.original_full_length || 0);
+        } else {
+            showError(data.error || '校对失败');
+        }
+    })
+    .catch(err => {
+        showLoading(false);
+        showError('请求失败: ' + err);
+    });
+}
+
+function correctText() {
+    const text = document.getElementById('textInput').value.trim();
+    if (!text) {
+        showError('请输入文本');
+        return;
+    }
+
+    showLoading(true);
+    hideResult();
+    hideError();
+
+    const formData = new FormData();
+    formData.append('text', text);
+
+    fetch('/utils/api/correct', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+        showLoading(false);
+        if (data.success) {
+            showResult('文本', data.original || '', data.corrected || '', 0);
+        } else {
+            showError(data.error || '校对失败');
+        }
+    })
+    .catch(err => {
+        showLoading(false);
+        showError('请求失败: ' + err);
+    });
+}
+
+function showResult(title, original, corrected, fullLength) {
+    const resultDiv = document.getElementById('result');
+    const contentDiv = document.getElementById('resultContent');
+    const resultTitle = document.getElementById('resultTitle');
+
+    resultTitle.textContent = title + ' 的校对结果';
+    
+    let diffHtml = '';
+    if (corrected !== original) {
+        diffHtml = '<div class="mb-3"><h6 class="text-warning">✨ 校对后：</h6><div class="p-3" style="background:rgba(0,255,0,0.05); border-radius:8px; white-space:pre-wrap; line-height:1.8;">' + escapeHtml(corrected) + '</div></div>';
+    } else {
+        diffHtml = '<div class="alert alert-success mb-0"><i class="bi bi-check-circle"></i> 未发现错误，文本已保持原样。</div>';
+    }
+
+    contentDiv.innerHTML = 
+        '<div class="mb-3"><h6 class="text-info">📝 原文：</h6><div class="p-3" style="background:rgba(255,255,255,0.05); border-radius:8px; white-space:pre-wrap; line-height:1.8;">' + escapeHtml(original) + '</div></div>' +
+        diffHtml +
+        (fullLength > 5000 ? '<div class="text-muted small">* 原文共 ' + fullLength + ' 字符，已截断显示前5000字符</div>' : '');
+
+    resultDiv.style.display = 'block';
+}
+
+function copyResult() {
+    const contentDiv = document.getElementById('resultContent');
+    const corrected = contentDiv.querySelector('.text-warning + div');
+    if (corrected) {
+        navigator.clipboard.writeText(corrected.textContent).then(() => {
+            alert('已复制到剪贴板');
+        });
+    }
+}
+
+function showLoading(show) {
+    document.getElementById('loading').style.display = show ? 'block' : 'none';
+}
+
+function hideResult() {
+    document.getElementById('result').style.display = 'none';
+}
+
+function showError(msg) {
+    const e = document.getElementById('error');
+    e.textContent = msg;
+    e.style.display = 'block';
+}
+
+function hideError() {
+    document.getElementById('error').style.display = 'none';
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+</script>
+{% endblock %}

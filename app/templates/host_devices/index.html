@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block title %}宿主设备库 - 科研管理系统V2{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>宿主设备库</h4>
+        <div>
+            <a href="{{ url_for('host_devices.categories') }}" class="btn btn-outline-secondary btn-sm me-1">
+                <i class="bi bi-tags"></i> 类型管理
+            </a>
+            <a href="{{ url_for('host_devices.import_page') }}" class="btn btn-outline-primary btn-sm me-1">
+                <i class="bi bi-upload"></i> 导入
+            </a>
+            <a href="{{ url_for('host_devices.export') }}" class="btn btn-outline-success btn-sm me-1">
+                <i class="bi bi-download"></i> 导出
+            </a>
+            <a href="{{ url_for('host_devices.add') }}" class="btn btn-primary btn-sm">
+                <i class="bi bi-plus-circle"></i> 添加宿主设备
+            </a>
+        </div>
+    </div>
+
+    {% if category_filter or form_filter or keyword %}
+    <div class="mb-3">
+        {% if category_filter %}<span class="badge bg-primary">{{ category_filter }}</span>{% endif %}
+        {% if form_filter %}<span class="badge bg-info">{{ form_filter }}</span>{% endif %}
+        {% if keyword %}<span class="badge bg-success">{{ keyword }}</span>{% endif %}
+    </div>
+    {% endif %}
+
+    <!-- 筛选表单 -->
+    <form method="get" class="row g-3 mb-3">
+        <div class="col-md-2">
+            <select name="category" class="form-select">
+                <option value="">全部类型</option>
+                {% for cat in categories %}
+                <option value="{{ cat.name }}" {% if category_filter==cat.name %}selected{% endif %}>{{ cat.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2">
+            <select name="form" class="form-select">
+                <option value="">全部形态</option>
+                <option value="独立式" {% if form_filter=='独立式' %}selected{% endif %}>独立式</option>
+                <option value="板卡式" {% if form_filter=='板卡式' %}selected{% endif %}>板卡式</option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <input type="text" name="keyword" class="form-control" placeholder="搜索名称/型号" value="{{ keyword or '' }}">
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary">筛选</button>
+            <a href="{{ url_for('host_devices.index') }}" class="btn btn-outline-secondary">重置</a>
+        </div>
+    </form>
+
+    {% if hosts %}
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>名称</th>
+                    <th>型号</th>
+                    <th>类型</th>
+                    <th>形态</th>
+                    <th>关联设备</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for h in hosts %}
+                <tr data-bs-toggle="tooltip" data-bs-placement="top" title="名称: {{ h.name }}&#10;型号: {{ h.model or '无' }}&#10;类型: {{ h.category or '无' }}&#10;形态: {{ h.form or '无' }}&#10;关联设备: {{ h._device_summary }}&#10;创建时间: {{ h.created_at or '无' }}">
+                    <td>{{ h.name }}</td>
+                    <td>{{ h.model or '' }}</td>
+                    <td>{{ h.category or '' }}</td>
+                    <td>{{ h.form or '' }}</td>
+                    <td>
+                        {% if h._device_count == 0 %}
+                        <span class="text-muted">无</span>
+                        {% else %}
+                        <span class="text-primary">{{ h._device_summary }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <a href="{{ url_for('host_devices.detail', host_id=h.host_id) }}" class="btn btn-outline-primary btn-sm">详情</a>
+                        <a href="{{ url_for('host_devices.edit', host_id=h.host_id) }}" class="btn btn-outline-secondary btn-sm">编辑</a>
+                        <form method="POST" action="{{ url_for('host_devices.delete', host_id=h.host_id) }}" style="display:inline" onsubmit="return confirm('确认删除？')">
+                            <button type="submit" class="btn btn-outline-danger btn-sm">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 分页 -->
+    {% if total_pages > 1 %}
+    <nav>
+        <ul class="pagination justify-content-end">
+            {% if page > 1 %}
+            <li class="page-item"><a class="page-link" href="?page={{ page-1 }}&category={{ category_filter }}&form={{ form_filter }}&keyword={{ keyword }}">&lt;</a></li>
+            {% endif %}
+            <li class="page-item disabled"><span class="page-link">第 {{ page }}/{{ total_pages }} 页，共 {{ total }} 条</span></li>
+            {% if page < total_pages %}
+            <li class="page-item"><a class="page-link" href="?page={{ page+1 }}&category={{ category_filter }}&form={{ form_filter }}&keyword={{ keyword }}">&gt;</a></li>
+            {% endif %}
+        </ul>
+    </nav>
+    {% endif %}
+
+    {% else %}
+    <div class="alert alert-info">暂无宿主设备，点击「添加宿主设备」新建。</div>
+    {% endif %}
+</div>
+{% endblock %}

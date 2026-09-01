@@ -1,0 +1,439 @@
+{% extends "base.html" %}
+
+{% block title %}设备知识库 - 导入（步骤1/3）{% endblock %}
+
+{% block content %}
+<style>
+.upload-zone {
+    border: 2px dashed #c0c0c0;
+    border-radius: 8px;
+    padding: 40px;
+    text-align: center;
+    cursor: pointer;
+    margin-bottom: 20px;
+    transition: border-color 0.2s;
+}
+.upload-zone:hover { border-color: #4a9eff; }
+.upload-zone.dragover { border-color: #1677ff; background: #f0f7ff; }
+.hidden { display: none; }
+.col-unmapped { background: #f5f5f5; }
+.col-mapped-related { border-top: 3px solid #fa8c16; }
+#previewTable { font-size: 13px; }
+#previewTable th { background: #f0f0f0; position: sticky; top: 0; z-index: 1; }
+#previewTable td, #previewTable th { padding: 6px 10px; white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+#previewTable tr:first-child td { background: #fff; }
+.step1-section { display: none; }
+.step1-section.active { display: block; }
+
+/* [REQ-012] 分类单选卡片样式 */
+.radio-card {
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: #fafafa;
+    margin-bottom: 4px;
+}
+.radio-card:hover {
+    border-color: #4a9eff;
+    background: #f0f7ff;
+}
+.radio-card i {
+    font-size: 28px;
+    color: #888;
+    transition: color 0.2s;
+}
+.radio-card:hover i {
+    color: #1677ff;
+}
+.category-radio input[type="radio"]:checked + .radio-card {
+    border-color: #1677ff;
+    background: #e6f4ff;
+    box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.1);
+}
+.category-radio input[type="radio"]:checked + .radio-card i {
+    color: #1677ff;
+}
+.radio-title {
+    font-size: 15px;
+    font-weight: 500;
+    margin-top: 8px;
+    color: #333;
+}
+.required-hint {
+    color: #f5222d;
+    font-size: 12px;
+    margin-top: 4px;
+}
+.required-hint.hidden { display: none; }
+</style>
+
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>设备知识库 - 导入（步骤1/3）</h4>
+        <a href="{{ url_for('equipment.index') }}" class="btn btn-outline-secondary btn-sm">← 返回列表</a>
+    </div>
+
+    <!-- 上传区 -->
+    <div class="card mb-3">
+        <div class="card-body">
+            <div id="uploadSection">
+                <div class="upload-zone" id="uploadZone">
+                    <i class="bi bi-cloud-arrow-up" style="font-size:48px; color:#ccc;"></i>
+                    <p class="mt-2 mb-1" style="color:#666;">拖拽 xlsx 文件到此处，或点击选择文件</p>
+                    <p class="text-secondary" style="font-size:12px;">支持 .xlsx 格式</p>
+                    <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none;">
+                </div>
+                <div id="fileInfo" class="hidden mt-2">
+                    <span id="fileName" style="font-weight:bold;"></span>
+                    <button type="button" class="btn btn-sm btn-outline-primary ms-3" id="parseBtn">开始解析</button>
+                    <span id="parseError" class="text-danger ms-3"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 步骤1：列映射（解析后才显示） -->
+    <div id="mappingSection" class="card step1-section">
+        <div class="card-header">
+            <strong>步骤1：列映射</strong>
+            <span class="text-secondary ms-3" style="font-size:13px;">请为每列选择对应字段（关联宿主设备为可选项）</span>
+        </div>
+        <div class="card-body" style="padding:0;">
+            <div style="overflow-x:auto; max-height:400px; overflow-y:auto;">
+                <table class="table table-bordered table-sm mb-0" id="previewTable">
+                    <thead id="previewHead"></thead>
+                    <tbody id="previewBody"></tbody>
+                </table>
+            </div>
+            <div class="p-3 border-top">
+                <div id="unmappedWarning" class="alert alert-warning mb-2 hidden" style="padding:8px 12px;">
+                    ⚠ 有 <span id="unmappedCount">0</span> 列未映射（将忽略）
+                </div>
+                <div class="text-end">
+                    <button type="button" class="btn btn-primary" id="startMatchBtn">
+                        下一步：匹配预览 →
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- [REQ-012] 批量分类单选（必选） -->
+    <div id="categorySection" class="card mb-3">
+        <div class="card-header">
+            <strong>批量分类（必选）</strong>
+            <span class="text-secondary ms-3" style="font-size:13px;">所有本次导入的设备将统一归入以下分类</span>
+        </div>
+        <div class="card-body">
+            <div class="d-flex gap-3" id="categoryRadios">
+                <label class="category-radio flex-fill">
+                    <input type="radio" name="default_category_radio" value="安全设备" class="d-none">
+                    <div class="radio-card">
+                        <i class="bi bi-shield-check"></i>
+                        <div class="radio-title">安全设备</div>
+                    </div>
+                </label>
+                <label class="category-radio flex-fill">
+                    <input type="radio" name="default_category_radio" value="密码设备" class="d-none">
+                    <div class="radio-card">
+                        <i class="bi bi-key"></i>
+                        <div class="radio-title">密码设备</div>
+                    </div>
+                </label>
+                <label class="category-radio flex-fill">
+                    <input type="radio" name="default_category_radio" value="通用设备" class="d-none">
+                    <div class="radio-card">
+                        <i class="bi bi-hdd"></i>
+                        <div class="radio-title">通用设备</div>
+                    </div>
+                </label>
+            </div>
+            <div class="required-hint hidden" id="categoryRequiredHint">
+                ⚠ 请选择一个分类才能继续
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// 上传交互
+const uploadZone = document.getElementById('uploadZone');
+const fileInput = document.getElementById('fileInput');
+const fileInfo = document.getElementById('fileInfo');
+const fileName = document.getElementById('fileName');
+const parseBtn = document.getElementById('parseBtn');
+const parseError = document.getElementById('parseError');
+const mappingSection = document.getElementById('mappingSection');
+
+uploadZone.addEventListener('click', () => fileInput.click());
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) {
+        fileInput.files = e.dataTransfer.files;
+        showFileInfo(e.dataTransfer.files[0]);
+    }
+});
+fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) showFileInfo(fileInput.files[0]);
+});
+
+function showFileInfo(file) {
+    fileName.textContent = file.name;
+    fileInfo.classList.remove('hidden');
+    parseError.textContent = '';
+    mappingSection.classList.remove('active');
+}
+
+// 解析文件
+parseBtn.addEventListener('click', () => {
+    if (!fileInput.files.length) { parseError.textContent = '请先选择文件'; return; }
+    parseError.textContent = '解析中...';
+    parseError.style.color = '#1677ff';
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('preview_only', '1');
+
+    fetch('/equipment/import/preview', { method: 'POST', body: formData })
+    .then(r => {
+        // 非 2xx 状态码: 提取后端 message 或 statusText
+        if (!r.ok) {
+            return r.text().then(text => {
+                let msg = 'HTTP ' + r.status;
+                try {
+                    const j = JSON.parse(text);
+                    if (j && j.message) msg = j.message;
+                } catch (e) {
+                    if (text && text.length < 200) msg += ': ' + text;
+                }
+                throw new Error(msg);
+            });
+        }
+        return r.json();
+    })
+    .then(data => {
+        if (data.success) {
+            parseError.textContent = '';
+            parseError.style.color = '#1677ff';
+            renderPreview(data.headers, data.preview_rows);
+            mappingSection.classList.add('active');
+        } else {
+            parseError.textContent = data.message || '解析失败';
+            parseError.style.color = '#f5222d';
+        }
+    })
+    .catch((err) => {
+        // 显示具体错误（网络异常/HTTP 状态码/JSON 解析错误）
+        parseError.textContent = '解析失败：' + (err && err.message ? err.message : '网络错误') + '。请重试';
+        parseError.style.color = '#f5222d';
+        console.error('[import_parse]', err);
+    });
+});
+
+function renderPreview(headers, previewRows) {
+    // 预定义字段选项
+    const fieldOptions = `
+        <option value="">-- 不导入 --</option>
+        <option value="equipment_id">设备编号</option>
+        <option value="name">设备名称</option>
+        <option value="former_name">曾用名</option>
+        <option value="model">型号</option>
+        <option value="form">形态</option>
+        <option value="price">单价</option>
+        <option value="main_purpose">主要用途</option>
+        <option value="tech_index">功能技术指标</option>
+        <option value="tech_status">技术状态</option>
+        <option value="manufacturer">研制单位</option>
+        <option value="installation_requirements">加装要求</option>
+        <option value="resource_guarantee">资源保障要求</option>
+        <option value="related_host_devices">关联宿主设备</option>
+        <option value="subclass">设备子类</option>
+    `;
+
+    // 自动识别映射（简单关键字匹配）
+    const autoMap = {};
+    const patterns = {
+        'equipment_id': /编号|设备编号|eq_id/i,
+        'name': /名称|设备名称|name/i,
+        'former_name': /曾用|别名|former/i,
+        'model': /型号|model/i,
+        'form': /形态|form/i,
+        'price': /单价|价格|price|万元/i,
+        'main_purpose': /用途|主要用途|purpose/i,
+        'tech_index': /技术指标|功能指标|tech_index/i,
+        'tech_status': /状态|技术状态|tech_status/i,
+        'manufacturer': /研制单位|厂家|manufacturer|单位/i,
+        'installation_requirements': /加装要求|安装要求|installation/i,
+        'resource_guarantee': /资源保障/i,
+        'related_host_devices': /宿主|关联宿主/i,
+        'subclass': /子类|设备子类|subclass/i,
+    };
+
+    headers.forEach((h, i) => {
+        const lowered = h.toLowerCase();
+        for (const [field, pattern] of Object.entries(patterns)) {
+            if (pattern.test(lowered) && autoMap[field] === undefined) {
+                autoMap[field] = i;
+                break;
+            }
+        }
+    });
+
+    // 表头
+    const thead = document.getElementById('previewHead');
+    thead.innerHTML = '<tr><th style="width:40px;">#</th>' +
+        headers.map((h, i) => {
+            const selectedVal = Object.entries(autoMap).find(([, idx]) => idx === i)?.[0] || '';
+            const isRelated = selectedVal === 'related_host_devices';
+            return `<th style="${isRelated ? 'border-top:3px solid #fa8c16;' : ''}">
+                <div style="font-size:11px; color:#888;">列 ${i + 1}</div>
+                <select class="form-select form-select-sm column-map" data-col="${i}"
+                        style="min-width:130px; ${isRelated ? 'border-color:#fa8c16; font-weight:bold;' : ''}"
+                        onchange="onColumnMapChange(this)">
+                    ${fieldOptions.replace(`value="${selectedVal}"`, `value="${selectedVal}" selected`)}
+                </select>
+                <div style="font-size:12px; margin-top:2px; max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${h}">${h || '<span style="color:#ccc;">(空)</span>'}</div>
+            </th>`;
+        }).join('') +
+        '</tr>';
+
+    // 数据行
+    const tbody = document.getElementById('previewBody');
+    tbody.innerHTML = previewRows.map((row, ri) =>
+        '<tr><td style="text-align:center; color:#888;">' + (ri + 1) + '</td>' +
+        headers.map((h, ci) => {
+            const val = row[ci] || '';
+            const selected = Object.entries(autoMap).find(([, idx]) => idx === ci)?.[0] || '';
+            return `<td class="${!selected ? 'col-unmapped' : ''}" title="${val}">${val}</td>`;
+        }).join('') +
+        '</tr>'
+    ).join('');
+
+    updateUnmappedWarning();
+}
+
+function onColumnMapChange(select) {
+    const th = select.closest('th');
+    const isRelated = select.value === 'related_host_devices';
+    th.style.borderTop = isRelated ? '3px solid #fa8c16' : '';
+    updateUnmappedWarning();
+}
+
+function updateUnmappedWarning() {
+    const selects = document.querySelectorAll('.column-map');
+    const unmapped = Array.from(selects).filter(s => s.value === '').length;
+    const warn = document.getElementById('unmappedWarning');
+    const count = document.getElementById('unmappedCount');
+    if (unmapped > 0) {
+        warn.classList.remove('hidden');
+        count.textContent = unmapped;
+    } else {
+        warn.classList.add('hidden');
+    }
+}
+
+// [REQ-012] 监听分类单选变化 + 控制"下一步"按钮
+document.querySelectorAll('input[name="default_category_radio"]').forEach(radio => {
+    radio.addEventListener('change', updateStartMatchBtn);
+});
+
+function updateStartMatchBtn() {
+    const selectedCategory = document.querySelector('input[name="default_category_radio"]:checked');
+    const startBtn = document.getElementById('startMatchBtn');
+    const hint = document.getElementById('categoryRequiredHint');
+    if (selectedCategory) {
+        startBtn.removeAttribute('disabled');
+        startBtn.classList.remove('btn-secondary');
+        startBtn.classList.add('btn-primary');
+        if (hint) hint.classList.add('hidden');
+    } else {
+        startBtn.setAttribute('disabled', 'disabled');
+        startBtn.classList.remove('btn-primary');
+        startBtn.classList.add('btn-secondary');
+    }
+}
+// 初始化：按钮默认 disabled（必须选分类才能继续）
+updateStartMatchBtn();
+
+// 开始匹配
+document.getElementById('startMatchBtn').addEventListener('click', () => {
+    if (!fileInput.files.length) { alert('请先上传文件'); return; }
+
+    // [REQ-012] 校验分类必选
+    const selectedCategory = document.querySelector('input[name="default_category_radio"]:checked');
+    if (!selectedCategory) {
+        alert('请先选择批量分类');
+        const hint = document.getElementById('categoryRequiredHint');
+        if (hint) hint.classList.remove('hidden');
+        return;
+    }
+
+    // 收集列映射
+    const columnMapping = {};
+    document.querySelectorAll('.column-map').forEach(sel => {
+        if (sel.value) {
+            columnMapping[sel.value] = parseInt(sel.dataset.col);
+        }
+    });
+
+    // 验证关联字段（非必填，不需要验证）
+    // if (!columnMapping.related_host_devices) {
+    //     alert('请为「关联宿主设备」列选择对应字段');
+    //     return;
+    // }
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('column_mapping_json', JSON.stringify(columnMapping));
+    formData.append('default_category', selectedCategory.value);  // [REQ-012]
+
+        parseError.textContent = '匹配中，请稍候...';
+    parseError.style.color = '#1677ff';
+
+    // Double-check file is present before sending
+    if (!fileInput.files || !fileInput.files.length) {
+        parseError.textContent = '请先上传文件';
+        parseError.style.color = '#f5222d';
+        return;
+    }
+
+    fetch('/equipment/import/preview', { method: 'POST', body: formData })
+    .then(r => {
+        // 非 2xx 状态码: 提取后端 message 或 statusText
+        if (!r.ok) {
+            return r.text().then(text => {
+                let msg = 'HTTP ' + r.status;
+                try {
+                    const j = JSON.parse(text);
+                    if (j && j.message) msg = j.message;
+                } catch (e) {
+                    if (text && text.length < 200) msg += ': ' + text;
+                }
+                throw new Error(msg);
+            });
+        }
+        return r.json();
+    })
+    .then(data => {
+        if (data.success) {
+            window.location.href = data.redirect;
+        } else {
+            parseError.textContent = data.message || '匹配失败';
+            parseError.style.color = '#f5222d';
+        }
+    })
+    .catch((err) => {
+        // 显示具体错误（网络异常/HTTP 状态码/JSON 解析错误）
+        parseError.textContent = '匹配失败：' + (err && err.message ? err.message : '网络错误') + '。请重试';
+        parseError.style.color = '#f5222d';
+        console.error('[import_preview]', err);
+    });
+});
+</script>
+{% endblock %}

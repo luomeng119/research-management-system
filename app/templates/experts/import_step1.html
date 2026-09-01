@@ -1,0 +1,465 @@
+{% extends "base.html" %}
+{% block title %}批量导入专家信息 - 步骤 1/3{% endblock %}
+{% block extra_css %}
+<style>
+.step-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 20px 0 30px 0;
+    font-size: 14px;
+}
+.step-indicator .step {
+    display: flex;
+    align-items: center;
+    color: #999;
+}
+.step-indicator .step.active {
+    color: #0d6efd;
+    font-weight: bold;
+}
+.step-indicator .step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #e9ecef;
+    color: #999;
+    margin-right: 8px;
+    font-weight: bold;
+}
+.step-indicator .step.active .step-num {
+    background: #0d6efd;
+    color: #fff;
+}
+.step-indicator .step-sep {
+    flex: 0 0 60px;
+    height: 1px;
+    background: #ddd;
+    margin: 0 12px;
+}
+.upload-area {
+    border: 2px dashed #ccc;
+    border-radius: 8px;
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: #fafafa;
+}
+.upload-area:hover, .upload-area.dragover {
+    border-color: #0d6efd;
+    background: #f0f8ff;
+}
+.upload-area.has-file {
+    border-style: solid;
+    border-color: #198754;
+    background: #f0fff4;
+}
+.upload-icon {
+    font-size: 48px;
+    color: #999;
+    margin-bottom: 12px;
+}
+.upload-area.has-file .upload-icon {
+    color: #198754;
+}
+.mapping-row {
+    display: flex;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #f0f0f0;
+}
+.mapping-row .excel-col {
+    flex: 1;
+    font-weight: 500;
+}
+.mapping-row .arrow {
+    margin: 0 12px;
+    color: #999;
+}
+.mapping-row select {
+    flex: 0 0 200px;
+}
+.preview-table th {
+    background: #f8f9fa;
+    font-weight: 600;
+    white-space: nowrap;
+    font-size: 13px;
+}
+.preview-table td {
+    font-size: 13px;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.action-bar {
+    position: sticky;
+    bottom: 0;
+    background: #fff;
+    border-top: 1px solid #e9ecef;
+    padding: 12px 20px;
+    margin: 30px -20px -20px -20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 100;
+}
+</style>
+{% endblock %}
+{% block content %}
+<div class="container mt-3">
+    <h4 class="mb-2">批量导入专家信息</h4>
+    <p class="text-muted small mb-3">实现逻辑参照设备知识库导入，分步骤操作，全程支持列映射调整</p>
+
+    <div class="step-indicator">
+        <div class="step active">
+            <span class="step-num">1</span>
+            <span>上传文件 + 列映射</span>
+        </div>
+        <div class="step-sep"></div>
+        <div class="step">
+            <span class="step-num">2</span>
+            <span>逐行预览确认</span>
+        </div>
+        <div class="step-sep"></div>
+        <div class="step">
+            <span class="step-num">3</span>
+            <span>导入结果</span>
+        </div>
+    </div>
+
+    <div id="alertBox"></div>
+
+    <div class="upload-area" id="uploadArea">
+        <input type="file" id="fileInput" accept=".xlsx" hidden>
+        <div class="upload-icon">📁</div>
+        <p class="mb-1">拖拽 .xlsx 文件到此处，或 <a href="javascript:;" id="selectFile">点击选择文件</a></p>
+        <p class="text-muted small mb-0">支持 .xlsx 格式，单次最多 1000 条，文件大小不超过 20MB</p>
+    </div>
+
+    <div id="previewSection" class="mt-4" hidden>
+        <h6>Excel 内容预览（前 10 行）</h6>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered preview-table" id="previewTable"></table>
+        </div>
+        <p class="text-muted small" id="totalRowsText"></p>
+    </div>
+
+    <div id="mappingSection" class="mt-4" hidden>
+        <h6>列映射（把 Excel 列对应到专家字段）</h6>
+        <p class="text-muted small">每个 Excel 列选一个对应的专家字段，<strong>姓名列必须映射</strong>，不导入的列选"忽略此列"</p>
+        <div id="mappingRows"></div>
+        <div class="mt-2">
+            <button type="button" class="btn btn-sm btn-outline-primary" id="autoMapBtn">智能预选</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="clearMapBtn">清空映射</button>
+        </div>
+        <div id="mapValidation" class="mt-2"></div>
+    </div>
+
+    <div class="action-bar">
+        <a href="/experts/" class="btn btn-light">← 返回列表</a>
+        <button type="button" class="btn btn-primary" id="nextBtn" disabled>下一步 →</button>
+    </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+const FIELDS = [
+    {value: 'name', label: '姓名'},
+    {value: 'unit', label: '单位'},
+    {value: 'position', label: '职务'},
+    {value: 'expertise', label: '专长'},
+    {value: 'phone', label: '电话'},
+    {value: 'id_card', label: '身份证号'},
+    {value: 'bank_card', label: '银行卡号'},
+    {value: 'bank_name', label: '开户行'},
+    {value: 'uploader', label: '上传人'},
+];
+const KEYWORD_MAP = {
+    'name': ['姓名', '名字', 'name'],
+    'unit': ['单位', '部门', '机构', 'unit'],
+    'position': ['职务', '岗位', '职位', 'position'],
+    'expertise': ['专长', '特长', '研究方向', 'expertise'],
+    'phone': ['电话', '手机', '联系方式', 'phone'],
+    'id_card': ['身份证', '证件号', 'id_card', 'idcard'],
+    'bank_card': ['银行卡', '银行账号', 'bank_card', 'bankcard'],
+    'bank_name': ['开户行', 'bank_name', 'bankname'],
+    'uploader': ['上传人', 'uploader'],
+};
+
+let currentFile = null;
+let headers = [];
+let previewRows = [];
+let columnMapping = {};
+
+const uploadArea = document.getElementById('uploadArea');
+const fileInput = document.getElementById('fileInput');
+const selectFile = document.getElementById('selectFile');
+const previewSection = document.getElementById('previewSection');
+const mappingSection = document.getElementById('mappingSection');
+const previewTable = document.getElementById('previewTable');
+const totalRowsText = document.getElementById('totalRowsText');
+const mappingRows = document.getElementById('mappingRows');
+const autoMapBtn = document.getElementById('autoMapBtn');
+const clearMapBtn = document.getElementById('clearMapBtn');
+const nextBtn = document.getElementById('nextBtn');
+const alertBox = document.getElementById('alertBox');
+
+function showAlert(msg, type='danger') {
+    alertBox.innerHTML = `<div class="alert alert-${type} alert-dismissible fade show" role="alert">${msg}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
+    if (type === 'success') {
+        setTimeout(() => { alertBox.innerHTML = ''; }, 3000);
+    }
+}
+
+selectFile.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('click', (e) => {
+    if (e.target.tagName !== 'A') fileInput.click();
+});
+fileInput.addEventListener('change', (e) => {
+    if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+['dragenter', 'dragover'].forEach(evt => {
+    uploadArea.addEventListener(evt, (e) => {
+        e.preventDefault();
+        uploadArea.classList.add('dragover');
+    });
+});
+['dragleave', 'drop'].forEach(evt => {
+    uploadArea.addEventListener(evt, (e) => {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+    });
+});
+uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+
+async function handleFile(file) {
+    if (!file.name.endsWith('.xlsx')) {
+        showAlert('请上传 .xlsx 格式文件（不支持 .xls）', 'danger');
+        return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+        showAlert('文件过大（>20MB），请拆分后导入', 'danger');
+        return;
+    }
+    currentFile = file;
+    uploadArea.classList.add('has-file');
+    uploadArea.innerHTML = `
+        <div class="upload-icon">✓</div>
+        <p class="mb-1"><strong>${file.name}</strong>（${(file.size / 1024).toFixed(1)} KB）</p>
+        <p class="text-muted small mb-0">正在解析表头...</p>
+    `;
+    await uploadPreview();
+}
+
+async function uploadPreview() {
+    const fd = new FormData();
+    fd.append('file', currentFile);
+    fd.append('preview_only', '1');
+    try {
+        const r = await fetch('/experts/import/preview', { method: 'POST', body: fd });
+        const data = await r.json();
+        if (!data.success) {
+            resetUploadArea();
+            showAlert(data.message, 'danger');
+            return;
+        }
+        headers = data.headers;
+        previewRows = data.preview_rows;
+        uploadArea.innerHTML = `
+            <div class="upload-icon">✓</div>
+            <p class="mb-1"><strong>${currentFile.name}</strong>（${(currentFile.size / 1024).toFixed(1)} KB）</p>
+            <p class="text-muted small mb-0">共 ${data.total_rows} 行数据</p>
+            <button type="button" class="btn btn-sm btn-link" id="reselectBtn">重新选择</button>
+        `;
+        document.getElementById('reselectBtn').addEventListener('click', resetAll);
+        renderPreviewTable();
+        renderMappingRows();
+        autoMap();
+    } catch (e) {
+        resetUploadArea();
+        showAlert('上传失败：' + e.message, 'danger');
+    }
+}
+
+function resetUploadArea() {
+    currentFile = null;
+    uploadArea.classList.remove('has-file');
+    uploadArea.innerHTML = `
+        <input type="file" id="fileInput" accept=".xlsx" hidden>
+        <div class="upload-icon">📁</div>
+        <p class="mb-1">拖拽 .xlsx 文件到此处，或 <a href="javascript:;" id="selectFile">点击选择文件</a></p>
+        <p class="text-muted small mb-0">支持 .xlsx 格式，单次最多 1000 条，文件大小不超过 20MB</p>
+    `;
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+        if (e.target.files[0]) handleFile(e.target.files[0]);
+    });
+    document.getElementById('selectFile').addEventListener('click', () => {
+        document.getElementById('fileInput').click();
+    });
+}
+
+function resetAll() {
+    previewSection.hidden = true;
+    mappingSection.hidden = true;
+    nextBtn.disabled = true;
+    headers = [];
+    previewRows = [];
+    columnMapping = {};
+    fileInput.value = '';
+    resetUploadArea();
+}
+
+function renderPreviewTable() {
+    previewSection.hidden = false;
+    let html = '<thead><tr><th>#</th>';
+    headers.forEach(h => { html += `<th>${escapeHtml(h)}</th>`; });
+    html += '</tr></thead><tbody>';
+    previewRows.forEach((row, i) => {
+        html += `<tr><td>${i + 1}</td>`;
+        row.forEach(cell => { html += `<td title="${escapeHtml(cell)}">${escapeHtml(cell)}</td>`; });
+        html += '</tr>';
+    });
+    html += '</tbody>';
+    previewTable.innerHTML = html;
+    totalRowsText.textContent = `共 ${previewRows.length} 行预览（实际 ${headers.length ? '点击"智能预选"开始' : '请先上传文件'}）`;
+}
+
+function renderMappingRows() {
+    mappingSection.hidden = false;
+    let html = '';
+    headers.forEach((h, idx) => {
+        const current = columnMapping[idx] || '__ignore__';
+        html += `
+        <div class="mapping-row">
+            <div class="excel-col">第 ${idx + 1} 列：${escapeHtml(h) || '(空列名)'}</div>
+            <div class="arrow">→</div>
+            <select class="form-select form-select-sm" data-col="${idx}">
+                <option value="__ignore__" ${current === '__ignore__' ? 'selected' : ''}>忽略此列</option>
+                ${FIELDS.map(f => `<option value="${f.value}" ${current === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
+            </select>
+        </div>`;
+    });
+    mappingRows.innerHTML = html;
+    mappingRows.querySelectorAll('select').forEach(sel => {
+        sel.addEventListener('change', onMappingChange);
+    });
+}
+
+function onMappingChange(e) {
+    const colIdx = parseInt(e.target.dataset.col);
+    const val = e.target.value;
+    if (val !== '__ignore__') {
+        // 检查该字段是否被其他列占用
+        for (const [k, v] of Object.entries(columnMapping)) {
+            if (parseInt(k) !== colIdx && v === val) {
+                columnMapping[k] = '__ignore__';
+                const otherSel = mappingRows.querySelector(`select[data-col="${k}"]`);
+                if (otherSel) otherSel.value = '__ignore__';
+                showAlert(`字段"${FIELDS.find(f => f.value === val).label}"已被其他列占用，该列已改为忽略`, 'warning');
+            }
+        }
+    }
+    if (val === '__ignore__' && columnMapping[colIdx] !== '__ignore__') {
+        delete columnMapping[colIdx];
+    } else {
+        columnMapping[colIdx] = val;
+    }
+    validateMapping();
+}
+
+function autoMap() {
+    columnMapping = {};
+    const usedFields = new Set();
+    headers.forEach((h, idx) => {
+        const lower = h.toLowerCase();
+        let matched = false;
+        for (const [field, kws] of Object.entries(KEYWORD_MAP)) {
+            if (usedFields.has(field)) continue;
+            for (const kw of kws) {
+                if (lower.includes(kw.toLowerCase())) {
+                    columnMapping[idx] = field;
+                    usedFields.add(field);
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched) break;
+        }
+        if (!matched) columnMapping[idx] = '__ignore__';
+    });
+    renderMappingRows();
+    validateMapping();
+    showAlert('已根据列名自动预选，请检查并调整', 'success');
+}
+
+function clearMap() {
+    columnMapping = {};
+    headers.forEach((h, idx) => { columnMapping[idx] = '__ignore__'; });
+    renderMappingRows();
+    validateMapping();
+}
+
+function validateMapping() {
+    const mappedFields = Object.values(columnMapping).filter(v => v !== '__ignore__');
+    const hasName = mappedFields.includes('name');
+    const mapValidation = document.getElementById('mapValidation');
+    if (!hasName) {
+        nextBtn.disabled = true;
+        mapValidation.innerHTML = '<div class="alert alert-danger mb-0 py-2">姓名列未映射，无法继续</div>';
+    } else {
+        nextBtn.disabled = false;
+        mapValidation.innerHTML = `<div class="alert alert-success mb-0 py-2">已映射 ${mappedFields.length} 个字段（姓名必填）</div>`;
+    }
+}
+
+autoMapBtn.addEventListener('click', autoMap);
+clearMapBtn.addEventListener('click', clearMap);
+nextBtn.addEventListener('click', submitNext);
+
+async function submitNext() {
+    if (!currentFile) return;
+    const mappedFields = Object.values(columnMapping).filter(v => v !== '__ignore__');
+    if (!mappedFields.includes('name')) {
+        showAlert('姓名列未映射，无法继续', 'danger');
+        return;
+    }
+    nextBtn.disabled = true;
+    nextBtn.textContent = '处理中...';
+    const fd = new FormData();
+    fd.append('file', currentFile);
+    fd.append('column_mapping_json', JSON.stringify(columnMapping));
+    try {
+        const r = await fetch('/experts/import/preview', { method: 'POST', body: fd });
+        const data = await r.json();
+        if (data.success) {
+            window.location.href = data.redirect;
+        } else {
+            showAlert(data.message, 'danger');
+            nextBtn.disabled = false;
+            nextBtn.textContent = '下一步 →';
+        }
+    } catch (e) {
+        showAlert('提交失败：' + e.message, 'danger');
+        nextBtn.disabled = false;
+        nextBtn.textContent = '下一步 →';
+    }
+}
+
+function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+</script>
+{% endblock %}

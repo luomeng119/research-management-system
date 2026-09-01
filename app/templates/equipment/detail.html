@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+
+{% block title %}{{ equipment['name'] }} - 设备详情{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/equipment">设备知识库</a></li>
+            <li class="breadcrumb-item active">{{ equipment['name'] }}</li>
+        </ol>
+    </nav>
+    
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>{{ equipment['name'] }}</h2>
+        {% if session.get('role') == '管理员' %}
+        <div>
+            <a href="{{ url_for('equipment.edit', equipment_id=equipment['equipment_id']) }}" class="btn btn-outline-primary">
+                <i class="bi bi-pencil"></i> 编辑
+            </a>
+        </div>
+        {% endif %}
+    </div>
+    
+    <div class="row">
+        <div class="col-md-4">
+            {% if equipment['equipment_image'] %}
+            <div class="row g-2">
+                {% for img_path in equipment['equipment_image'].split(';') %}
+                <div class="col-6">
+                    <img src="{{ img_path }}" alt="{{ equipment['name'] }}" class="img-fluid rounded" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#imgModal" onclick="document.getElementById('modalImg').src='{{ img_path }}'">
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-center text-muted py-5">
+                <i class="bi bi-image fs-1"></i>
+                <p>暂无图片</p>
+            </div>
+            {% endif %}
+        </div>
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4"><strong>设备编号：</strong>{{ equipment['equipment_id'] }}</div>
+                        <div class="col-md-4"><strong>设备名称：</strong>{{ equipment['name'] }}</div>
+                        <div class="col-md-4"><strong>型号：</strong>{{ equipment['model'] or '-' }}</div>
+                        <div class="col-md-4"><strong>曾用名：</strong>{{ equipment['former_name'] or '-' }}</div>
+                        <div class="col-md-4"><strong>分类：</strong><span class="badge bg-info">{{ equipment['category'] }}</span></div>
+                        <div class="col-md-4"><strong>设备子类：</strong>{{ equipment['subclass'] or '-' }}</div>
+                        <div class="col-md-4"><strong>形态：</strong>{{ equipment['form'] or '-' }}</div>
+                        <div class="col-md-4"><strong>单价：</strong>{{ equipment['price'] or '-' }} 万元</div>
+                        <div class="col-md-4"><strong>主要用途：</strong>{{ equipment['main_purpose'] or '-' }}</div>
+                        <div class="col-md-4"><strong>资源保障要求：</strong>{{ equipment['resource_guarantee'] or '-' }}</div>
+                        <div class="col-md-4"><strong>技术状态：</strong><span class="badge bg-{{ 'success' if equipment['tech_status']=='已定型' else 'warning' if equipment['tech_status']=='研制中' else 'secondary' }}">{{ equipment['tech_status'] }}</span></div>
+                        <div class="col-md-4"><strong>研制单位：</strong>{{ equipment['manufacturer'] or '-' }}</div>
+                        <div class="col-md-4"><strong>创建时间：</strong>{{ equipment['created_at'] }}</div>
+                        <div class="col-12"><strong>功能技术指标：</strong><pre>{{ equipment['tech_index'] or '-' }}</pre></div>
+                        <div class="col-12"><strong>加装要求：</strong><pre>{{ equipment['installation_requirements'] or '-' }}</pre></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 关联宿主设备区块 -->
+    <div class="mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5>关联宿主设备</h5>
+            <button type="button" class="btn btn-outline-primary btn-sm" onclick="openHostModal()">
+                <i class="bi bi-plus"></i> 添加关联宿主设备
+            </button>
+        </div>
+        {% if related_hosts %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>名称</th>
+                        <th>型号</th>
+                        <th>类型</th>
+                        <th>形态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for h in related_hosts %}
+                    <tr>
+                        <td>{{ h.name }}</td>
+                        <td>{{ h.model or '' }}</td>
+                        <td>{{ h.category or '' }}</td>
+                        <td>{{ h.form or '' }}</td>
+                        <td>
+                            <a href="{{ url_for('host_devices.detail', host_id=h.host_id) }}" class="btn btn-outline-primary btn-sm">查看</a>
+                            <button type="button" class="btn btn-outline-danger btn-sm" onclick="removeHostRelation('{{ h.host_id }}')">移除</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-info">暂无关联宿主设备</div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- 宿主设备选择模态框 -->
+<div class="modal fade" id="hostModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">选择关联宿主设备</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 mb-2">
+                    <div class="col-md-6">
+                        <input type="text" id="host-keyword" class="form-control form-control-sm" placeholder="搜索宿主设备名称/型号">
+                    </div>
+                    <div class="col-md-3">
+                        <button type="button" class="btn btn-primary btn-sm w-100" onclick="searchHosts(1)">搜索</button>
+                    </div>
+                </div>
+                <div class="table-responsive" style="max-height:300px;overflow-y:auto">
+                    <table class="table table-sm table-hover" style="font-size:0.85em">
+                        <thead class="sticky-top bg-light">
+                            <tr>
+                                <th style="width:30px"></th>
+                                <th>名称</th>
+                                <th>型号</th>
+                                <th>类型</th>
+                                <th>形态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="host-modal-list"></tbody>
+                    </table>
+                </div>
+                <div class="d-flex align-items-center mt-2" id="host-modal-pagination"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary btn-sm" onclick="confirmHostRelation()">确认关联</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let selectedHostIds = new Set();
+let currentDeviceId = '{{ equipment.equipment_id }}';
+
+function openHostModal() {
+    selectedHostIds = new Set();
+    searchHosts(1);
+    let modal = new bootstrap.Modal(document.getElementById('hostModal'));
+    modal.show();
+}
+
+function searchHosts(page) {
+    let keyword = document.getElementById('host-keyword').value;
+    let url = `/equipment/hosts/api/search?keyword=${encodeURIComponent(keyword)}&page=${page}`;
+    fetch(url, { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(res => {
+            if (!res.success) return;
+            renderHostList(res.data, res.total, page, Math.ceil(res.total / 20));
+        });
+}
+
+function renderHostList(hosts, total, page, totalPages) {
+    let tbody = document.getElementById('host-modal-list');
+    tbody.innerHTML = hosts.map(h => `
+        <tr>
+            <td><input type="checkbox" class="host-check" value="${h.host_id}" data-name="${h.name}" data-model="${h.model || ''}" data-category="${h.category || ''}" data-form="${h.form || ''}"></td>
+            <td>${h.name}</td>
+            <td>${h.model || ''}</td>
+            <td>${h.category || ''}</td>
+            <td>${h.form || ''}</td>
+        </tr>
+    `).join('');
+
+    document.querySelectorAll('.host-check').forEach(cb => {
+        if (selectedHostIds.has(cb.value)) cb.checked = true;
+    });
+
+    let pagination = document.getElementById('host-modal-pagination');
+    pagination.innerHTML = `
+        <span class="me-3">第 ${page}/${totalPages} 页，共 ${total} 条</span>
+        ${page > 1 ? `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="searchHosts(${page-1})">&lt;</button>` : ''}
+        ${page < totalPages ? `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="searchHosts(${page+1})">&gt;</button>` : ''}
+    `;
+}
+
+function confirmHostRelation() {
+    let selected = [];
+    document.querySelectorAll('.host-check:checked').forEach(cb => {
+        selected.push(cb.value);
+    });
+    if (selected.length === 0) { alert('请至少选择一台宿主设备'); return; }
+    Promise.all(selected.map(host_id =>
+        fetch('/equipment/api/hosts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device_id: currentDeviceId, host_id: host_id })
+        }).then(r => r.json())
+    )).then(results => {
+        location.reload();
+    });
+}
+
+function removeHostRelation(host_id) {
+    if (!confirm('确认移除关联？')) return;
+    fetch(`/equipment/api/hosts/${currentDeviceId}/${host_id}`, {
+        method: 'DELETE',
+        credentials: 'same-origin'
+    }).then(r => r.json()).then(res => {
+        if (res.success) location.reload();
+        else alert('移除失败');
+    });
+}
+</script>
+
+<!-- 图片预览模态框 -->
+<div class="modal fade" id="imgModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body text-center">
+                <img id="modalImg" src="" alt="" class="img-fluid">
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+
+{% block title %}设备知识库 - 科研管理系统V2{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4>设备知识库</h4>
+        <div>
+            <a href="{{ url_for('equipment.import_page') }}" class="btn btn-outline-primary btn-sm">
+                <i class="bi bi-upload"></i> 导入
+            </a>
+            <a href="{{ url_for('equipment.export') }}" class="btn btn-outline-success btn-sm">
+                <i class="bi bi-download"></i> 导出
+            </a>
+            <a href="{{ url_for('equipment.add') }}" class="btn btn-primary btn-sm">
+                <i class="bi bi-plus-circle"></i> 添加设备
+            </a>
+            <a href="{{ url_for('equipment_groups.index') }}" class="btn btn-info btn-sm">
+                <i class="bi bi-box-seam"></i> 选型设备
+            </a>
+            {% if session.get('role') == '管理员' %}
+            <button class="btn btn-warning btn-sm" onclick="openUnitModal()">
+                <i class="bi bi-building"></i> 研制单位管理
+            </button>
+            {% endif %}
+        </div>
+    </div>
+    
+    {% if category_filter or form_filter or tech_status_filter or keyword %}
+    <div class="mb-3">
+        <span class="badge bg-primary fs-6">{{ category_filter }}</span>
+        {% if form_filter %}<span class="badge bg-info fs-6">{{ form_filter }}</span>{% endif %}
+        {% if tech_status_filter %}<span class="badge bg-warning fs-6">{{ tech_status_filter }}</span>{% endif %}
+        {% if keyword %}<span class="badge bg-success fs-6">{{ keyword }}</span>{% endif %}
+    </div>
+    {% endif %}
+    
+    <!-- 筛选表单 -->
+    <form method="get" class="row g-3 mb-3">
+        <div class="col-md-2">
+            <select name="category" id="categoryFilter" class="form-select" onchange="updateSubclassOptions()">
+                <option value="">全部分类</option>
+                <option value="安全设备" {% if category_filter=='安全设备'%}selected{%endif%}>安全设备</option>
+                <option value="密码设备" {% if category_filter=='密码设备'%}selected{%endif%}>密码设备</option>
+                <option value="通用设备" {% if category_filter=='通用设备'%}selected{%endif%}>通用设备</option>
+                <option value="其他设备" {% if category_filter=='其他设备'%}selected{%endif%}>其他设备</option>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <select name="subclass" id="subclassFilter" class="form-select">
+                <option value="">全部子类</option>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <select name="form" class="form-select">
+                <option value="">全部形态</option>
+                <option value="便携式" {% if form_filter=='便携式'%}selected{%endif%}>便携式</option>
+                <option value="车载" {% if form_filter=='车载'%}selected{%endif%}>车载</option>
+                <option value="舰载" {% if form_filter=='舰载'%}selected{%endif%}>舰载</option>
+                <option value="机载" {% if form_filter=='机载'%}selected{%endif%}>机载</option>
+                <option value="固定式" {% if form_filter=='固定式'%}selected{%endif%}>固定式</option>
+                <option value="手持式" {% if form_filter=='手持式'%}selected{%endif%}>手持式</option>
+                <option value="板载" {% if form_filter=='板载'%}selected{%endif%}>板载</option>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <select name="tech_status" class="form-select">
+                <option value="">全部状态</option>
+                <option value="已定型" {% if tech_status_filter=='已定型'%}selected{%endif%}>已定型</option>
+                <option value="研制中" {% if tech_status_filter=='研制中'%}selected{%endif%}>研制中</option>
+                <option value="不明" {% if tech_status_filter=='不明'%}selected{%endif%}>不明</option>
+            </select>
+        </div>
+        <div class="col-md-3 position-relative">
+            <input type="text" name="keyword" id="keywordSearch" class="form-control" placeholder="综合搜索(名称/型号) - 输入即检索" value="{{ keyword or '' }}" autocomplete="off">
+            <span class="search-indicator" id="searchLoading" style="display:none;">⏳</span>
+            <span class="search-indicator search-success" id="searchSuccess" style="display:none;">✓</span>
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary">筛选</button>
+            <a href="{{ url_for('equipment.index') }}" class="btn btn-outline-secondary">重置</a>
+        </div>
+    </form>
+    
+    <div id="equipmentTableWrap">
+    {% if equipment %}
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th style="min-width:120px;">设备名称</th>
+                    <th style="min-width:80px;">型号</th>
+                    <th style="min-width:100px;">曾用名</th>
+                    <th style="min-width:80px;">分类</th>
+                    <th style="min-width:80px;">设备子类</th>
+                    <th style="min-width:70px;">形态</th>
+                    <th style="min-width:80px;">单价(万元)</th>
+                    <th style="min-width:80px;">技术状态</th>
+                    <th style="min-width:120px;">研制单位</th>
+                    <th style="min-width:120px;">主要用途</th>
+                    <th style="min-width:150px;">功能技术指标</th>
+                    <th style="min-width:150px;">加装要求</th>
+                    <th style="min-width:150px;">资源保障要求</th>
+                    <th style="min-width:120px;white-space:nowrap;">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in equipment %}
+                <tr data-tooltip-html="设备名称: {{ e['name'] or '-' }}
+型号: {{ e['model'] or '-' }}
+曾用名: {{ e['former_name'] or '-' }}
+分类: {{ e['category'] or '-' }}
+设备子类: {{ e['subclass'] or '-' }}
+形态: {{ e['form'] or '-' }}
+单价: {{ e['price'] }} 万元
+技术状态: {{ e['tech_status'] or '-' }}
+研制单位: {{ e['manufacturer'] or '-' }}
+主要用途: {{ e['main_purpose'] or '-' }}
+功能技术指标: {{ e['tech_index'] or '-' }}
+加装要求: {{ e['installation_requirements'] or '-' }}
+资源保障: {{ e['resource_guarantee'] or '-' }}">
+                    <td>{% if e['name'] %}{{ e['name'][:20] }}{% if e['name']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{{ e['model'] }}</td>
+                    <td>{% if e['former_name'] %}{{ e['former_name'][:20] }}{% if e['former_name']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{{ e['category'] }}</td>
+                    <td>{{ e['subclass'] or '-' }}</td>
+                    <td>{{ e['form'] }}</td>
+                    <td>{{ e['price'] }}</td>
+                    <td>{{ e['tech_status'] or '-' }}</td>
+                    <td>{% if e['manufacturer'] %}{{ e['manufacturer'][:20] }}{% if e['manufacturer']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{% if e['main_purpose'] %}{{ e['main_purpose'][:20] }}{% if e['main_purpose']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{% if e['tech_index'] %}{{ e['tech_index'][:20] }}{% if e['tech_index']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{% if e['installation_requirements'] %}{{ e['installation_requirements'][:20] }}{% if e['installation_requirements']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td>{% if e['resource_guarantee'] %}{{ e['resource_guarantee'][:20] }}{% if e['resource_guarantee']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
+                    <td style="white-space:nowrap;">
+                        <a href="{{ url_for('equipment.detail', equipment_id=e['equipment_id']) }}" class="btn btn-sm btn-outline-primary" title="查看"><i class="bi bi-eye"></i></a>
+                        <a href="{{ url_for('equipment.edit', equipment_id=e['equipment_id']) }}" class="btn btn-sm btn-outline-secondary" title="编辑"><i class="bi bi-pencil"></i></a>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteEquipment('{{ e['equipment_id'] }}')" title="删除"><i class="bi bi-trash"></i></button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="text-center text-muted py-5">
+        <i class="bi bi-pc-display fs-1"></i>
+        <p class="mt-2">暂无设备数据</p>
+    </div>
+    {% endif %}
+    </div>
+</div>
+
+<!-- REQ-015: 表格加载遮罩 -->
+<div id="tableLoadingMask" style="display:none;">
+    <div class="spinner"></div>
+    <span>正在检索...</span>
+</div>
+
+<!-- REQ-015: 错误条 -->
+<div id="searchError" class="search-error-bar" style="display:none;">
+    <span id="searchErrorMsg">⚠️ 检索失败</span>
+    <button id="searchRetryBtn" type="button" class="btn btn-sm btn-outline-danger">点击重试</button>
+    <button id="searchErrorClose" type="button" class="search-error-close">×</button>
+</div>
+
+<!-- REQ-015: 自定义行 tooltip -->
+<div id="rowTooltip" class="row-tooltip" style="display:none;"></div>
+
+<!-- 导入弹窗 -->
+<div class="modal" id="importModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">导入设备</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="importForm" enctype="multipart/form-data">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">选择Excel文件</label>
+                        <input type="file" name="file" class="form-control" accept=".xlsx,.xls" required>
+                    </div>
+                    <div class="form-text">请上传.xlsx格式的Excel文件</div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">导入</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+var importModal;
+
+document.addEventListener('DOMContentLoaded', function() {
+    importModal = new bootstrap.Modal(document.getElementById('importModal'));
+    document.getElementById('importForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var formData = new FormData(this);
+        fetch('/equipment/import', { method: 'POST', body: formData })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.success) { 
+                alert(data.message); 
+                importModal.hide(); 
+                location.reload(); 
+            } else { 
+                alert(data.message); 
+            }
+        });
+    });
+});
+
+function showImport() { 
+    importModal.show(); 
+}
+
+function deleteEquipment(id) {
+    if (confirm('确定删除此设备？')) {
+        fetch('/equipment/delete/' + id, { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) { 
+            if (data.success) location.reload(); 
+            else alert(data.message); 
+        });
+    }
+}
+</script>
+
+<script>
+// 子类数据（按分类分组）
+const subclassData = {{ subclasses_json | tojson }};
+
+function updateSubclassOptions() {
+    const category = document.getElementById('categoryFilter').value;
+    const subclassSelect = document.getElementById('subclassFilter');
+    subclassSelect.innerHTML = '<option value="">全部子类</option>';
+    
+    if (!category || !subclassData[category]) return;
+    
+    subclassData[category].forEach(function(sc) {
+        const opt = document.createElement('option');
+        opt.value = sc.subclass_name;
+        opt.textContent = sc.subclass_name;
+        subclassSelect.appendChild(opt);
+    });
+}
+
+// 页面加载时初始化子类选项
+document.addEventListener('DOMContentLoaded', function() {
+    updateSubclassOptions();
+    // 设置当前筛选值
+    {% if subclass_filter %}
+    document.getElementById('subclassFilter').value = '{{ subclass_filter }}';
+    {% endif %}
+});
+</script>
+
+<!-- 分页 -->
+{% if total_pages > 1 %}
+<nav style="display:flex;justify-content:center;margin-top:15px;">
+    <ul style="display:flex;list-style:none;padding:0;margin:0;gap:5px;">
+        {% if page > 1 %}
+        <li><a href="?page=1&category={{ category_filter }}" style="padding:6px 12px;border:1px solid #ddd;text-decoration:none;">首页</a></li>
+        <li><a href="?page={{ page-1 }}&category={{ category_filter }}" style="padding:6px 12px;border:1px solid #ddd;text-decoration:none;">上一页</a></li>
+        {% endif %}
+        <li style="padding:6px 12px;">第 {{ page }}/{{ total_pages }} 页</li>
+        {% if page < total_pages %}
+        <li><a href="?page={{ page+1 }}&category={{ category_filter }}" style="padding:6px 12px;border:1px solid #ddd;text-decoration:none;">下一页</a></li>
+        <li><a href="?page={{ total_pages }}&category={{ category_filter }}" style="padding:6px 12px;border:1px solid #ddd;text-decoration:none;">末页</a></li>
+        {% endif %}
+    </ul>
+</nav>
+<p style="text-align:center;color:#888;margin-top:10px;">共 {{ total }} 条</p>
+{% endif %}
+
+{% include 'equipment/_unit_modal.html' %}
+
+{# REQ-015: 实时搜索 + 自定义行 tooltip #}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/equipment_index.css') }}">
+<script src="{{ url_for('static', filename='js/equipment_index.js') }}"></script>
+{% endblock %}

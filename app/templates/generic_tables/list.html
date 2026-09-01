@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+{% block title %}通用表格管理{% endblock %}
+
+{% block extra_css %}
+<style>
+    .table-card {
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 12px;
+        background: #fff;
+        transition: box-shadow 0.2s;
+    }
+    .table-card:hover {
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .table-card .card-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #2563eb;
+        margin-bottom: 6px;
+    }
+    .table-card .card-meta {
+        font-size: 13px;
+        color: #6c757d;
+        margin-bottom: 10px;
+    }
+    .table-card .card-actions .btn {
+        font-size: 13px;
+        padding: 4px 10px;
+    }
+    .empty-state {
+        text-align: center;
+        padding: 60px 20px;
+        color: #6c757d;
+    }
+    .empty-state i {
+        font-size: 48px;
+        margin-bottom: 16px;
+        color: #dee2e6;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-3">
+    <!-- 顶部操作栏 -->
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+            <h5 class="mb-0" style="color:#2563eb;"><i class="bi bi-table"></i> 通用表格管理</h5>
+        </div>
+        <div class="d-flex gap-2">
+            <input type="text" id="searchInput" class="form-control" placeholder="搜索表格..." style="width:200px;">
+            <button class="btn btn-primary" onclick="showCreateModal()">
+                <i class="bi bi-plus-lg"></i> 新建表格
+            </button>
+        </div>
+    </div>
+
+    <!-- 表格列表 -->
+    <div id="tableList">
+        {% if not tables %}
+        <div class="empty-state">
+            <i class="bi bi-table"></i>
+            <h5>暂无表格</h5>
+            <p>点击「新建表格」开始创建第一个通用表格</p>
+        </div>
+        {% else %}
+        <div id="tableCards">
+            {% for t in tables %}
+            <div class="table-card" data-name="{{ t.name }}">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <div class="card-title">
+                            <i class="bi bi-table"></i> {{ t.name }}
+                            {% if t.description %}
+                            <span style="font-weight:normal;color:#6c757d;font-size:13px;"> — {{ t.description }}</span>
+                            {% endif %}
+                        </div>
+                        <div class="card-meta">
+                            版本数：{{ t.version_count }} |
+                            当前版本：{% if t.cur_version_label %}<span style="color:#16a34a;font-weight:600;">{{ t.cur_version_label }} · {{ t.cur_creator }}</span>{% else %}<span style="color:#6c757d;">未设置</span>{% endif %}
+                            ({{ t.updated_at[:10] if t.updated_at else '-' }})
+                        </div>
+                    </div>
+                    <div class="dropdown">
+                        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown">
+                            <i class="bi bi-three-dots"></i>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><a class="dropdown-item" href="{{ url_for('generic_tables.detail_page', table_id=t.table_id) }}">
+                                <i class="bi bi-eye"></i> 查看数据
+                            </a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('generic_tables.compare_page', table_id=t.table_id) }}">
+                                <i class="bi bi-arrow-left-right"></i> 版本对比
+                            </a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item text-danger" href="#" onclick="deleteTable('{{ t.table_id }}')">
+                                <i class="bi bi-trash"></i> 删除表格
+                            </a></li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="card-actions mt-2">
+                    <a href="{{ url_for('generic_tables.detail_page', table_id=t.table_id) }}" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-eye"></i> 查看数据
+                    </a>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="showVersionModal('{{ t.table_id }}')">
+                        <i class="bi bi-clock-history"></i> 版本管理
+                    </button>
+                    <a href="{{ url_for('generic_tables.compare_page', table_id=t.table_id) }}" class="btn btn-outline-info btn-sm">
+                        <i class="bi bi-arrow-left-right"></i> 版本对比
+                    </a>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- 新建表格 Modal -->
+<div class="modal fade" id="createModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">新建表格</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">表格名称 <span style="color:red">*</span></label>
+                    <input type="text" class="form-control" id="newTableName" placeholder="如：设备台账">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">描述（可选）</label>
+                    <textarea class="form-control" id="newTableDesc" rows="2" placeholder="简要描述表格用途"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="createTable()">创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 版本管理 Modal -->
+<div class="modal fade" id="versionModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">版本管理</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="versionList"></div>
+                <hr>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-outline-primary btn-sm" onclick="showImportModal()">
+                        <i class="bi bi-upload"></i> 上传新版本
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="createSnapshot()">
+                        <i class="bi bi bi-collection"></i> 创建快照
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 导入新版本 Modal -->
+<div class="modal fade" id="importModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">导入新版本</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning" style="font-size:13px;">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    将存档当前版本，导入文件将成为新版本
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">版本说明（可选）</label>
+                    <input type="text" class="form-control" id="importNote" placeholder="如：2026年5月更新">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">选择 Excel 文件</label>
+                    <input type="file" class="form-control" id="importFile" accept=".xlsx,.xls">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="doImport()">开始导入</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ---------- 搜索过滤 ----------
+document.getElementById('searchInput').addEventListener('input', function() {
+    const kw = this.value.toLowerCase();
+    document.querySelectorAll('.table-card').forEach(card => {
+        card.style.display = card.dataset.name.toLowerCase().includes(kw) ? '' : 'none';
+    });
+});
+
+// ---------- 新建表格 ----------
+let createModal;
+document.addEventListener('DOMContentLoaded', () => {
+    createModal = new bootstrap.Modal(document.getElementById('createModal'));
+});
+function showCreateModal() { createModal.show(); }
+
+async function createTable() {
+    const name = document.getElementById('newTableName').value.trim();
+    if (!name) { alert('请输入表格名称'); return; }
+    const desc = document.getElementById('newTableDesc').value.trim();
+    const r = await fetch('/api/generic-tables', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({name, description: desc})
+    }).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (r.error) { alert(r.error); return; }
+    createModal.hide();
+    location.reload();
+}
+
+// ---------- 删除表格 ----------
+async function deleteTable(tableId) {
+    if (!confirm('确定删除该表格？所有版本数据将一并删除。')) return;
+    const r = await fetch(`/api/generic-tables/${tableId}`, {method:'DELETE'}).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (r.error) { alert(r.error); return; }
+    location.reload();
+}
+
+// ---------- 版本管理 ----------
+let versionModal, importModal;
+let currentTableId = null;
+let currentVersions = [];
+
+document.addEventListener('DOMContentLoaded', () => {
+    versionModal = new bootstrap.Modal(document.getElementById('versionModal'));
+    importModal = new bootstrap.Modal(document.getElementById('importModal'));
+});
+
+async function showVersionModal(tableId) {
+    currentTableId = tableId;
+    const r = await fetch(`/api/generic-tables/${tableId}/versions`).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (r.error) { alert(r.error); return; }
+    currentVersions = r.versions || [];
+    renderVersionList();
+    versionModal.show();
+}
+
+function renderVersionList() {
+    const el = document.getElementById('versionList');
+    if (!currentVersions.length) {
+        el.innerHTML = '<div class="text-muted text-center py-3">暂无版本</div>';
+        return;
+    }
+    el.innerHTML = currentVersions.map(v => `
+        <div class="border rounded p-3 mb-2">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <strong>${v.version_label || ('v'+v.version_number)}</strong>
+                    <span class="text-muted ms-2" style="font-size:12px;">${v.created_at || ''}</span>
+                    {% if session.get('user') %}
+                    <span class="text-muted ms-2" style="font-size:12px;">${v.creator || ''}</span>
+                    {% endif %}
+                    <span class="badge bg-secondary ms-2">${v.row_count || 0} 行</span>
+                    ${v.note ? `<div style="font-size:12px;color:#6c757d;">${v.note}</div>` : ''}
+                </div>
+                <div class="btn-group btn-group-sm">
+                    <a href="/tables/${v.table_id}?vid=${v.version_id}" class="btn btn-outline-primary">查看</a>
+                    <button class="btn btn-outline-danger" onclick="deleteVersion('${v.version_id}')">删除</button>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function deleteVersion(versionId) {
+    if (!confirm('确定删除该版本？')) return;
+    const r = await fetch(`/api/generic-tables/versions/${versionId}`, {method:'DELETE'}).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (r.error) { alert(r.error); return; }
+    currentVersions = currentVersions.filter(v => v.version_id !== versionId);
+    renderVersionList();
+}
+
+async function createSnapshot() {
+    if (!currentTableId || !currentVersions.length) return;
+    const latestVid = currentVersions[0].version_id;
+    const r = await fetch(`/api/generic-tables/${currentTableId}/versions`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({method:'snapshot', source_version_id: latestVid, label: '快照'})
+    }).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (r.error) { alert(r.error); return; }
+    const vr = await fetch(`/api/generic-tables/${currentTableId}/versions`).then(r=>r.json());
+    currentVersions = vr.versions || [];
+    renderVersionList();
+}
+
+function showImportModal() {
+    importModal.show();
+}
+
+async function doImport() {
+    if (!currentTableId || !currentVersions.length) return;
+    const latestVid = currentVersions[0].version_id;
+    const note = document.getElementById('importNote').value.trim();
+    const fileInput = document.getElementById('importFile');
+    if (!fileInput.files.length) { alert('请选择文件'); return; }
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    // 先创建新版本
+    const vr = await fetch(`/api/generic-tables/${currentTableId}/versions`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({method:'import', source_version_id: latestVid, label: '导入版', note})
+    }).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (vr.error) { alert(vr.error); return; }
+    const newVid = vr.version_id;
+    // 上传文件
+    const uploadR = await fetch(`/api/generic-tables/versions/${newVid}/rows/import`, {
+        method: 'POST',
+        body: formData
+    }).then(r=>r.json()).catch(()=>({error:'网络错误'}));
+    if (uploadR.error) { alert(uploadR.error); return; }
+    importModal.hide();
+    versionModal.hide();
+    location.reload();
+}
+</script>
+{% endblock %}
