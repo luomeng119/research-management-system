@@ -1,0 +1,705 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import codecs
+import mimetypes
+import os
+from pathlib import Path
+import re
+import stat
+import struct
+import time
+from urllib.parse import unquote
+import uuid
+import zipfile
+from xml.parsers import expat
+
+
+ALLOWED_EXTENSIONS = {
+    ".txt", ".md", ".csv", ".json", ".xml", ".yml", ".yaml", ".log",
+    ".pdf", ".docx", ".xlsx", ".pptx", ".zip", ".rar",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
+}
+DANGEROUS_SUFFIXES = {
+    ".exe", ".com", ".bat", ".cmd", ".sh", ".ps1", ".js", ".jar", ".msi", ".scr",
+    ".php", ".py", ".pl", ".rb",
+}
+TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".xml", ".yml", ".yaml", ".log"}
+TEXT_PREVIEW_MAX_BYTES = 200 * 1024
+OFFICE_MAX_ENTRIES = 5_000
+OFFICE_MAX_EXPANDED_BYTES = 100 * 1024 * 1024
+OFFICE_MAX_ENTRY_BYTES = 50 * 1024 * 1024
+OFFICE_MAX_COMPRESSION_RATIO = 200
+OFFICE_PREVIEW_MAX_ENTRIES = 1_000
+OFFICE_PREVIEW_MAX_EXPANDED_BYTES = 25 * 1024 * 1024
+OFFICE_PREVIEW_MAX_ENTRY_BYTES = 8 * 1024 * 1024
+OFFICE_PREVIEW_MAX_XML_BYTES = 12 * 1024 * 1024
+OFFICE_PREVIEW_MAX_XML_NODES = 50_000
+OFFICE_PREVIEW_MAX_XML_CHARACTERS = 5 * 1024 * 1024
+
+
+def office_archive_is_safe(path: Path) -> bool:
+    try:
+        position = path.tell() if hasattr(path, "tell") else None
+        owns_source = isinstance(path, Path)
+        source = path.open("rb") if owns_source else path
+        try:
+            source.seek(0, os.SEEK_END)
+            size = source.tell()
+            source.seek(max(0, size - 65_557))
+            tail = source.read()
+        finally:
+            if owns_source:
+                source.close()
+        if position is not None:
+            path.seek(position)
+        marker = tail.rfind(b"PK\x05\x06")
+        if marker < 0 or len(tail) - marker < 22:
+            return False
+        entry_count = struct.unpack_from("<H", tail, marker + 10)[0]
+        central_size = struct.unpack_from("<I", tail, marker + 12)[0]
+        central_offset = struct.unpack_from("<I", tail, marker + 16)[0]
+        if (
+            entry_count == 0xFFFF
+            or entry_count > OFFICE_MAX_ENTRIES
+            or central_size > 16 * 1024 * 1024
+            or central_offset + central_size > size
+        ):
+            return False
+        with zipfile.ZipFile(path) as archive:
+            infos = archive.infolist()
+            if len(infos) != entry_count or len(infos) > OFFICE_MAX_ENTRIES:
+                return False
+            expanded = 0
+            for info in infos:
+                expanded += info.file_size
+                if info.file_size > OFFICE_MAX_ENTRY_BYTES or expanded > OFFICE_MAX_EXPANDED_BYTES:
+                    return False
+                if info.file_size and info.compress_size == 0:
+                    return False
+                if info.compress_size and info.file_size / info.compress_size > OFFICE_MAX_COMPRESSION_RATIO:
+                    return False
+        return True
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
+def office_archive_is_preview_safe(path: Path) -> bool:
+    """Apply conservative budgets before an OOXML library builds object trees."""
+    try:
+        if not office_archive_is_safe(path):
+            return False
+        xml_bytes = 0
+        xml_nodes = 0
+        xml_characters = 0
+
+        def reject_entity(*_args):
+            raise ValueError("XML entities are not allowed in previews")
+
+        with zipfile.ZipFile(path) as archive:
+            infos = archive.infolist()
+            if len(infos) > OFFICE_PREVIEW_MAX_ENTRIES:
+                return False
+            if sum(info.file_size for info in infos) > OFFICE_PREVIEW_MAX_EXPANDED_BYTES:
+                return False
+            for info in infos:
+                if info.file_size > OFFICE_PREVIEW_MAX_ENTRY_BYTES:
+                    return False
+                lowered = info.filename.lower()
+                if not (lowered.endswith(".xml") or lowered.endswith(".rels")):
+                    continue
+                xml_bytes += info.file_size
+                if xml_bytes > OFFICE_PREVIEW_MAX_XML_BYTES:
+                    return False
+                parser = expat.ParserCreate()
+                parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+                parser.EntityDeclHandler = reject_entity
+                parser.ExternalEntityRefHandler = lambda *_args: 0
+
+                def count_node(_name, _attrs):
+                    nonlocal xml_nodes
+                    xml_nodes += 1
+                    if xml_nodes > OFFICE_PREVIEW_MAX_XML_NODES:
+                        raise ValueError("XML node budget exceeded")
+
+                def count_characters(value):
+                    nonlocal xml_characters
+                    xml_characters += len(value)
+                    if xml_characters > OFFICE_PREVIEW_MAX_XML_CHARACTERS:
+                        raise ValueError("XML character budget exceeded")
+
+                parser.StartElementHandler = count_node
+                parser.CharacterDataHandler = count_characters
+                with archive.open(info) as source:
+                    while True:
+                        chunk = source.read(64 * 1024)
+                        if not chunk:
+                            break
+                        parser.Parse(chunk, False)
+                    parser.Parse(b"", True)
+        return True
+    except (OSError, ValueError, expat.ExpatError, zipfile.BadZipFile):
+        return False
+
+
+class FileServiceError(RuntimeError):
+    def __init__(self, code: str, message: str, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class _StagedFile:
+    path: Path
+    original_name: str
+    extension: str
+    media_type: str
+    size_bytes: int
+    sha256: str
+
+
+class FileService:
+    def __init__(self, repository, audit_service, *, storage_root, max_bytes: int, preview_max_bytes: int):
+        self.repository = repository
+        self.audit_service = audit_service
+        self.storage_root = Path(storage_root)
+        self.max_bytes = int(max_bytes)
+        self.preview_max_bytes = int(preview_max_bytes)
+
+    def _ensure_controlled_directory(self, directory: Path) -> None:
+        if self.storage_root.is_symlink():
+            raise FileServiceError("FILE_OPERATION_FAILED", "文件存储目录无效", 500)
+        self.storage_root.mkdir(parents=True, exist_ok=True)
+        directory.mkdir(parents=True, exist_ok=True)
+        root = self.storage_root.resolve()
+        try:
+            if os.path.commonpath((str(root), str(directory.resolve()))) != str(root):
+                raise FileServiceError("FILE_OPERATION_FAILED", "文件存储目录无效", 500)
+            current = self.storage_root
+            if not current.is_dir() or current.is_symlink():
+                raise FileServiceError("FILE_OPERATION_FAILED", "文件存储目录无效", 500)
+            if os.name != "nt" and stat.S_IMODE(current.stat().st_mode) & 0o022:
+                raise FileServiceError("FILE_OPERATION_FAILED", "文件存储目录权限过宽", 500)
+            for part in directory.relative_to(self.storage_root).parts:
+                current = current / part
+                if not current.is_dir() or current.is_symlink():
+                    raise FileServiceError("FILE_OPERATION_FAILED", "文件存储目录无效", 500)
+                if os.name != "nt" and stat.S_IMODE(current.stat().st_mode) & 0o022:
+                    raise FileServiceError("FILE_OPERATION_FAILED", "文件存储目录权限过宽", 500)
+        except (OSError, ValueError):
+            raise FileServiceError("FILE_OPERATION_FAILED", "文件存储目录无效", 500)
+
+    def _validate_object(self, object_type: str, object_id: str) -> None:
+        object_type = str(object_type or "").upper()
+        with self.repository.engine.connect() as connection:
+            exists = self.repository.object_exists(connection, object_type, str(object_id))
+        if not exists:
+            raise FileServiceError("OBJECT_NOT_FOUND", "关联业务对象不存在", 404)
+
+    @staticmethod
+    def _validate_name(original_name: str) -> tuple[str, str]:
+        if not isinstance(original_name, str) or not original_name.strip():
+            raise FileServiceError("INVALID_FILENAME", "文件名无效")
+        name = original_name.strip()
+        if (
+            any(marker in name for marker in ("/", "\\"))
+            or any(ord(character) < 32 or ord(character) == 127 for character in name)
+            or Path(name).name != name
+        ):
+            raise FileServiceError("INVALID_FILENAME", "文件名无效")
+        suffixes = [suffix.lower() for suffix in Path(name).suffixes]
+        if not suffixes or suffixes[-1] not in ALLOWED_EXTENSIONS:
+            raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "不支持该文件类型", 415)
+        if any(suffix in DANGEROUS_SUFFIXES or suffix in ALLOWED_EXTENSIONS for suffix in suffixes[:-1]):
+            raise FileServiceError("INVALID_FILENAME", "不允许双重扩展名")
+        return name, suffixes[-1]
+
+    @staticmethod
+    def _validate_content(path: Path, extension: str) -> str:
+        with path.open("rb") as source:
+            prefix = source.read(8192)
+        valid = False
+        if extension == ".pdf":
+            valid = prefix.startswith(b"%PDF-")
+        elif extension in {".jpg", ".jpeg"}:
+            valid = prefix.startswith(b"\xff\xd8\xff")
+        elif extension == ".png":
+            valid = prefix.startswith(b"\x89PNG\r\n\x1a\n")
+        elif extension == ".gif":
+            valid = prefix.startswith((b"GIF87a", b"GIF89a"))
+        elif extension == ".bmp":
+            valid = prefix.startswith(b"BM")
+        elif extension == ".webp":
+            valid = prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP"
+        elif extension == ".rar":
+            valid = prefix.startswith((b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00"))
+        elif extension in {".zip", ".docx", ".xlsx", ".pptx"}:
+            try:
+                valid = office_archive_is_safe(path)
+                with zipfile.ZipFile(path) as archive:
+                    required = {
+                    ".docx": "word/document.xml",
+                    ".xlsx": "xl/workbook.xml",
+                    ".pptx": "ppt/presentation.xml",
+                }.get(extension)
+                    if required:
+                        valid = valid and any(info.filename == required for info in archive.infolist())
+            except (OSError, zipfile.BadZipFile):
+                valid = False
+        elif extension in TEXT_EXTENSIONS:
+            try:
+                decoder = codecs.getincrementaldecoder("utf-8")()
+                valid = True
+                with path.open("rb") as source:
+                    while True:
+                        raw = source.read(64 * 1024)
+                        if not raw:
+                            break
+                        if b"\x00" in raw:
+                            valid = False
+                            break
+                        decoder.decode(raw)
+                    decoder.decode(b"", final=True)
+            except UnicodeDecodeError:
+                valid = False
+        if not valid:
+            raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "文件内容与类型不匹配", 415)
+        return mimetypes.guess_type("file" + extension)[0] or "application/octet-stream"
+
+    def _stage(self, stream, original_name: str) -> _StagedFile:
+        name, extension = self._validate_name(original_name)
+        staging_dir = self.storage_root / ".staging"
+        self._ensure_controlled_directory(staging_dir)
+        stage_path = staging_dir / f"{uuid.uuid4().hex}.part"
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with stage_path.open("xb") as destination:
+                while True:
+                    chunk = stream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    if not isinstance(chunk, bytes):
+                        raise FileServiceError("INVALID_FILE", "文件流无效")
+                    size += len(chunk)
+                    if size > self.max_bytes:
+                        raise FileServiceError("FILE_TOO_LARGE", "文件超过大小限制", 413)
+                    digest.update(chunk)
+                    destination.write(chunk)
+                destination.flush()
+                os.fsync(destination.fileno())
+            if size == 0:
+                raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "空文件不允许上传", 415)
+            media_type = self._validate_content(stage_path, extension)
+            return _StagedFile(stage_path, name, extension, media_type, size, digest.hexdigest())
+        except Exception:
+            stage_path.unlink(missing_ok=True)
+            raise
+
+    def _destination(self, extension: str) -> tuple[str, Path]:
+        now = datetime.now(timezone.utc)
+        relative = Path(str(now.year), f"{now.month:02d}", f"{uuid.uuid4().hex}{extension}")
+        final_path = self.storage_root / relative
+        self._ensure_controlled_directory(final_path.parent)
+        return relative.as_posix(), final_path
+
+    @staticmethod
+    def _size_bucket(size: int) -> str:
+        if size < 1024 * 1024:
+            return "LT_1_MB"
+        if size < 10 * 1024 * 1024:
+            return "1_TO_10_MB"
+        return "GE_10_MB"
+
+    def _audit(
+        self, connection, *, operation: str, staged: _StagedFile | None,
+        file_id: str, actor_user_id: int, request_id: str, started: float,
+        result: str = "SUCCESS", error_code: str | None = None,
+        file_type: str | None = None, size_bytes: int | None = None,
+    ) -> None:
+        self.audit_service.record(
+            connection,
+            event_name="file_operation_completed",
+            user_id=actor_user_id,
+            object_type="FILE",
+            object_id=file_id,
+            result=result,
+            request_id=request_id,
+            duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+            error_code=error_code,
+            properties={
+                "operation": operation,
+                "file_type": staged.extension.lstrip(".") if staged else (file_type or "metadata"),
+                "size_bucket": self._size_bucket(staged.size_bytes) if staged else (
+                    self._size_bucket(size_bytes) if size_bytes is not None else "N/A"
+                ),
+            },
+        )
+
+    def record_event(
+        self, *, operation: str, actor_user_id: int, request_id: str,
+        file_id: str | None, result: str, error_code: str | None = None,
+        file_type: str | None = None, size_bytes: int | None = None,
+    ) -> None:
+        try:
+            with self.repository.engine.begin() as connection:
+                self._audit(
+                    connection, operation=operation, staged=None,
+                    file_id=file_id or "unknown", actor_user_id=actor_user_id,
+                    request_id=request_id, started=time.monotonic(), result=result,
+                    error_code=error_code, file_type=file_type, size_bytes=size_bytes,
+                )
+        except FileServiceError:
+            raise
+        except Exception as exc:
+            raise FileServiceError("FILE_OPERATION_FAILED", "文件审计失败", 500) from exc
+
+    @staticmethod
+    def _result(file_id: str, staged: _StagedFile, relative_path: str, version_no: int) -> dict:
+        return {
+            "fileId": str(file_id),
+            "versionNo": version_no,
+            "originalName": staged.original_name,
+            "mediaType": staged.media_type,
+            "storagePath": relative_path,
+            "sha256": staged.sha256,
+            "sizeBytes": staged.size_bytes,
+        }
+
+    def upload(self, stream, *, original_name: str, object_type: str, object_id: str, actor_user_id: int, request_id: str) -> dict:
+        object_type = str(object_type or "").upper()
+        self._validate_object(object_type, str(object_id))
+        staged = self._stage(stream, original_name)
+        relative_path, final_path = self._destination(staged.extension)
+        file_id = uuid.uuid4()
+        started = time.monotonic()
+        moved = False
+        try:
+            with self.repository.engine.begin() as connection:
+                if not self.repository.object_exists(connection, object_type, str(object_id), lock=True):
+                    raise FileServiceError("OBJECT_NOT_FOUND", "关联业务对象不存在", 404)
+                self.repository.create_file(
+                    connection,
+                    file_id=file_id,
+                    business_id=f"FILE-{uuid.uuid4().hex.upper()}",
+                    original_name=staged.original_name,
+                    media_type=staged.media_type,
+                    actor_user_id=actor_user_id,
+                )
+                self.repository.create_version(
+                    connection,
+                    version_id=uuid.uuid4(),
+                    file_id=file_id,
+                    version_no=1,
+                    storage_path=relative_path,
+                    sha256=staged.sha256,
+                    size_bytes=staged.size_bytes,
+                    media_type=staged.media_type,
+                    actor_user_id=actor_user_id,
+                )
+                self.repository.link_object(
+                    connection,
+                    link_id=uuid.uuid4(),
+                    object_type=object_type,
+                    object_id=str(object_id),
+                    file_id=file_id,
+                    actor_user_id=actor_user_id,
+                )
+                os.replace(staged.path, final_path)
+                moved = True
+                self._audit(
+                    connection,
+                    operation="UPLOAD",
+                    staged=staged,
+                    file_id=str(file_id),
+                    actor_user_id=actor_user_id,
+                    request_id=request_id,
+                    started=started,
+                )
+            return self._result(str(file_id), staged, relative_path, 1)
+        except FileServiceError:
+            if moved:
+                final_path.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            if moved:
+                final_path.unlink(missing_ok=True)
+            raise FileServiceError("FILE_OPERATION_FAILED", "文件操作失败", 500) from exc
+        finally:
+            staged.path.unlink(missing_ok=True)
+
+    def add_version(self, file_id: str, stream, *, original_name: str, object_type: str, object_id: str, expected_version: int, actor_user_id: int, request_id: str) -> dict:
+        object_type = str(object_type or "").upper()
+        self._validate_object(object_type, str(object_id))
+        staged = self._stage(stream, original_name)
+        relative_path, final_path = self._destination(staged.extension)
+        started = time.monotonic()
+        moved = False
+        try:
+            with self.repository.engine.begin() as connection:
+                if not self.repository.object_exists(connection, object_type, str(object_id), lock=True):
+                    raise FileServiceError("OBJECT_NOT_FOUND", "关联业务对象不存在", 404)
+                file_row = self.repository.get_linked_file(
+                    connection, file_id=file_id, object_type=object_type, object_id=str(object_id), lock=True
+                )
+                if not file_row:
+                    raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+                if file_row["status"] != "ACTIVE":
+                    raise FileServiceError("FILE_ARCHIVED", "文件已归档", 409)
+                if int(file_row["version"]) != int(expected_version):
+                    raise FileServiceError("VERSION_CONFLICT", "文件版本已变化", 409)
+                if staged.extension != Path(file_row["original_name"]).suffix.lower() or staged.media_type != file_row["media_type"]:
+                    raise FileServiceError("FILE_TYPE_MISMATCH", "新版本必须与原文件类型一致", 415)
+                if not self.repository.bump_file(
+                    connection,
+                    file_id=file_id,
+                    expected_version=int(expected_version),
+                    actor_user_id=actor_user_id,
+                    original_name=staged.original_name,
+                    media_type=staged.media_type,
+                ):
+                    raise FileServiceError("VERSION_CONFLICT", "文件版本已变化", 409)
+                version_no = int(expected_version) + 1
+                self.repository.create_version(
+                    connection,
+                    version_id=uuid.uuid4(),
+                    file_id=file_id,
+                    version_no=version_no,
+                    storage_path=relative_path,
+                    sha256=staged.sha256,
+                    size_bytes=staged.size_bytes,
+                    media_type=staged.media_type,
+                    actor_user_id=actor_user_id,
+                )
+                os.replace(staged.path, final_path)
+                moved = True
+                self._audit(
+                    connection,
+                    operation="ADD_VERSION",
+                    staged=staged,
+                    file_id=file_id,
+                    actor_user_id=actor_user_id,
+                    request_id=request_id,
+                    started=started,
+                )
+            return self._result(file_id, staged, relative_path, version_no)
+        except FileServiceError:
+            if moved:
+                final_path.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            if moved:
+                final_path.unlink(missing_ok=True)
+            raise FileServiceError("FILE_OPERATION_FAILED", "文件操作失败", 500) from exc
+        finally:
+            staged.path.unlink(missing_ok=True)
+
+    def archive(self, file_id: str, *, object_type: str, object_id: str, actor_user_id: int, request_id: str) -> dict:
+        object_type = str(object_type or "").upper()
+        started = time.monotonic()
+        try:
+            with self.repository.engine.begin() as connection:
+                if not self.repository.object_exists(connection, object_type, str(object_id), lock=True):
+                    raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+                row = self.repository.get_linked_file(
+                    connection,
+                    file_id=file_id,
+                    object_type=object_type,
+                    object_id=str(object_id),
+                    lock=True,
+                )
+                if not row:
+                    raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+                if row["status"] == "ARCHIVED":
+                    self._audit(
+                        connection, operation="ARCHIVE_NOOP", staged=None,
+                        file_id=file_id, actor_user_id=actor_user_id,
+                        request_id=request_id, started=started,
+                    )
+                    return {"fileId": file_id, "status": "ARCHIVED"}
+                if not self.repository.bump_file(
+                    connection,
+                    file_id=file_id,
+                    expected_version=int(row["version"]),
+                    actor_user_id=actor_user_id,
+                    status="ARCHIVED",
+                ):
+                    raise FileServiceError("VERSION_CONFLICT", "文件版本已变化", 409)
+                self._audit(
+                    connection,
+                    operation="ARCHIVE",
+                    staged=None,
+                    file_id=file_id,
+                    actor_user_id=actor_user_id,
+                    request_id=request_id,
+                    started=started,
+                )
+            return {"fileId": file_id, "status": "ARCHIVED"}
+        except FileServiceError:
+            raise
+        except Exception as exc:
+            raise FileServiceError("FILE_OPERATION_FAILED", "文件操作失败", 500) from exc
+
+    def _safe_stored_path(self, storage_path: str) -> Path:
+        decoded = str(storage_path or "")
+        for _ in range(3):
+            candidate = unquote(decoded)
+            if candidate == decoded:
+                break
+            decoded = candidate
+        if not decoded or "\\" in decoded:
+            raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+        relative = Path(decoded)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+        root = self.storage_root.resolve()
+        candidate = self.storage_root / relative
+        try:
+            if os.path.commonpath((str(root), str(candidate.resolve(strict=False)))) != str(root):
+                raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+            current = self.storage_root
+            for part in relative.parts:
+                current = current / part
+                if current.is_symlink():
+                    raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+            details = candidate.stat()
+            if not stat.S_ISREG(details.st_mode):
+                raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+        except (OSError, ValueError):
+            raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+        return candidate.resolve()
+
+    def open_version(self, file_id: str, version_no: int, *, object_type: str, object_id: str) -> dict:
+        try:
+            version_no = int(version_no)
+        except (TypeError, ValueError):
+            raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+        object_type = str(object_type or "").upper()
+        with self.repository.engine.connect() as connection:
+            if not self.repository.object_exists(connection, object_type, str(object_id)):
+                raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+            file_row = self.repository.get_linked_file(
+                connection,
+                file_id=file_id,
+                object_type=object_type,
+                object_id=str(object_id),
+            )
+            if not file_row:
+                raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+            if file_row["status"] != "ACTIVE":
+                raise FileServiceError("FILE_ARCHIVED", "文件已归档", 409)
+            version = self.repository.get_version(connection, file_id=file_id, version_no=version_no)
+        if not version:
+            raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+        path = self._safe_stored_path(version["storage_path"])
+        return {
+            "fileId": file_id,
+            "versionNo": version_no,
+            "originalName": file_row["original_name"],
+            "mediaType": version["media_type"],
+            "sizeBytes": int(version["size_bytes"]),
+            "sha256": version["sha256"],
+            "path": path,
+        }
+
+    def open_version_stream(self, file_id: str, version_no: int, *, object_type: str, object_id: str) -> dict:
+        opened = self.open_version(
+            file_id, version_no, object_type=object_type, object_id=object_id
+        )
+        if os.name == "nt":
+            return self._open_version_stream_windows(opened)
+        relative = opened["path"].relative_to(self.storage_root.resolve())
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptors = []
+        try:
+            current = os.open(self.storage_root.resolve(), directory_flags)
+            descriptors.append(current)
+            for part in relative.parts[:-1]:
+                current = os.open(part, directory_flags, dir_fd=current)
+                descriptors.append(current)
+            file_descriptor = os.open(relative.parts[-1], file_flags, dir_fd=current)
+            details = os.fstat(file_descriptor)
+            if not stat.S_ISREG(details.st_mode) or details.st_size != opened["sizeBytes"]:
+                os.close(file_descriptor)
+                raise FileServiceError("FILE_INTEGRITY_FAILED", "文件完整性校验失败", 409)
+            stream = os.fdopen(file_descriptor, "rb")
+            digest = hashlib.sha256()
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            if digest.hexdigest() != opened["sha256"]:
+                stream.close()
+                raise FileServiceError("FILE_INTEGRITY_FAILED", "文件完整性校验失败", 409)
+            stream.seek(0)
+            opened["stream"] = stream
+            return opened
+        except FileServiceError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404) from exc
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+
+    def _open_version_stream_windows(self, opened: dict) -> dict:
+        """Open once, then verify the Windows handle's final resolved path."""
+        try:
+            import ctypes
+            import msvcrt
+
+            stream = opened["path"].open("rb")
+            handle = msvcrt.get_osfhandle(stream.fileno())
+            buffer = ctypes.create_unicode_buffer(32_768)
+            length = ctypes.windll.kernel32.GetFinalPathNameByHandleW(handle, buffer, len(buffer), 0)
+            if not length or length >= len(buffer):
+                stream.close()
+                raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+            final_path = buffer.value
+            if final_path.startswith("\\\\?\\"):
+                final_path = final_path[4:]
+            root = os.path.normcase(str(self.storage_root.resolve()))
+            resolved = os.path.normcase(str(Path(final_path).resolve()))
+            if os.path.commonpath((root, resolved)) != root:
+                stream.close()
+                raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+            details = os.fstat(stream.fileno())
+            if not stat.S_ISREG(details.st_mode) or details.st_size != opened["sizeBytes"]:
+                stream.close()
+                raise FileServiceError("FILE_INTEGRITY_FAILED", "文件完整性校验失败", 409)
+            digest = hashlib.sha256()
+            while chunk := stream.read(64 * 1024):
+                digest.update(chunk)
+            if digest.hexdigest() != opened["sha256"]:
+                stream.close()
+                raise FileServiceError("FILE_INTEGRITY_FAILED", "文件完整性校验失败", 409)
+            stream.seek(0)
+            opened["stream"] = stream
+            return opened
+        except FileServiceError:
+            raise
+        except (OSError, ValueError, NotImplementedError) as exc:
+            raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404) from exc
+
+    def list_for_object(self, *, object_type: str, object_id: str) -> list[dict]:
+        object_type = str(object_type or "").upper()
+        self._validate_object(object_type, str(object_id))
+        with self.repository.engine.connect() as connection:
+            rows = self.repository.list_for_object(connection, object_type=object_type, object_id=str(object_id))
+        return [
+            {
+                "fileId": str(row["id"]),
+                "businessId": row["business_id"],
+                "originalName": row["original_name"],
+                "mediaType": row["media_type"],
+                "versionNo": int(row["version"]),
+                "status": row["status"],
+            }
+            for row in rows
+        ]

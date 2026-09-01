@@ -52,7 +52,7 @@ def test_non_t02_identifier_is_rejected_before_any_postgresql_command(tmp_path):
     )
 
     assert result.returncode == 65
-    assert "outside the T02/T03 contract" in result.stderr
+    assert "outside the T02/T03/T04 contract" in result.stderr
     assert not marker.exists()
 
 
@@ -69,6 +69,14 @@ def test_t03_identifier_runs_auth_audit_contract_and_cleans_cluster():
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
+    assert not _cluster_path(result).exists()
+
+
+def test_t04_identifier_runs_file_contract_and_cleans_cluster():
+    result = _run_runner("rm_v1_t04_safety_success")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "3 passed" in result.stdout
     assert not _cluster_path(result).exists()
 
 

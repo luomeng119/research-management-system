@@ -33,6 +33,9 @@ LOG_BACKUP_COUNT = 5
 # 文件上传配置
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'rar', 'png', 'jpg', 'jpeg'}
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB
+FILE_STORAGE_ROOT = os.path.join(DATA_DIR, 'files')
+FILE_MAX_BYTES = MAX_CONTENT_LENGTH
+FILE_PREVIEW_MAX_BYTES = 10 * 1024 * 1024
 
 # 推理参数
 LLM_N_ctx = 1024           # Qwen 最大上下文 token 数

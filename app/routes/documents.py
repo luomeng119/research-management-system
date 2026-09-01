@@ -1087,16 +1087,68 @@ def _pdf_or_image_to_png_bytes(file_path):
     ext = os.path.splitext(file_path)[1].lower()
     if ext == '.pdf':
         doc = fitz.open(file_path)
-        pages = []
-        for i, page in enumerate(doc):
-            mat = fitz.Matrix(2.0, 2.0)  # 2x 缩放，保证清晰度
-            pix = page.get_pixmap(matrix=mat)
-            pages.append(pix.tobytes('png'))
-        doc.close()
-        return pages
+        if doc.page_count > 50:
+            doc.close()
+            raise ValueError('attachment page limit exceeded')
+        def render_pages():
+            total_pixels = 0
+            try:
+                for page in doc:
+                    mat = fitz.Matrix(2.0, 2.0)
+                    page_pixels = int(page.rect.width * mat.a) * int(page.rect.height * mat.d)
+                    total_pixels += page_pixels
+                    if page_pixels > 20_000_000 or total_pixels > 100_000_000:
+                        raise ValueError('attachment pixel limit exceeded')
+                    pix = page.get_pixmap(matrix=mat)
+                    rendered = pix.tobytes('png')
+                    if len(rendered) > 20 * 1024 * 1024:
+                        raise ValueError('attachment render limit exceeded')
+                    yield rendered
+                    del pix
+            finally:
+                doc.close()
+        return render_pages()
     else:
+        if os.path.getsize(file_path) > 20 * 1024 * 1024:
+            raise ValueError('attachment size limit exceeded')
         with open(file_path, 'rb') as f:
             return [f.read()]
+
+
+def _resolve_legacy_attachment(app_root, stored_path):
+    """Resolve legacy invoice/payment paths without trusting database text."""
+    from pathlib import Path
+    import stat
+    from urllib.parse import unquote
+
+    decoded = str(stored_path or '')
+    for _ in range(3):
+        value = unquote(decoded)
+        if value == decoded:
+            break
+        decoded = value
+    supplied = Path(decoded)
+    if not decoded or '..' in supplied.parts or '\\' in decoded:
+        return None
+    root = Path(app_root).resolve()
+    allowed_root = (root / 'uploads').resolve()
+    candidate = supplied if supplied.is_absolute() else root / supplied
+    try:
+        if os.path.commonpath((str(allowed_root), str(candidate.resolve(strict=False)))) != str(allowed_root):
+            return None
+        relative = candidate.relative_to(root)
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                return None
+            if os.name != 'nt' and stat.S_IMODE(current.stat().st_mode) & 0o022:
+                return None
+        if not stat.S_ISREG(candidate.stat().st_mode):
+            return None
+    except (OSError, ValueError):
+        return None
+    return candidate
 
 
 def _merge_docx_and_images(docx_bytes_list, invoices, payments):
@@ -1155,7 +1207,9 @@ def _merge_docx_and_images(docx_bytes_list, invoices, payments):
         fp = inv.get('file_path', '')
         if not fp:
             continue
-        full_path = os.path.join(app_root, fp)
+        full_path = _resolve_legacy_attachment(app_root, fp)
+        if full_path is None:
+            continue
         info = f'发票号：{inv.get("invoice_no", "")}  |  金额：¥{inv.get("amount", 0)}  |  销售方：{inv.get("seller", "")}'
         attachments.append(('发票明细', info, full_path, inv))
 
@@ -1163,7 +1217,9 @@ def _merge_docx_and_images(docx_bytes_list, invoices, payments):
         fp = pay.get('file_path', '')
         if not fp:
             continue
-        full_path = os.path.join(app_root, fp)
+        full_path = _resolve_legacy_attachment(app_root, fp)
+        if full_path is None:
+            continue
         info = f'凭证号：{pay.get("payment_no", "")}  |  金额：¥{pay.get("amount", 0)}  |  收款方：{pay.get("payer", "")}'
         attachments.append(('支付记录', info, full_path, pay))
 
@@ -1173,7 +1229,7 @@ def _merge_docx_and_images(docx_bytes_list, invoices, payments):
         merged.add_heading('附件', level=1)
 
         for label, info_text, full_path, data in attachments:
-            if os.path.exists(full_path):
+            if full_path.exists():
                 try:
                     merged.add_heading(label, level=2)
                     merged.add_paragraph(info_text).runs[0].font.size = Pt(9)
@@ -1183,10 +1239,10 @@ def _merge_docx_and_images(docx_bytes_list, invoices, payments):
                         from io import BytesIO
                         merged.add_picture(BytesIO(png_bytes), width=Inches(5.5))
                         merged.add_paragraph('')
-                except Exception as e:
-                    merged.add_paragraph(f'[{label}加载失败: {full_path}] {e}')
+                except Exception:
+                    merged.add_paragraph(f'[{label}加载失败]')
             else:
-                merged.add_paragraph(f'[文件不存在: {full_path}]')
+                merged.add_paragraph('[附件文件不存在]')
 
     buf = io.BytesIO()
     merged.save(buf)

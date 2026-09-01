@@ -23,6 +23,8 @@ def create_app(test_config=None):
         app.config.update(test_config)
         if "LOG_FILE" not in test_config:
             app.config["LOG_FILE"] = os.path.join(app.config["DATA_DIR"], "logs", "app.jsonl")
+        if "FILE_STORAGE_ROOT" not in test_config:
+            app.config["FILE_STORAGE_ROOT"] = os.path.join(app.config["DATA_DIR"], "files")
 
     if not app.config.get("TESTING"):
         secret_key = os.environ.get("FLASK_SECRET_KEY")
@@ -89,6 +91,25 @@ def create_app(test_config=None):
             max_entries=int(app.config["LOGIN_RATE_LIMIT_MAX_ENTRIES"]),
         )
 
+    file_service = app.config.get("FILE_SERVICE")
+    if file_service is None and engine is not None and audit_service is not None:
+        import sqlalchemy as sa
+
+        inspector = sa.inspect(engine)
+        if all(inspector.has_table(name) for name in ("stored_files", "stored_file_versions", "object_files")):
+            from app.repositories.files import FilesRepository
+            from app.services.files import FileService
+
+            file_service = FileService(
+                FilesRepository(engine),
+                audit_service,
+                storage_root=app.config["FILE_STORAGE_ROOT"],
+                max_bytes=int(app.config["FILE_MAX_BYTES"]),
+                preview_max_bytes=int(app.config["FILE_PREVIEW_MAX_BYTES"]),
+            )
+    if file_service is not None:
+        app.extensions["file_service"] = file_service
+
     if app.config.get("LOG_FILE"):
         from app.security.logging import configure_json_logging
 
@@ -103,6 +124,7 @@ def create_app(test_config=None):
     from app.routes.preview import bp as preview_bp
     from app.routes.argumentation import argumentation_bp
     from app.routes.argumentation.template_routes import template_bp
+    from app.web.files import bp as files_bp
 
     for blueprint in (
         api.bp, auth.bp, projects.bp, equipment.bp, standards.bp, users.bp,
@@ -110,6 +132,7 @@ def create_app(test_config=None):
         security_logs.bp, experts.bp, expert_groups.bp, equipment_groups.bp,
         preview_bp, utils.bp, expense.bp, documents.bp, host_devices.bp,
         research_units.bp, generic_tables_bp, generic_tables_api_bp,
+        files_bp,
     ):
         app.register_blueprint(blueprint)
     app.register_blueprint(argumentation_bp, url_prefix="/argumentation")
