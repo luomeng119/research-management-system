@@ -4,6 +4,7 @@ import importlib
 import os
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import sqlalchemy as sa
@@ -61,6 +62,152 @@ LEGACY_TABLES = {
     "llm_models",
     "inference_server_status",
 }
+
+
+class _ProvisionCursor:
+    def __init__(self, *, attributes, memberships=(), effective_permissions=None):
+        self.attributes = attributes
+        self.memberships = list(memberships)
+        self.effective_permissions = effective_permissions
+        self.result = None
+        self.acl_statement_count = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def execute(self, statement, parameters=None):
+        if isinstance(statement, str) and "FROM pg_database" in statement:
+            self.result = ("migration_owner", "rm_v1_t02", "migration_owner")
+        elif isinstance(statement, str) and "FROM pg_namespace" in statement:
+            self.result = ("migration_owner",)
+        elif isinstance(statement, str) and "FROM pg_auth_members" in statement:
+            self.result = self.memberships
+        elif isinstance(statement, str) and "FROM pg_roles" in statement:
+            self.result = self.attributes
+        elif isinstance(statement, str) and "has_database_privilege" in statement:
+            self.result = self.effective_permissions
+        else:
+            self.acl_statement_count += 1
+            self.result = None
+
+    def fetchone(self):
+        return self.result
+
+    def fetchall(self):
+        return self.result
+
+
+class _ProvisionConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.committed = False
+        self.rolled_back = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.committed = exc_type is None
+        self.rolled_back = exc_type is not None
+        return False
+
+    def cursor(self):
+        return self._cursor
+
+
+def _run_provision_with_fake_postgres(
+    *, attributes, memberships=(), effective_permissions=None, **kwargs
+):
+    provisioner = importlib.import_module("scripts.provision_postgres")
+    cursor = _ProvisionCursor(
+        attributes=attributes,
+        memberships=memberships,
+        effective_permissions=effective_permissions,
+    )
+    connection = _ProvisionConnection(cursor)
+    with patch.object(provisioner.psycopg, "connect", return_value=connection):
+        provisioner.provision(
+            "postgresql+psycopg://migration_owner@localhost/rm_v1_t02",
+            "runtime_role",
+            **kwargs,
+        )
+    return connection, cursor
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        (False, False, False, False, False, False),
+        (True, True, False, False, False, False),
+        (True, False, True, False, False, False),
+        (True, False, False, True, False, False),
+        (True, False, False, False, True, False),
+        (True, False, False, False, False, True),
+    ],
+)
+def test_provision_rejects_non_login_or_privileged_runtime_roles(attributes):
+    with pytest.raises(RuntimeError):
+        _run_provision_with_fake_postgres(attributes=attributes)
+
+
+def test_provision_rejects_runtime_role_with_any_direct_membership():
+    with pytest.raises(RuntimeError, match="independent leaf role"):
+        _run_provision_with_fake_postgres(
+            attributes=(True, False, False, False, False, False),
+            memberships=[("pg_write_all_data",)],
+        )
+
+
+@pytest.mark.parametrize(
+    "permission_index",
+    range(8),
+)
+def test_provision_rolls_back_when_effective_permissions_are_not_exact(
+    permission_index,
+):
+    expected = [False, False, False, True, True, False, False, False]
+    expected[permission_index] = not expected[permission_index]
+    provisioner = importlib.import_module("scripts.provision_postgres")
+    cursor = _ProvisionCursor(
+        attributes=(True, False, False, False, False, False),
+        effective_permissions=tuple(expected),
+    )
+    connection = _ProvisionConnection(cursor)
+
+    with patch.object(provisioner.psycopg, "connect", return_value=connection):
+        with pytest.raises(RuntimeError, match="effective privileges"):
+            provisioner.provision(
+                "postgresql+psycopg://migration_owner@localhost/rm_v1_t02",
+                "runtime_role",
+            )
+
+    assert cursor.acl_statement_count > 0
+    assert connection.rolled_back is True
+    assert connection.committed is False
+
+
+def test_function_only_acl_failure_injection_rolls_back_after_acl_writes():
+    provisioner = importlib.import_module("scripts.provision_postgres")
+    cursor = _ProvisionCursor(
+        attributes=(True, False, False, False, False, False),
+        effective_permissions=(False, False, False, True, True, False, False, False),
+    )
+    connection = _ProvisionConnection(cursor)
+
+    with patch.object(provisioner.psycopg, "connect", return_value=connection):
+        with pytest.raises(RuntimeError, match="injected ACL failure"):
+            provisioner.provision(
+                "postgresql+psycopg://migration_owner@localhost/rm_v1_t02",
+                "runtime_role",
+                _fail_after_acl=True,
+            )
+
+    assert cursor.acl_statement_count > 0
+    assert connection.rolled_back is True
+    assert connection.committed is False
 
 
 def _db_module():

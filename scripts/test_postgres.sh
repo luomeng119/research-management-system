@@ -33,6 +33,11 @@ t02_log="$t02_root/postgres.log"
 t02_port=$("$t02_python" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 t02_migration_role="rm_v1_t02_migration_${t02_port}"
 t02_runtime_role="rm_v1_t02_runtime_${t02_port}"
+t02_nologin_role="rm_v1_t02_nologin_${t02_port}"
+t02_replication_role="rm_v1_t02_replication_${t02_port}"
+t02_owner_member_role="rm_v1_t02_owner_member_${t02_port}"
+t02_write_member_role="rm_v1_t02_write_member_${t02_port}"
+t02_injection_role="rm_v1_t02_injection_${t02_port}"
 t02_database=rm_v1_t02
 t02_started=0
 
@@ -59,7 +64,14 @@ fi
 
 psql -h 127.0.0.1 -p "$t02_port" -d postgres -v ON_ERROR_STOP=1 \
   -c "CREATE ROLE $t02_migration_role LOGIN;" \
-  -c "CREATE ROLE $t02_runtime_role LOGIN;" >/dev/null
+  -c "CREATE ROLE $t02_runtime_role LOGIN;" \
+  -c "CREATE ROLE $t02_nologin_role NOLOGIN;" \
+  -c "CREATE ROLE $t02_replication_role LOGIN REPLICATION;" \
+  -c "CREATE ROLE $t02_owner_member_role LOGIN;" \
+  -c "CREATE ROLE $t02_write_member_role LOGIN;" \
+  -c "CREATE ROLE $t02_injection_role LOGIN;" \
+  -c "GRANT $t02_migration_role TO $t02_owner_member_role;" \
+  -c "GRANT pg_write_all_data TO $t02_write_member_role;" >/dev/null
 createdb -h 127.0.0.1 -p "$t02_port" -O "$t02_migration_role" "$t02_database"
 psql -h 127.0.0.1 -p "$t02_port" -d "$t02_database" -v ON_ERROR_STOP=1 \
   -c "ALTER SCHEMA public OWNER TO $t02_migration_role;" >/dev/null
@@ -68,6 +80,28 @@ export MIGRATION_DATABASE_URL="postgresql+psycopg://$t02_migration_role@127.0.0.
 export DATABASE_URL="postgresql+psycopg://$t02_runtime_role@127.0.0.1:$t02_port/$t02_database"
 export TEST_DATABASE_URL="$DATABASE_URL"
 export T02_RUNTIME_ROLE="$t02_runtime_role"
+export T02_NOLOGIN_ROLE="$t02_nologin_role"
+export T02_REPLICATION_ROLE="$t02_replication_role"
+export T02_OWNER_MEMBER_ROLE="$t02_owner_member_role"
+export T02_WRITE_MEMBER_ROLE="$t02_write_member_role"
+export T02_INJECTION_ROLE="$t02_injection_role"
+
+expect_provision_rejected() {
+  local t02_candidate_role=$1
+  local t02_expected_error=$2
+  local t02_rejection_output
+  if t02_rejection_output=$("$t02_python" scripts/provision_postgres.py \
+    --migration-url "$MIGRATION_DATABASE_URL" \
+    --runtime-role "$t02_candidate_role" 2>&1); then
+    echo "unsafe runtime role was accepted: $t02_candidate_role" >&2
+    exit 71
+  fi
+  if [[ "$t02_rejection_output" != *"$t02_expected_error"* ]]; then
+    echo "unexpected rejection for $t02_candidate_role: $t02_rejection_output" >&2
+    exit 72
+  fi
+  echo "runtime role rejected: $t02_candidate_role"
+}
 
 show_revision() {
   psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
@@ -100,6 +134,83 @@ echo "migration roundtrip: re-upgrade=$(show_revision)"
 "$t02_python" scripts/provision_postgres.py \
   --migration-url "$MIGRATION_DATABASE_URL" \
   --runtime-role "$t02_runtime_role"
+
+expect_provision_rejected "$t02_migration_role" "must differ from the migration owner"
+expect_provision_rejected "$t02_nologin_role" "must have LOGIN"
+expect_provision_rejected "$t02_replication_role" "replication attributes"
+expect_provision_rejected "$t02_owner_member_role" "independent leaf role"
+expect_provision_rejected "$t02_write_member_role" "independent leaf role"
+
+if t02_injection_output=$("$t02_python" -c \
+  'import os; from scripts.provision_postgres import provision; provision(os.environ["MIGRATION_DATABASE_URL"], os.environ["T02_INJECTION_ROLE"], _fail_after_acl=True)' \
+  2>&1); then
+  echo "ACL failure injection unexpectedly succeeded" >&2
+  exit 73
+fi
+if [[ "$t02_injection_output" != *"injected ACL failure"* ]]; then
+  echo "unexpected ACL failure injection output: $t02_injection_output" >&2
+  exit 74
+fi
+
+t02_direct_acl_count=$(psql -h 127.0.0.1 -p "$t02_port" \
+  -U "$t02_migration_role" -d "$t02_database" -Atc \
+  "SELECT count(*) FROM (
+     SELECT 1 FROM pg_namespace n
+     CROSS JOIN LATERAL aclexplode(n.nspacl) acl
+     JOIN pg_roles grantee ON grantee.oid = acl.grantee
+     WHERE n.nspname = 'public' AND grantee.rolname = '$t02_injection_role'
+     UNION ALL
+     SELECT 1 FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     CROSS JOIN LATERAL aclexplode(c.relacl) acl
+     JOIN pg_roles grantee ON grantee.oid = acl.grantee
+     WHERE n.nspname = 'public' AND grantee.rolname = '$t02_injection_role'
+   ) direct_acl")
+t02_default_acl_count=$(psql -h 127.0.0.1 -p "$t02_port" \
+  -U "$t02_migration_role" -d "$t02_database" -Atc \
+  "SELECT count(*) FROM pg_default_acl defaults
+   CROSS JOIN LATERAL aclexplode(defaults.defaclacl) acl
+   JOIN pg_roles grantee ON grantee.oid = acl.grantee
+   WHERE grantee.rolname = '$t02_injection_role'")
+if [[ "$t02_direct_acl_count" != "0" || "$t02_default_acl_count" != "0" ]]; then
+  echo "ACL failure injection leaked privileges: direct=$t02_direct_acl_count default=$t02_default_acl_count" >&2
+  exit 75
+fi
+t02_rolled_back_permissions=$(psql -h 127.0.0.1 -p "$t02_port" \
+  -U "$t02_migration_role" -d "$t02_database" -Atc \
+  "SELECT concat_ws(',',
+     has_schema_privilege('$t02_injection_role', 'public', 'CREATE'),
+     has_table_privilege('$t02_injection_role', 'audit_events', 'SELECT'),
+     has_table_privilege('$t02_injection_role', 'audit_events', 'INSERT'),
+     has_table_privilege('$t02_injection_role', 'audit_events', 'UPDATE'),
+     has_table_privilege('$t02_injection_role', 'audit_events', 'DELETE'),
+     has_table_privilege('$t02_injection_role', 'audit_events', 'TRUNCATE'))")
+if [[ "$t02_rolled_back_permissions" != "f,f,f,f,f,f" ]]; then
+  echo "ACL failure injection retained effective schema/table privileges: $t02_rolled_back_permissions" >&2
+  exit 76
+fi
+
+t02_future_table="injection_rollback_future_${t02_port}"
+psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
+  -d "$t02_database" -v ON_ERROR_STOP=1 \
+  -c "CREATE TABLE $t02_future_table (id integer);" >/dev/null
+t02_future_permissions=$(psql -h 127.0.0.1 -p "$t02_port" \
+  -U "$t02_migration_role" -d "$t02_database" -Atc \
+  "SELECT concat_ws(',',
+     has_table_privilege('$t02_injection_role', '$t02_future_table', 'SELECT'),
+     has_table_privilege('$t02_injection_role', '$t02_future_table', 'INSERT'),
+     has_table_privilege('$t02_injection_role', '$t02_future_table', 'UPDATE'),
+     has_table_privilege('$t02_injection_role', '$t02_future_table', 'DELETE'),
+     has_table_privilege('$t02_injection_role', '$t02_future_table', 'TRUNCATE'))")
+if [[ "$t02_future_permissions" != "f,f,f,f,f" ]]; then
+  echo "ACL failure injection leaked default table privileges: $t02_future_permissions" >&2
+  exit 77
+fi
+psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
+  -d "$t02_database" -v ON_ERROR_STOP=1 \
+  -c "DROP TABLE $t02_future_table;" >/dev/null
+echo "ACL failure injection rollback: direct=0 default=0 existing=$t02_rolled_back_permissions future_table=$t02_future_permissions"
+
 show_catalog
 "$t02_python" -m pytest app/tests/test_db_contract.py -q
 

@@ -14,7 +14,12 @@ def _psycopg_url(value: str) -> str:
     return url.set(drivername="postgresql").render_as_string(hide_password=False)
 
 
-def provision(migration_url: str, runtime_role: str) -> tuple[str, str]:
+def provision(
+    migration_url: str,
+    runtime_role: str,
+    *,
+    _fail_after_acl: bool = False,
+) -> tuple[str, str]:
     with psycopg.connect(_psycopg_url(migration_url)) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -35,7 +40,8 @@ def provision(migration_url: str, runtime_role: str) -> tuple[str, str]:
                     "migration owner must already own the public schema"
                 )
             cursor.execute(
-                "SELECT rolsuper, rolcreaterole, rolcreatedb, rolbypassrls "
+                "SELECT rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, "
+                "rolbypassrls, rolreplication "
                 "FROM pg_roles WHERE rolname = %s",
                 (runtime_role,),
             )
@@ -44,22 +50,28 @@ def provision(migration_url: str, runtime_role: str) -> tuple[str, str]:
                 raise RuntimeError(f"runtime role does not exist: {runtime_role}")
             if runtime_role == migration_owner:
                 raise RuntimeError("runtime role must differ from the migration owner")
-            if any(runtime_attributes):
+            can_login, *forbidden_attributes = runtime_attributes
+            if not can_login:
+                raise RuntimeError("runtime role must have LOGIN")
+            if any(forbidden_attributes):
                 raise RuntimeError(
                     "runtime role must not have superuser, role creation, database "
-                    "creation, or row-security bypass attributes"
+                    "creation, row-security bypass, or replication attributes"
                 )
             cursor.execute(
-                "SELECT pg_has_role(%s::name, %s::name, 'MEMBER')",
-                (runtime_role, migration_owner),
+                "SELECT pg_get_userbyid(roleid) FROM pg_auth_members "
+                "WHERE member = (SELECT oid FROM pg_roles WHERE rolname = %s)",
+                (runtime_role,),
             )
-            if cursor.fetchone() == (True,):
-                raise RuntimeError("runtime role must not be a member of the migration owner")
+            if cursor.fetchall():
+                raise RuntimeError(
+                    "runtime role must be an independent leaf role with no memberships"
+                )
 
             owner = sql.Identifier(migration_owner)
             database = sql.Identifier(database_name)
             runtime = sql.Identifier(runtime_role)
-            statements = (
+            direct_acl_statements = (
                 sql.SQL("REVOKE CREATE, TEMPORARY ON DATABASE {} FROM PUBLIC;").format(database),
                 sql.SQL("REVOKE CREATE, TEMPORARY ON DATABASE {} FROM {};").format(database, runtime),
                 sql.SQL("REVOKE CREATE ON SCHEMA public FROM PUBLIC;"),
@@ -77,6 +89,8 @@ def provision(migration_url: str, runtime_role: str) -> tuple[str, str]:
                 ).format(runtime),
                 sql.SQL("REVOKE ALL ON TABLE audit_events FROM {};").format(runtime),
                 sql.SQL("GRANT INSERT, SELECT ON TABLE audit_events TO {};").format(runtime),
+            )
+            default_table_acl_statements = (
                 sql.SQL(
                     "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
                     "REVOKE ALL ON TABLES FROM PUBLIC;"
@@ -85,6 +99,8 @@ def provision(migration_url: str, runtime_role: str) -> tuple[str, str]:
                     "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
                     "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {};"
                 ).format(owner, runtime),
+            )
+            default_sequence_acl_statements = (
                 sql.SQL(
                     "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
                     "REVOKE ALL ON SEQUENCES FROM PUBLIC;"
@@ -94,8 +110,39 @@ def provision(migration_url: str, runtime_role: str) -> tuple[str, str]:
                     "GRANT USAGE, SELECT ON SEQUENCES TO {};"
                 ).format(owner, runtime),
             )
-            for statement in statements:
+            for statement in direct_acl_statements + default_table_acl_statements:
                 cursor.execute(statement)
+            if _fail_after_acl:
+                raise RuntimeError("injected ACL failure")
+            for statement in default_sequence_acl_statements:
+                cursor.execute(statement)
+
+            cursor.execute(
+                "SELECT "
+                "has_database_privilege(%s, current_database(), 'CREATE'), "
+                "has_database_privilege(%s, current_database(), 'TEMPORARY'), "
+                "has_schema_privilege(%s, 'public', 'CREATE'), "
+                "has_table_privilege(%s, 'public.audit_events', 'SELECT'), "
+                "has_table_privilege(%s, 'public.audit_events', 'INSERT'), "
+                "has_table_privilege(%s, 'public.audit_events', 'UPDATE'), "
+                "has_table_privilege(%s, 'public.audit_events', 'DELETE'), "
+                "has_table_privilege(%s, 'public.audit_events', 'TRUNCATE')",
+                (runtime_role,) * 8,
+            )
+            expected_permissions = (
+                False,
+                False,
+                False,
+                True,
+                True,
+                False,
+                False,
+                False,
+            )
+            if cursor.fetchone() != expected_permissions:
+                raise RuntimeError(
+                    "runtime role effective privileges do not match the required boundary"
+                )
     return migration_owner, database_name
 
 
