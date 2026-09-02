@@ -8,3 +8,4 @@
 | T04 | 0f18fb894e8aa34091f8afd6548c322a5ec1cb7d | 595b61f944bbd9e4a29a5dc408c0673aaefdc5af | task-4-report.md | task-4-acceptance-review.md: APPROVED | completed |
 | T05 | 1413b6707c4541fd1fa3aaaafe13990b19de72cf | 3aa77cd3bbf9821027a39b2ccf0798f2af5e32ec | task-5-report.md | task-5-acceptance-review.md: APPROVED | completed |
 | T06 | 3d36c10cc7195a0ae8e1f9e74b8730fc7f7601f0 | 9fe317048109d521458eb1d94eeda7f3b51f88d7 | task-6-report.md | task-6-acceptance-review.md: APPROVED | completed |
+| T07 | 659beac922f265a55aeba55fe658e3fd424b9b47 | 1ff0679 | task-7-report.md | task-7-acceptance-review.md: PENDING | implementation complete; model/UI evidence pending |
