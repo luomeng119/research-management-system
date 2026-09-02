@@ -6,3 +6,4 @@
 | T02 | 6d8e74bded0c8a855e11db757c4a15bf482583f9 | b33245d5a0d1c8c257aa632494e1166ce1cf3c90 | task-2-report.md | task-2-acceptance-review.md: APPROVED | completed |
 | T03 | b33245d5a0d1c8c257aa632494e1166ce1cf3c90 | 0a923e72f17540ba93376cd5bba326419bc6fdea | task-3-report.md | task-3-acceptance-review.md: APPROVED | completed |
 | T04 | 0f18fb894e8aa34091f8afd6548c322a5ec1cb7d | 595b61f944bbd9e4a29a5dc408c0673aaefdc5af | task-4-report.md | task-4-acceptance-review.md: APPROVED | completed |
+| T05 | 1413b6707c4541fd1fa3aaaafe13990b19de72cf | 3aa77cd3bbf9821027a39b2ccf0798f2af5e32ec | task-5-report.md | task-5-acceptance-review.md: APPROVED | completed |
