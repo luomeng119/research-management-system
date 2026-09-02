@@ -8,8 +8,8 @@ fi
 
 t02_admin_hint=${1%%\?*}
 t02_database_name=${t02_admin_hint##*/}
-if [[ ! "$t02_database_name" =~ (^|_)t0(2|3|4)($|_) ]]; then
-  echo "refusing database identifier outside the T02/T03/T04 contract: $t02_database_name" >&2
+if [[ ! "$t02_database_name" =~ (^|_)t0(2|3|4|5)($|_) ]]; then
+  echo "refusing database identifier outside the T02/T03/T04/T05 contract: $t02_database_name" >&2
   exit 65
 fi
 t03_contract=0
@@ -19,6 +19,10 @@ fi
 t04_contract=0
 if [[ "$t02_database_name" =~ (^|_)t04($|_) ]]; then
   t04_contract=1
+fi
+t05_contract=0
+if [[ "$t02_database_name" =~ (^|_)t05($|_) ]]; then
+  t05_contract=1
 fi
 
 for t02_command in initdb pg_ctl psql createdb; do
@@ -220,6 +224,11 @@ psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
 echo "ACL failure injection rollback: direct=0 default=0 existing=$t02_rolled_back_permissions future_table=$t02_future_permissions"
 
 show_catalog
+if [[ "$t05_contract" -eq 1 ]]; then
+  T05_TEST_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+    "$t02_python" -m pytest app/tests/test_legacy_migration.py -q \
+    -k postgresql_concurrent_same_batch_and_identity_sequence
+fi
 "$t02_python" -m pytest app/tests/test_db_contract.py -q
 if [[ "$t03_contract" -eq 1 ]]; then
   "$t02_python" -m pytest app/tests/test_auth_audit_postgres.py -q
@@ -227,5 +236,4 @@ fi
 if [[ "$t04_contract" -eq 1 ]]; then
   "$t02_python" -m pytest app/tests/test_file_service.py -q -k postgres
 fi
-
 echo "T02 PostgreSQL contract completed; temporary cluster will be removed"

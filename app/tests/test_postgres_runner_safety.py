@@ -52,7 +52,7 @@ def test_non_t02_identifier_is_rejected_before_any_postgresql_command(tmp_path):
     )
 
     assert result.returncode == 65
-    assert "outside the T02/T03/T04 contract" in result.stderr
+    assert "outside the T02/T03/T04/T05 contract" in result.stderr
     assert not marker.exists()
 
 
