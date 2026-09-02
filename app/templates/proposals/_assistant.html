@@ -1,0 +1,116 @@
+<aside class="card position-sticky" style="top: 1rem;" id="proposal-assistant"
+       data-proposal-id="{{ proposal.businessId }}" data-proposal-version="{{ proposal.version }}">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between gap-2">
+      <h5 class="mb-0"><i class="bi bi-stars me-2 text-primary"></i>科研提案助手</h5>
+      <span class="badge text-bg-light">辅助整理</span>
+    </div>
+    <p class="small text-muted mt-2 mb-3">只整理您主动选中的文字，不作立项判断。正式部署使用本地模型。</p>
+    <label class="form-label small" for="assistant-source">待整理文字</label>
+    <textarea class="form-control" id="assistant-source" rows="6" maxlength="6000" placeholder="可在左侧原始依据中选择并复制到这里"></textarea>
+    {% set text_suffixes = ('.txt','.md','.csv','.json','.xml','.yml','.yaml','.log') %}
+    {% set text_files = files|default([])|selectattr('originalName')|list %}
+    {% if text_files %}<div class="mt-3">
+      <div class="small fw-semibold mb-1"><i class="bi bi-paperclip me-1"></i>本次明确选用的附件（最多 3 个）</div>
+      {% for file in text_files %}{% if file.originalName.lower().endswith(text_suffixes) %}
+      <label class="form-check small"><input class="form-check-input assistant-file" type="checkbox" value="{{ file.fileId }}">{{ file.originalName }}</label>
+      {% endif %}{% endfor %}
+    </div>{% endif %}
+    {% if config.get('AI_PROVIDER') == 'DEEPSEEK' %}<div class="form-check mt-2">
+      <input class="form-check-input" type="checkbox" id="assistant-sanitized">
+      <label class="form-check-label small" for="assistant-sanitized">开发期远程调用时，我确认内容已脱敏</label>
+    </div>{% endif %}
+    <div class="d-flex gap-2 mt-3">
+      <button class="btn btn-primary btn-sm" type="button" id="assistant-generate"><i class="bi bi-magic me-1"></i>生成建议</button>
+      <button class="btn btn-outline-secondary btn-sm d-none" type="button" id="assistant-cancel"><i class="bi bi-x-circle me-1"></i>取消</button>
+    </div>
+    <div class="small mt-3" id="assistant-message" role="status" aria-live="polite"></div>
+    <div class="mt-3 d-none" id="assistant-result"></div>
+  </div>
+</aside>
+<script>
+(() => {
+  const root = document.getElementById('proposal-assistant');
+  if (!root) return;
+  const source = document.getElementById('assistant-source');
+  const message = document.getElementById('assistant-message');
+  const result = document.getElementById('assistant-result');
+  const generate = document.getElementById('assistant-generate');
+  const cancel = document.getElementById('assistant-cancel');
+  const labels = {title:'提案名称', researchProblem:'研究问题', objectives:'研究目标', researchContent:'研究内容', expectedOutcomes:'预期成果'};
+  let runId = null;
+  let controller = null;
+  let currentDraft = null;
+  const csrf = document.querySelector('input[name="_csrf_token"]')?.value || '';
+  const showMessage = (text, danger=false) => {
+    message.className = `small mt-3 ${danger ? 'text-danger' : 'text-muted'}`;
+    message.textContent = text;
+  };
+  generate.addEventListener('click', async () => {
+    if (!source.value.trim()) return showMessage('请先填写需要整理的文字。', true);
+    const sanitized = document.getElementById('assistant-sanitized');
+    if (sanitized && !sanitized.checked) return showMessage('请先确认开发期材料已脱敏。', true);
+    runId = (crypto.randomUUID ? crypto.randomUUID() : `run-${Date.now()}`);
+    controller = new AbortController();
+    generate.disabled = true; cancel.classList.remove('d-none'); result.classList.add('d-none');
+    showMessage('正在整理，您可以随时取消……');
+    try {
+      const response = await fetch(`/api/proposals/${encodeURIComponent(root.dataset.proposalId)}/assistant-drafts`, {
+        method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, signal:controller.signal,
+        body:JSON.stringify({sourceText:source.value, selectedFileIds:[...root.querySelectorAll('.assistant-file:checked')].map(item => item.value), proposalVersion:Number(root.dataset.proposalVersion), runId, remoteInputConfirmed:sanitized ? sanitized.checked : false})
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error?.message || '生成失败');
+      currentDraft = body;
+      result.innerHTML = Object.entries(labels).map(([key,label]) => {
+        const value = Array.isArray(body.content[key]) ? body.content[key].join('\n') : body.content[key];
+        return `<div class="border rounded p-2 mb-2"><label class="form-check-label w-100"><input class="form-check-input me-2 assistant-field" type="checkbox" value="${key}"><strong>${label}</strong><span class="d-block small mt-1" style="white-space:pre-wrap"></span></label></div>`;
+      }).join('') + `<div class="alert alert-light small"><strong>仍需补充</strong><ul class="mb-0" id="assistant-missing"></ul></div><button type="button" class="btn btn-success btn-sm" id="assistant-apply"><i class="bi bi-check2-circle me-1"></i>采纳所选内容</button>`;
+      Object.entries(labels).forEach(([key], index) => {
+        const value = Array.isArray(body.content[key]) ? body.content[key].join('\n') : body.content[key];
+        result.querySelectorAll('span')[index].textContent = value;
+      });
+      const missing = result.querySelector('#assistant-missing');
+      body.content.missingInformation.forEach(item => { const li=document.createElement('li'); li.textContent=item; missing.appendChild(li); });
+      result.classList.remove('d-none'); showMessage('建议已生成，只有勾选并确认的字段会写入。');
+      document.getElementById('assistant-apply').addEventListener('click', applySelected);
+    } catch (error) {
+      if (error.name !== 'AbortError') showMessage(`${error.message}，您仍可继续手工填写。`, true);
+    } finally {
+      generate.disabled = false; cancel.classList.add('d-none'); controller = null;
+    }
+  });
+  cancel.addEventListener('click', async () => {
+    controller?.abort();
+    try {
+      const response = await fetch(`/api/assistant-runs/${encodeURIComponent(runId)}/cancel`, {method:'POST', headers:{'X-CSRF-Token':csrf}});
+      const body = await response.json();
+      showMessage(body.status === 'CANCELLED' ? '已取消，本次内容不会写入提案。' : '本次生成已完成，请检查结果。');
+    } catch (_) { showMessage('取消状态暂未确认，请稍后刷新提案。', true); }
+    generate.disabled = false; cancel.classList.add('d-none');
+  });
+  async function applySelected() {
+    const fields = [...result.querySelectorAll('.assistant-field:checked')].map(item => item.value);
+    if (!fields.length) return showMessage('请至少选择一个字段。', true);
+    if (!confirm('确认用所选建议更新提案？未选择字段保持不变。')) return;
+    try {
+      const response = await fetch(`/api/proposals/${encodeURIComponent(root.dataset.proposalId)}/assistant-drafts/${encodeURIComponent(currentDraft.id)}/apply`, {
+        method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},
+        body:JSON.stringify({fields, proposalVersion:Number(root.dataset.proposalVersion)})
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) return showMessage(body.error?.message || '采纳失败，请刷新后重试。', true);
+      fields.forEach(field => {
+        const input = document.getElementById(field);
+        const value = body.proposal[field];
+        if (input && value !== undefined) input.value = value;
+      });
+      root.dataset.proposalVersion = body.proposal.version;
+      document.querySelector('input[name="version"]').value = body.proposal.version;
+      showMessage('所选内容已采纳，未选择字段保持不变。');
+    } catch (_) {
+      showMessage('网络异常，未能采纳；手工表单内容未被覆盖。', true);
+    }
+  }
+})();
+</script>

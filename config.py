@@ -20,7 +20,9 @@ SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', '').lower() in {
 PERMANENT_SESSION_LIFETIME = timedelta(minutes=30)
 SESSION_REFRESH_EACH_REQUEST = True
 
-# Security defaults. The in-process limiter resets when this single-process V1 restarts.
+# Security defaults. V1's in-process limiter and assistant cancellation registry
+# require the supported single-process run.py deployment; do not add web worker
+# processes without first moving those two states to a shared store.
 SECURITY_AUTH_ENABLED = None
 CSRF_ENABLED = None
 LOGIN_RATE_LIMIT_ATTEMPTS = 5
@@ -46,6 +48,15 @@ LLM_MAX_TOKENS = 256       # 生成最大 token 数
 # ============ LLM（AI 模型）配置 ============
 # 是否启用本地小模型推理（需手动开启，会占用约 2-3GB 内存）
 ENABLE_LLM = False
+
+# 科研提案助手。正式离线环境只允许回环地址上的本地模型。
+DEPLOYMENT_MODE = os.environ.get('DEPLOYMENT_MODE', 'DEVELOPMENT').upper()
+AI_PROVIDER = os.environ.get('AI_PROVIDER', 'DISABLED').upper()
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
+DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-v4-flash')
+LOCAL_MODEL_BASE_URL = os.environ.get('LOCAL_MODEL_BASE_URL', 'http://127.0.0.1:8000')
+LOCAL_MODEL_NAME = os.environ.get('LOCAL_MODEL_NAME', 'proposal-assistant-local')
+AI_REQUEST_TIMEOUT_SECONDS = 60
 
 # GGUF 模型所在目录
 LLM_MODEL_DIR = os.path.join(BASE_DIR, 'models')

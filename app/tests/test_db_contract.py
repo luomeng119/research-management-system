@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
 
 
-HEAD_REVISION = "0001_v1_core"
+HEAD_REVISION = "0002_proposal_assistant"
 
 CORE_TABLES = {
     "users",
@@ -467,6 +467,7 @@ def test_proposal_decision_ai_draft_and_project_category_columns_match_api_contr
             "prompt_version",
             "content",
             "accepted_fields",
+            "source_proposal_version",
         },
     }
     for table_name, required in expected_columns.items():
@@ -532,6 +533,7 @@ def test_api_contract_samples_insert_and_invalid_enums_are_rejected(runtime_engi
                         provider_kind="LOCAL",
                         model_version="local-v1",
                         prompt_version="proposal-v1",
+                        source_proposal_version=1,
                         content={
                             "title": "建议标题",
                             "researchProblem": "待解决问题",
@@ -547,6 +549,29 @@ def test_api_contract_samples_insert_and_invalid_enums_are_rejected(runtime_engi
                     .returning(drafts.c.id)
                 )
             )
+        draft_ids.append(
+            connection.scalar(
+                drafts.insert()
+                .values(
+                    proposal_id=proposal_id,
+                    status="READY",
+                    provider_kind="DEEPSEEK",
+                    model_version="deepseek-test",
+                    prompt_version="proposal-v1",
+                    source_proposal_version=1,
+                    content={
+                        "title": "开发期建议标题",
+                        "researchProblem": "待解决问题",
+                        "objectives": ["目标一"],
+                        "researchContent": ["内容一"],
+                        "expectedOutcomes": ["成果一"],
+                        "missingInformation": [],
+                    },
+                    accepted_fields=[],
+                )
+                .returning(drafts.c.id)
+            )
+        )
         for category in (
             "GENERAL_RESEARCH",
             "SECURITY_CONFIDENTIALITY",
@@ -562,12 +587,13 @@ def test_api_contract_samples_insert_and_invalid_enums_are_rejected(runtime_engi
 
     with runtime_engine.connect() as connection:
         stored = connection.execute(
-            sa.select(drafts.c.content, drafts.c.accepted_fields).where(
+            sa.select(drafts.c.content, drafts.c.accepted_fields, drafts.c.provider_kind).where(
                 drafts.c.id == draft_ids[-1]
             )
         ).one()
     assert stored.content["researchProblem"] == "待解决问题"
-    assert stored.accepted_fields == ["title", "researchProblem"]
+    assert stored.accepted_fields == []
+    assert stored.provider_kind == "DEEPSEEK"
 
     invalid_cases = (
         proposals.insert().values(
@@ -588,6 +614,7 @@ def test_api_contract_samples_insert_and_invalid_enums_are_rejected(runtime_engi
             provider_kind="LOCAL",
             model_version="invalid",
             prompt_version="invalid",
+            source_proposal_version=1,
             content={},
         ),
         drafts.insert().values(
@@ -596,6 +623,7 @@ def test_api_contract_samples_insert_and_invalid_enums_are_rejected(runtime_engi
             provider_kind="REMOTE",
             model_version="invalid",
             prompt_version="invalid",
+            source_proposal_version=1,
             content={},
         ),
     )

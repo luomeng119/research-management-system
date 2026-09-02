@@ -167,6 +167,7 @@ def edit_page(business_id: str):
                 return render_template(
                     "proposals/form.html", form=form, errors=error.fields,
                     source_types=sorted(SOURCE_TYPES), proposal=proposal,
+                    files=_files(business_id),
                 ), error.status_code
         form = {key: proposal.get(key, "") for key in (
             "title", "sourceType", "sourceSummary", "researchProblem",
@@ -175,6 +176,7 @@ def edit_page(business_id: str):
         return render_template(
             "proposals/form.html", form=form, errors={},
             source_types=sorted(SOURCE_TYPES), proposal=proposal,
+            files=_files(business_id),
         )
     except ProposalServiceError as error:
         return render_template("proposals/not_found.html", message=error.message), error.status_code

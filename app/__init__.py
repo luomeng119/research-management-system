@@ -26,6 +26,10 @@ def create_app(test_config=None):
         if "FILE_STORAGE_ROOT" not in test_config:
             app.config["FILE_STORAGE_ROOT"] = os.path.join(app.config["DATA_DIR"], "files")
 
+    from app.ai.settings import validate_assistant_settings
+
+    validate_assistant_settings(app.config)
+
     if not app.config.get("TESTING"):
         secret_key = os.environ.get("FLASK_SECRET_KEY")
         if not secret_key:
@@ -125,6 +129,37 @@ def create_app(test_config=None):
     if proposal_service is not None:
         app.extensions["proposal_service"] = proposal_service
 
+    assistant_service = app.config.get("ASSISTANT_SERVICE")
+    if assistant_service is None and engine is not None and audit_service is not None:
+        import sqlalchemy as sa
+
+        provider_kind = str(app.config.get("AI_PROVIDER", "DISABLED")).upper()
+        inspector = sa.inspect(engine)
+        if provider_kind != "DISABLED" and inspector.has_table("proposal_ai_drafts"):
+            if provider_kind == "DEEPSEEK":
+                from app.ai.deepseek import DeepSeekProposalAssistant
+
+                provider = DeepSeekProposalAssistant(
+                    api_key=app.config.get("DEEPSEEK_API_KEY"),
+                    model=app.config.get("DEEPSEEK_MODEL"),
+                )
+            else:
+                from app.ai.local_model import LocalProposalAssistant
+
+                provider = LocalProposalAssistant(
+                    base_url=app.config.get("LOCAL_MODEL_BASE_URL"),
+                    model=app.config.get("LOCAL_MODEL_NAME"),
+                )
+            from app.repositories.assistant import AssistantRepository
+            from app.services.assistant import AssistantService
+
+            assistant_service = AssistantService(
+                AssistantRepository(engine), audit_service, provider,
+                file_service=file_service,
+            )
+    if assistant_service is not None:
+        app.extensions["assistant_service"] = assistant_service
+
     if app.config.get("LOG_FILE"):
         from app.security.logging import configure_json_logging
 
@@ -141,6 +176,7 @@ def create_app(test_config=None):
     from app.routes.argumentation.template_routes import template_bp
     from app.web.files import bp as files_bp
     from app.web.proposals import bp as proposals_bp
+    from app.web.assistant import bp as assistant_bp
 
     for blueprint in (
         api.bp, auth.bp, projects.bp, equipment.bp, standards.bp, users.bp,
@@ -150,6 +186,7 @@ def create_app(test_config=None):
         research_units.bp, generic_tables_bp, generic_tables_api_bp,
         files_bp,
         proposals_bp,
+        assistant_bp,
     ):
         app.register_blueprint(blueprint)
     app.register_blueprint(argumentation_bp, url_prefix="/argumentation")

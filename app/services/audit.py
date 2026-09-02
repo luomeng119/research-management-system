@@ -33,7 +33,7 @@ EVENT_PROPERTIES = {
     "project_record_added": {"record_type", "project_status"},
     "file_operation_completed": {"operation", "file_type", "size_bucket"},
     "import_batch_completed": {"module", "valid_count", "error_count", "duplicate_count"},
-    "assistant_generation_completed": {"adapter_kind", "model_version", "prompt_version", "input_token_count", "output_token_count", "schema_valid"},
+    "assistant_generation_completed": {"adapter_kind", "model_version", "prompt_version", "input_token_count", "output_token_count", "schema_valid", "remote_input_confirmed"},
     "assistant_draft_applied": {"selected_field_count", "available_field_count"},
     "migration_batch_completed": {"source_name", "record_count", "anomaly_count"},
     "backup_restore_completed": {"operation", "object_count", "file_count", "hash_mismatch_count"},

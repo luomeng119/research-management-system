@@ -8,8 +8,8 @@ fi
 
 t02_admin_hint=${1%%\?*}
 t02_database_name=${t02_admin_hint##*/}
-if [[ ! "$t02_database_name" =~ (^|_)t0(2|3|4|5|6)($|_) ]]; then
-  echo "refusing database identifier outside the T02/T03/T04/T05/T06 contract: $t02_database_name" >&2
+if [[ ! "$t02_database_name" =~ (^|_)t0(2|3|4|5|6|7)($|_) ]]; then
+  echo "refusing database identifier outside the T02-T07 contract: $t02_database_name" >&2
   exit 65
 fi
 t03_contract=0
@@ -27,6 +27,10 @@ fi
 t06_contract=0
 if [[ "$t02_database_name" =~ (^|_)t06($|_) ]]; then
   t06_contract=1
+fi
+t07_contract=0
+if [[ "$t02_database_name" =~ (^|_)t07($|_) ]]; then
+  t07_contract=1
 fi
 
 for t02_command in initdb pg_ctl psql createdb; do
@@ -142,6 +146,36 @@ show_catalog() {
 
 "$t02_python" -m alembic -c alembic.ini upgrade head
 echo "migration roundtrip: upgrade=$(show_revision)"
+"$t02_python" -m alembic -c alembic.ini downgrade 0001_v1_core
+psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
+  -d "$t02_database" -v ON_ERROR_STOP=1 \
+  -c "INSERT INTO proposals (business_id,title,source_type,status,version) VALUES ('T07-UPGRADE-PROBE','升级探针','IDEA','DRAFT',3);" \
+  -c "INSERT INTO proposal_ai_drafts (proposal_id,status,provider_kind,model_version,prompt_version,content,accepted_fields) SELECT id,'READY','LOCAL','legacy-local','proposal-v1','{\"title\":\"探针\"}'::jsonb,'[]'::jsonb FROM proposals WHERE business_id='T07-UPGRADE-PROBE';" >/dev/null
+"$t02_python" -m alembic -c alembic.ini upgrade head
+t07_upgrade_probe=$(psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
+  -d "$t02_database" -Atc "SELECT concat(provider_kind,':',source_proposal_version) FROM proposal_ai_drafts d JOIN proposals p ON p.id=d.proposal_id WHERE p.business_id='T07-UPGRADE-PROBE'")
+if [[ "$t07_upgrade_probe" != "LOCAL:0" ]]; then
+  echo "0001 to 0002 assistant draft backfill failed: $t07_upgrade_probe" >&2
+  exit 78
+fi
+echo "migration existing-draft upgrade (unknown version is non-applicable): $t07_upgrade_probe"
+psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
+  -d "$t02_database" -v ON_ERROR_STOP=1 \
+  -c "INSERT INTO proposal_ai_drafts (proposal_id,status,provider_kind,model_version,prompt_version,source_proposal_version,content,accepted_fields) SELECT id,'READY','DEEPSEEK','migration-guard','proposal-v1',3,'{\"title\":\"远程证据\"}'::jsonb,'[]'::jsonb FROM proposals WHERE business_id='T07-UPGRADE-PROBE';" >/dev/null
+if "$t02_python" -m alembic -c alembic.ini downgrade 0001_v1_core >/dev/null 2>&1; then
+  echo "0002 downgrade silently discarded non-LOCAL assistant evidence" >&2
+  exit 79
+fi
+t07_remote_probe=$(psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
+  -d "$t02_database" -Atc "SELECT count(*) FROM proposal_ai_drafts WHERE model_version='migration-guard'")
+if [[ "$t07_remote_probe" != "1" || "$(show_revision)" != "0002_proposal_assistant" ]]; then
+  echo "0002 downgrade guard did not preserve remote evidence: count=$t07_remote_probe revision=$(show_revision)" >&2
+  exit 80
+fi
+psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
+  -d "$t02_database" -v ON_ERROR_STOP=1 \
+  -c "DELETE FROM proposal_ai_drafts WHERE model_version='migration-guard';" >/dev/null
+echo "migration lossy-downgrade guard: remote evidence preserved"
 "$t02_python" -m alembic -c alembic.ini downgrade base
 echo "migration roundtrip: downgrade=$(show_revision)"
 "$t02_python" -m alembic -c alembic.ini upgrade head
@@ -237,6 +271,11 @@ if [[ "$t06_contract" -eq 1 ]]; then
   T06_TEST_DATABASE_URL="$MIGRATION_DATABASE_URL" \
     "$t02_python" -m pytest app/tests/test_proposals.py -q \
     -k postgresql_concurrent_version_and_decision_idempotency
+fi
+if [[ "$t07_contract" -eq 1 ]]; then
+  T07_TEST_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+    "$t02_python" -m pytest app/tests/test_assistant.py -q \
+    -k postgresql_concurrent_apply_allows_exactly_one_winner
 fi
 "$t02_python" -m pytest app/tests/test_db_contract.py -q
 if [[ "$t03_contract" -eq 1 ]]; then

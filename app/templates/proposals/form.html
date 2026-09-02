@@ -8,7 +8,9 @@
     <div><a href="{{ url_for('proposals.list_page') }}" class="text-decoration-none">‹ 返回提案列表</a><h2 class="mt-2 mb-0">{{ '编辑科研提案' if proposal else '新建科研提案' }}</h2></div>
     <span class="badge text-bg-secondary">{{ status_labels.get(proposal.status, proposal.status) if proposal else '草稿' }}</span>
   </div>
-  <form method="post" novalidate>
+  <div class="row g-3 align-items-start">
+  <div class="{{ 'col-xl-8' if proposal else 'col-12' }}">
+  <form method="post" novalidate id="proposal-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
     {% if proposal %}<input type="hidden" name="version" value="{{ proposal.version }}">{% endif %}
     <div class="card p-4">
@@ -40,5 +42,8 @@
       <div class="text-end"><button class="btn btn-primary" type="submit"><i class="bi bi-save me-1"></i>保存草稿</button></div>
     </div>
   </form>
+  </div>
+  {% if proposal %}<div class="col-xl-4">{% include 'proposals/_assistant.html' %}</div>{% endif %}
+  </div>
 </div>
 {% endblock %}

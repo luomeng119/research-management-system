@@ -69,6 +69,18 @@ def _schema(engine):
         sa.Column("idempotency_key", sa.Text, nullable=False, unique=True),
     )
     sa.Table(
+        "proposal_ai_drafts", metadata, *common(),
+        sa.Column("proposal_id", sa.String(36), nullable=False),
+        sa.Column("status", sa.Text, nullable=False, server_default="READY"),
+        sa.Column("provider_kind", sa.Text, nullable=False),
+        sa.Column("model_version", sa.Text, nullable=False),
+        sa.Column("prompt_version", sa.Text, nullable=False),
+        sa.Column("source_proposal_version", sa.Integer, nullable=False),
+        sa.Column("input_hash", sa.Text),
+        sa.Column("content", sa.JSON, nullable=False),
+        sa.Column("accepted_fields", sa.JSON, nullable=False, server_default="[]"),
+    )
+    sa.Table(
         "stored_files", metadata, *common(),
         sa.Column("business_id", sa.Text, nullable=False, unique=True),
         sa.Column("original_name", sa.Text, nullable=False),
