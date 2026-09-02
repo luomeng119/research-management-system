@@ -9,3 +9,4 @@
 | T05 | 1413b6707c4541fd1fa3aaaafe13990b19de72cf | 3aa77cd3bbf9821027a39b2ccf0798f2af5e32ec | task-5-report.md | task-5-acceptance-review.md: APPROVED | completed |
 | T06 | 3d36c10cc7195a0ae8e1f9e74b8730fc7f7601f0 | 9fe317048109d521458eb1d94eeda7f3b51f88d7 | task-6-report.md | task-6-acceptance-review.md: APPROVED | completed |
 | T07 | 659beac922f265a55aeba55fe658e3fd424b9b47 | abe190b | task-7-report.md | task-7-acceptance-review.md: APPROVED | completed; local business system with optional online DeepSeek; proxy review is not human UAT |
+| T08 | 30efb28 | 825bbb0 | task-8-report.md | task-8-acceptance-review.md: APPROVED | completed; atomic establishment and legacy-compatible global project id |
