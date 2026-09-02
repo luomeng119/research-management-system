@@ -1,0 +1,242 @@
+{
+  "runAt": "2026-09-02T04:36:05.417863+00:00",
+  "datasetVersion": "proposal-assistant-eval-v1",
+  "datasetSha256": "88e8f2bb7453c2c880ece6b2c44f1f047b1ef44b81ca8bf867c145fb6d7c1893",
+  "promptVersion": "proposal-v5-grounded-sparse",
+  "records": [
+    {
+      "sampleId": "idea-01",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"高寒环境下便携供电设备续航衰减研究\",\n  \"researchProblem\": \"高寒环境下便携供电设备存在续航衰减问题。\",\n  \"objectives\": [\"找出高寒环境下便携供电设备续航衰减的主要影响因素\"],\n  \"researchContent\": [\"环境试验\"],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\"具体便携供电设备类型\", \"高寒环境的具体温度范围\", \"环境试验的具体方法或标准\", \"续航衰减的评价指标\", \"试验样本数量或来源\"]\n}",
+      "outputSha256": "19b3b59990c47f50b04710347e9a5147eed21e50f44b37440d1ed514257035df",
+      "latencySeconds": 2.814,
+      "inputTokens": 428,
+      "outputTokens": 110,
+      "error": null
+    },
+    {
+      "sampleId": "idea-02",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"两种轻量化材料在野外装备外壳上的耐冲击表现比较\",\n  \"researchProblem\": \"两种轻量化材料在野外装备外壳上的耐冲击表现需要比较\",\n  \"objectives\": [\n    \"比较两种轻量化材料在野外装备外壳上的耐冲击表现\"\n  ],\n  \"researchContent\": [\n    \"两种轻量化材料\",\n    \"野外装备外壳\"\n  ],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\n    \"两种具体轻量化材料的名称\",\n    \"耐冲击测试的具体方法或标准\",\n    \"评价指标（如冲击能量、破坏形态等）\",\n    \"野外装备外壳的具体类型或使用环境条件\"\n  ]\n}",
+      "outputSha256": "54e11d7044b326770f4e2986307e1523de94a34c3563ce5326391bc733471cc5",
+      "latencySeconds": 2.532,
+      "inputTokens": 425,
+      "outputTokens": 147,
+      "error": null
+    },
+    {
+      "sampleId": "idea-03",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"潮湿环境对传感器长期稳定性的影响研究\",\n  \"researchProblem\": \"潮湿环境对传感器长期稳定性的影响\",\n  \"objectives\": [\"探索潮湿环境对传感器长期稳定性的影响\"],\n  \"researchContent\": [\"研究潮湿环境对传感器长期稳定性的影响\"],\n  \"expectedOutcomes\": [\"形成维护建议\"],\n  \"missingInformation\": []\n}",
+      "outputSha256": "0d27df023c8ee4b59cc900c6acbab10ffb72a3d819d4d0ba413eacc58787e6f1",
+      "latencySeconds": 2.358,
+      "inputTokens": 425,
+      "outputTokens": 81,
+      "error": null
+    },
+    {
+      "sampleId": "idea-04",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"复杂地形下小型通信设备的快速部署方法研究\",\n  \"researchProblem\": \"复杂地形下小型通信设备的快速部署存在问题。\",\n  \"objectives\": [],\n  \"researchContent\": [\"研究复杂地形下小型通信设备的快速部署方法\"],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\"具体的研究对象（如设备类型）\", \"复杂地形的具体类型或特征\", \"部署速度的量化指标或评价标准\", \"当前部署方法的瓶颈或不足\", \"拟采用的研究方法或技术路线\", \"预期成果或交付物\"]\n}",
+      "outputSha256": "a55d7439d48887779fd967921daad563e7189fa1c6cf4ea20be4bc5db64693fb",
+      "latencySeconds": 2.569,
+      "inputTokens": 421,
+      "outputTokens": 123,
+      "error": null
+    },
+    {
+      "sampleId": "idea-05",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"降低便携检测装置在强振动条件下的误报率\",\n  \"researchProblem\": \"便携检测装置在强振动条件下存在误报问题。\",\n  \"objectives\": [\n    \"降低便携检测装置在强振动条件下的误报率\"\n  ],\n  \"researchContent\": [\n    \"便携检测装置在强振动条件下的误报情况\"\n  ],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\n    \"具体研究对象（便携检测装置的类型或型号）\",\n    \"强振动的具体参数（如频率、振幅、持续时间等）\",\n    \"当前误报率的具体数值或评价指标\",\n    \"降低误报率的目标值或期望降低的程度\",\n    \"用于评价误报率的数据或测试方法\",\n    \"预期形成的具体交付物（如报告、方案、改进措施等）\"\n  ]\n}",
+      "outputSha256": "3fd435ff26fd44834b0fb92b3c6e434ec5cbf858e43a5533d8a55bf48ef6bc3b",
+      "latencySeconds": 3.217,
+      "inputTokens": 423,
+      "outputTokens": 181,
+      "error": null
+    },
+    {
+      "sampleId": "meeting-01",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"\",\n  \"researchProblem\": \"低温启动问题\",\n  \"objectives\": [\"验证低温启动问题\"],\n  \"researchContent\": [\"低温启动问题\"],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\"具体研究对象\", \"低温环境条件\", \"验证方法或指标\", \"是否需开展结构改进研究的决策依据\"]\n}",
+      "outputSha256": "fecae2d55357ed721afbcc760ead25d9b9b5a259affc738db1573f1f861ab189",
+      "latencySeconds": 2.404,
+      "inputTokens": 428,
+      "outputTokens": 75,
+      "error": null
+    },
+    {
+      "sampleId": "meeting-02",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"\",\n  \"researchProblem\": \"\",\n  \"objectives\": [\"围绕数据采集延迟做小范围测试\"],\n  \"researchContent\": [\"数据采集延迟\"],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\"具体的研究背景和要解决的问题\", \"数据采集延迟测量的具体场景或环境\", \"测试的样本量或规模\", \"期望的测试指标（如延迟阈值）\", \"预期的交付物或成果形式\"]\n}",
+      "outputSha256": "fb829a213e67a3e5176939726939e9a23a85bdcd40899ba4d7413cb726dad0f1",
+      "latencySeconds": 2.072,
+      "inputTokens": 427,
+      "outputTokens": 95,
+      "error": null
+    },
+    {
+      "sampleId": "meeting-03",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"讨论现有密封方案在雨淋条件下的充足性及对比数据补充\",\n  \"researchProblem\": \"现有密封方案在雨淋条件下可能不足，需要补充对比数据。\",\n  \"objectives\": [\n    \"对比现有密封方案在雨淋条件下的性能\"\n  ],\n  \"researchContent\": [\n    \"现有密封方案\",\n    \"雨淋条件\"\n  ],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\n    \"具体的研究对象或密封方案细节\",\n    \"雨淋条件的具体参数（如雨量、持续时间）\",\n    \"对比的基线或对照组设置\",\n    \"测试或评价指标（如密封性能的量化标准）\",\n    \"所需补充的对比数据的具体类型和范围\"\n  ]\n}",
+      "outputSha256": "fc8e6dd97351db1226b027215b4497caeb070850df4b1a3d87ec0223179a8275",
+      "latencySeconds": 2.822,
+      "inputTokens": 427,
+      "outputTokens": 160,
+      "error": null
+    },
+    {
+      "sampleId": "meeting-04",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"\",\n  \"researchProblem\": \"移动平台供电波动问题\",\n  \"objectives\": [\n    \"研究移动平台供电波动\"\n  ],\n  \"researchContent\": [],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\n    \"具体移动平台类型或设备\",\n    \"供电波动的具体表现或指标\",\n    \"研究目的或期望达成的效果\",\n    \"研究对象条件或场景\"\n  ]\n}",
+      "outputSha256": "a0e9c0192b481bdc47ceacf04b0a09840322f3003ebdf6d4b55ed9621b5bfcc6",
+      "latencySeconds": 2.338,
+      "inputTokens": 425,
+      "outputTokens": 92,
+      "error": null
+    },
+    {
+      "sampleId": "meeting-05",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"\",\n  \"researchProblem\": \"\",\n  \"objectives\": [],\n  \"researchContent\": [\"整理现有故障样本\"],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\"现有故障样本的具体来源和数量\", \"故障样本的定义或分类标准\", \"可靠性研究的具体目标或范围\", \"评估可靠性研究条件的具体评价指标\"]\n}",
+      "outputSha256": "24f25ac34277dfc9dfb1cff9b724933a99fa6813634bdca1f3b594725bd4fa8e",
+      "latencySeconds": 2.179,
+      "inputTokens": 426,
+      "outputTokens": 76,
+      "error": null
+    },
+    {
+      "sampleId": "material-01",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\"title\":\"\",\"researchProblem\":\"\",\"objectives\":[],\"researchContent\":[\"样机完成三次常温运行\",\"记录功耗和温升\"],\"expectedOutcomes\":[],\"missingInformation\":[\"具体研究对象或样机名称\",\"低温环境条件或温度范围\",\"测试或评价指标（如功耗和温升的具体测量标准）\",\"低温试验数据或计划\",\"预期交付物或成果形式\"]}",
+      "outputSha256": "3267e935ea1e2ada1a601e332b3f8d4553cf6972017f99dc43f60d4f129330eb",
+      "latencySeconds": 2.3,
+      "inputTokens": 431,
+      "outputTokens": 84,
+      "error": null
+    },
+    {
+      "sampleId": "material-02",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"\",\n  \"researchProblem\": \"\",\n  \"objectives\": [],\n  \"researchContent\": [\n    \"两种涂层的盐雾测试记录\"\n  ],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\n    \"具体涂层材料名称\",\n    \"样品批次是否一致\",\n    \"盐雾测试的持续时间\",\n    \"盐雾测试的评判标准或指标\",\n    \"测试环境条件（如盐雾浓度、温度）\",\n    \"预期交付物（如报告、数据总结）\"\n  ]\n}",
+      "outputSha256": "83b5cda11f4695623a0deb6f2ea1dab556cc870a261cb4676e4c946035cfba08",
+      "latencySeconds": 2.324,
+      "inputTokens": 428,
+      "outputTokens": 112,
+      "error": null
+    },
+    {
+      "sampleId": "material-03",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"\",\n  \"researchProblem\": \"故障统计表记录了十起断连现象，其中六起发生在设备移动过程中。\",\n  \"objectives\": [],\n  \"researchContent\": [],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\"具体研究对象（设备类型、连接类型）\", \"设备移动的具体场景或环境条件\", \"断连的定义或判断标准\", \"其他四起断连的发生背景\", \"是否需进一步分析断连原因\"]\n}",
+      "outputSha256": "f4793a0450a9c97e61a5f7342a55ba155c4be5d5bef218c60dc1a69770a74448",
+      "latencySeconds": 2.184,
+      "inputTokens": 428,
+      "outputTokens": 102,
+      "error": null
+    },
+    {
+      "sampleId": "material-04",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"调研报告汇总三类部署方式和用时\",\n  \"researchProblem\": \"已有调研报告汇总三类部署方式和用时，没有记录人员配置。\",\n  \"objectives\": [],\n  \"researchContent\": [\n    \"汇总三类部署方式\",\n    \"汇总用时\"\n  ],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\n    \"三类部署方式的具体名称或定义\",\n    \"各类部署方式的具体用时数据\",\n    \"部署方式的应用场景或环境条件\",\n    \"调研报告的时间范围或数据来源\",\n    \"是否有比较或分析各类部署方式的差异\",\n    \"预期交付物（如报告、建议等）\"\n  ]\n}",
+      "outputSha256": "5b0ec46604c7d524be3143a9d2a40255ddfda78757e7d1c09257f61222ff3a27",
+      "latencySeconds": 2.514,
+      "inputTokens": 424,
+      "outputTokens": 140,
+      "error": null
+    },
+    {
+      "sampleId": "material-05",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"五台设备中一台出现温度漂移的检测记录\",\n  \"researchProblem\": \"五台设备中一台出现温度漂移，尚未复测。\",\n  \"objectives\": [],\n  \"researchContent\": [\"五台设备的检测记录\", \"温度漂移现象\"],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\"具体哪台设备出现温度漂移\", \"温度漂移的具体数值或范围\", \"检测环境条件\", \"设备正常工作温度范围\", \"复测计划或已复测结果\", \"设备类型或型号\"]\n}",
+      "outputSha256": "1df821c36963c7d22f220a20c72153f21f66f3724753ebab3c69e3f578314baf",
+      "latencySeconds": 2.448,
+      "inputTokens": 427,
+      "outputTokens": 123,
+      "error": null
+    },
+    {
+      "sampleId": "insufficient-01",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"新材料研究\",\n  \"researchProblem\": \"\",\n  \"objectives\": [],\n  \"researchContent\": [],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\n    \"具体的新材料类型或名称\",\n    \"研究的具体方向或目标\",\n    \"要解决的问题或现象\",\n    \"预期的研究成果或交付物\"\n  ]\n}",
+      "outputSha256": "b0792b4bcae126d2fef826eb79fd868f6e735c57c3d166948693d146b5bfdb20",
+      "latencySeconds": 2.134,
+      "inputTokens": 414,
+      "outputTokens": 75,
+      "error": null
+    },
+    {
+      "sampleId": "insufficient-02",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"\",\n  \"researchProblem\": \"设备有时候不好用。\",\n  \"objectives\": [],\n  \"researchContent\": [],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\"设备的具体名称或类型\", \"设备不好用的具体表现\", \"问题发生的频率或场景\", \"是否有对比基线或评价指标\", \"期望的改进方向或交付物\"]\n}",
+      "outputSha256": "b817fafb973b82a952d9ad5428700ae1d80ce057c0f917fba320174f0637ad3a",
+      "latencySeconds": 2.118,
+      "inputTokens": 415,
+      "outputTokens": 81,
+      "error": null
+    },
+    {
+      "sampleId": "insufficient-03",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"\",\n  \"researchProblem\": \"\",\n  \"objectives\": [],\n  \"researchContent\": [],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\n    \"具体研究方向或主题\"\n  ]\n}",
+      "outputSha256": "d61ff2077585fe1482dbb0c70557c4761b89e1ad1d54e378cf6351b6bdfa3db5",
+      "latencySeconds": 2.083,
+      "inputTokens": 418,
+      "outputTokens": 47,
+      "error": null
+    },
+    {
+      "sampleId": "insufficient-04",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"\",\n  \"researchProblem\": \"\",\n  \"objectives\": [],\n  \"researchContent\": [],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\"具体研究对象\", \"具体研究内容\", \"预期交付物\"]\n}",
+      "outputSha256": "022492b3b6e5b584849dfc93213d5356417818bf648a8f334e47ab005719d2be",
+      "latencySeconds": 2.398,
+      "inputTokens": 417,
+      "outputTokens": 51,
+      "error": null
+    },
+    {
+      "sampleId": "insufficient-05",
+      "providerKind": "DEEPSEEK",
+      "modelVersion": "deepseek-v4-flash",
+      "rawOutput": "{\n  \"title\": \"\",\n  \"researchProblem\": \"\",\n  \"objectives\": [],\n  \"researchContent\": [],\n  \"expectedOutcomes\": [],\n  \"missingInformation\": [\"具体研究对象\", \"具体研究问题或现象\", \"研究目的或目标\", \"研究内容或方法\", \"预期成果或交付物\"]\n}",
+      "outputSha256": "5f13475924943177aeadd224d0a5159dad1275d76d5ff8e4aa6ac0559e3b8d4f",
+      "latencySeconds": 2.066,
+      "inputTokens": 415,
+      "outputTokens": 67,
+      "error": null
+    }
+  ],
+  "report": {
+    "datasetVersion": "proposal-assistant-eval-v1",
+    "datasetSha256": "88e8f2bb7453c2c880ece6b2c44f1f047b1ef44b81ca8bf867c145fb6d7c1893",
+    "sampleCount": 20,
+    "status": "PENDING_HUMAN_REVIEW",
+    "automatic": {
+      "schemaValid": 20,
+      "forbiddenAbsent": 20,
+      "p95LatencySeconds": 2.822,
+      "hardTimeoutObserved": 3.217,
+      "tokenLimitsOk": true,
+      "outputHashesOk": true
+    }
+  }
+}

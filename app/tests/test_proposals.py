@@ -177,6 +177,14 @@ def test_validation_reports_fields_without_writing(service, engine):
     assert set(captured.value.fields) == {"title", "sourceType"}
     assert _rows(engine, "proposals") == []
 
+    for marker in ("\u200b\ufeff", "\ufe0f", "\u034f"):
+        invisible = {**SOURCE, "title": marker}
+        with pytest.raises(ProposalServiceError) as invisible_error:
+            service.create(invisible, actor_user_id=7, request_id="req-invisible")
+        assert invisible_error.value.code == "VALIDATION_ERROR"
+        assert "title" in invisible_error.value.fields
+        assert _rows(engine, "proposals") == []
+
     with pytest.raises(ProposalServiceError) as oversized:
         _create(service, researchContent="x" * 50_001)
     assert oversized.value.code == "VALIDATION_ERROR"

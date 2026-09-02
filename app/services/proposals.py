@@ -5,6 +5,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 from app.repositories.base import OptimisticLockConflict
+from app.text import has_meaningful_text, normalize_text
 
 
 SOURCE_TYPES = frozenset(
@@ -127,14 +128,14 @@ def _validate_body(payload: dict, *, merged: dict | None = None) -> dict:
     for external, internal in BODY_FIELDS.items():
         if external in payload:
             raw = payload.get(external)
-            values[internal] = raw.strip() if isinstance(raw, str) else raw
+            values[internal] = normalize_text(raw) if isinstance(raw, str) else raw
     errors: dict[str, str] = {}
     for external, internal in BODY_FIELDS.items():
         value = values.get(internal)
         if external == "sourceType":
             if value not in SOURCE_TYPES:
                 errors[external] = FIELD_MESSAGES[external]
-        elif not isinstance(value, str) or not value.strip():
+        elif not has_meaningful_text(value):
             errors[external] = FIELD_MESSAGES[external]
     if isinstance(values.get("title"), str) and len(values["title"]) > 200:
         errors["title"] = "提案名称不能超过 200 个字符"

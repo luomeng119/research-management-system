@@ -42,12 +42,13 @@
   let controller = null;
   let currentDraft = null;
   const csrf = document.querySelector('input[name="_csrf_token"]')?.value || '';
+  const hasMeaningfulText = value => /[\p{L}\p{N}\p{P}\p{S}]/u.test(String(value).normalize('NFKC'));
   const showMessage = (text, danger=false) => {
     message.className = `small mt-3 ${danger ? 'text-danger' : 'text-muted'}`;
     message.textContent = text;
   };
   generate.addEventListener('click', async () => {
-    if (!source.value.trim()) return showMessage('请先填写需要整理的文字。', true);
+    if (!hasMeaningfulText(source.value)) return showMessage('请先填写需要整理的文字。', true);
     const sanitized = document.getElementById('assistant-sanitized');
     if (sanitized && !sanitized.checked) return showMessage('请先确认开发期材料已脱敏。', true);
     runId = (crypto.randomUUID ? crypto.randomUUID() : `run-${Date.now()}`);
@@ -64,11 +65,12 @@
       currentDraft = body;
       result.innerHTML = Object.entries(labels).map(([key,label]) => {
         const value = Array.isArray(body.content[key]) ? body.content[key].join('\n') : body.content[key];
-        return `<div class="border rounded p-2 mb-2"><label class="form-check-label w-100"><input class="form-check-input me-2 assistant-field" type="checkbox" value="${key}"><strong>${label}</strong><span class="d-block small mt-1" style="white-space:pre-wrap"></span></label></div>`;
+        const empty = !hasMeaningfulText(value);
+        return `<div class="border rounded p-2 mb-2"><label class="form-check-label w-100"><input class="form-check-input me-2 assistant-field" type="checkbox" value="${key}" ${empty ? 'disabled' : ''}><strong>${label}</strong><span class="d-block small mt-1" style="white-space:pre-wrap"></span></label></div>`;
       }).join('') + `<div class="alert alert-light small"><strong>仍需补充</strong><ul class="mb-0" id="assistant-missing"></ul></div><button type="button" class="btn btn-success btn-sm" id="assistant-apply"><i class="bi bi-check2-circle me-1"></i>采纳所选内容</button>`;
       Object.entries(labels).forEach(([key], index) => {
         const value = Array.isArray(body.content[key]) ? body.content[key].join('\n') : body.content[key];
-        result.querySelectorAll('span')[index].textContent = value;
+        result.querySelectorAll('span')[index].textContent = value || '信息不足，暂无可采纳建议';
       });
       const missing = result.querySelector('#assistant-missing');
       body.content.missingInformation.forEach(item => { const li=document.createElement('li'); li.textContent=item; missing.appendChild(li); });

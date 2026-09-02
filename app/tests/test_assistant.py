@@ -4,6 +4,9 @@ import json
 import threading
 import io
 import os
+from pathlib import Path
+import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -53,6 +56,20 @@ VALID = {
 }
 
 
+def test_eval_script_direct_entrypoint_loads_project_package():
+    project_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "scripts/run_assistant_eval.py", "--help"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Run the frozen proposal assistant evaluation" in result.stdout
+
+
 def test_strict_contract_accepts_only_exact_plain_json_object():
     parsed = parse_assistant_content(json.dumps(VALID, ensure_ascii=False))
     assert parsed == VALID
@@ -62,8 +79,7 @@ def test_strict_contract_accepts_only_exact_plain_json_object():
         "```json\n" + json.dumps(VALID, ensure_ascii=False) + "\n```",
         json.dumps({**VALID, "decision": "ESTABLISH"}, ensure_ascii=False),
         json.dumps({**VALID, "objectives": "形成方案"}, ensure_ascii=False),
-        json.dumps({**VALID, "title": ""}, ensure_ascii=False),
-        json.dumps({**VALID, "objectives": []}, ensure_ascii=False),
+        json.dumps({**VALID, "title": None}, ensure_ascii=False),
         "[]",
         '{"title":"一","title":"二","researchProblem":"问题","objectives":["目标"],"researchContent":["内容"],"expectedOutcomes":["成果"],"missingInformation":[]}',
     ]
@@ -82,6 +98,17 @@ def test_contract_rejects_oversized_or_non_string_items():
         parse_assistant_content(
             json.dumps({**VALID, "researchContent": ["内容"] * 21})
         )
+
+
+def test_contract_accepts_sparse_truthful_draft_only_with_missing_information():
+    sparse = {
+        "title": "", "researchProblem": "", "objectives": [],
+        "researchContent": [], "expectedOutcomes": [],
+        "missingInformation": ["研究对象", "目标指标"],
+    }
+    assert parse_assistant_content(json.dumps(sparse, ensure_ascii=False)) == sparse
+    with pytest.raises(AssistantContractError, match="缺失信息"):
+        parse_assistant_content(json.dumps({**sparse, "missingInformation": []}))
 
 
 def test_fixed_eval_dataset_is_versioned_balanced_and_hash_stable():
@@ -181,6 +208,7 @@ def test_deepseek_adapter_uses_one_fixed_json_request_without_retry():
     assert headers["Authorization"] == "Bearer secret"
     assert payload["model"] == "deepseek-test"
     assert payload["response_format"] == {"type": "json_object"}
+    assert payload["thinking"] == {"type": "disabled"}
     assert payload["max_tokens"] == 2000
     assert timeout == 60
     assert "必须只返回" in payload["messages"][0]["content"]
@@ -431,6 +459,109 @@ def test_apply_is_atomic_selected_only_and_old_draft_cannot_overwrite(engine, se
             proposal_version=3, actor_user_id=7, request_id="req-legacy-apply",
         )
     assert legacy.value.code == "VERSION_CONFLICT"
+
+
+def test_sparse_draft_empty_field_cannot_be_applied(engine, service):
+    created = service.create(
+        {
+            "title": "原题目", "sourceType": "IDEA", "sourceSummary": "原始设想",
+            "researchProblem": "原问题", "objectives": "原目标",
+            "researchContent": "原内容", "expectedOutcomes": "原成果",
+        }, actor_user_id=7, request_id="req-create",
+    )
+    sparse = {
+        "title": "", "researchProblem": "", "objectives": [],
+        "researchContent": [], "expectedOutcomes": [],
+        "missingInformation": ["研究对象", "目标指标"],
+    }
+    assistant = _assistant_service(
+        engine, service.audit_service,
+        FakeProvider(raw=json.dumps(sparse, ensure_ascii=False)),
+    )
+    draft = assistant.generate(
+        created["businessId"], source_text="研究一下新材料",
+        selected_file_ids=[], proposal_version=1, run_id="run-sparse",
+        actor_user_id=7, request_id="req-sparse",
+    )
+    with pytest.raises(AssistantServiceError) as captured:
+        assistant.apply(
+            created["businessId"], draft["id"], fields=["title"],
+            proposal_version=1, actor_user_id=7, request_id="req-empty-apply",
+        )
+    assert captured.value.code == "AI_FIELD_EMPTY"
+    assert service.get(created["businessId"])["title"] == "原题目"
+
+
+def test_invisible_only_content_is_not_meaningful(engine, service):
+    invisible = {
+        "title": "\u200b", "researchProblem": "\ufeff", "objectives": [],
+        "researchContent": [], "expectedOutcomes": [], "missingInformation": [],
+    }
+    with pytest.raises(AssistantContractError) as missing:
+        parse_assistant_content(json.dumps(invisible, ensure_ascii=False))
+    assert "缺失信息" in str(missing.value)
+
+    invalid_item = {
+        **invisible,
+        "objectives": ["\u200b"],
+        "missingInformation": ["研究目标"],
+    }
+    with pytest.raises(AssistantContractError) as item:
+        parse_assistant_content(json.dumps(invalid_item, ensure_ascii=False))
+    assert "objectives 包含无效条目" in str(item.value)
+
+    created = service.create(
+        {
+            "title": "原题目", "sourceType": "IDEA", "sourceSummary": "原始设想",
+            "researchProblem": "原问题", "objectives": "原目标",
+            "researchContent": "原内容", "expectedOutcomes": "原成果",
+        }, actor_user_id=7, request_id="req-invisible-create",
+    )
+    assistant = _assistant_service(
+        engine, service.audit_service,
+        FakeProvider(raw=json.dumps({
+            **invisible,
+            "missingInformation": ["研究对象", "研究问题", "研究目标", "研究内容", "预期成果"],
+        }, ensure_ascii=False)),
+    )
+    draft = assistant.generate(
+        created["businessId"], source_text="研究新材料",
+        selected_file_ids=[], proposal_version=1, run_id="run-invisible",
+        actor_user_id=7, request_id="req-invisible-generate",
+    )
+    with pytest.raises(AssistantServiceError) as apply_error:
+        assistant.apply(
+            created["businessId"], draft["id"], fields=["title"],
+            proposal_version=1, actor_user_id=7, request_id="req-invisible-apply",
+        )
+    assert apply_error.value.code == "AI_FIELD_EMPTY"
+
+
+@pytest.mark.parametrize("invisible", ["\ufe0f", "\u034f"])
+def test_mark_only_content_is_not_meaningful(invisible):
+    content = {
+        "title": invisible,
+        "researchProblem": invisible,
+        "objectives": [invisible],
+        "researchContent": [],
+        "expectedOutcomes": [],
+        "missingInformation": [],
+    }
+    with pytest.raises(AssistantContractError):
+        parse_assistant_content(json.dumps(content, ensure_ascii=False))
+
+
+def test_missing_information_has_six_item_limit():
+    content = {
+        "title": "", "researchProblem": "", "objectives": [],
+        "researchContent": [], "expectedOutcomes": [],
+        "missingInformation": [f"缺失项{i}" for i in range(6)],
+    }
+    assert len(parse_assistant_content(json.dumps(content, ensure_ascii=False))["missingInformation"]) == 6
+    content["missingInformation"].append("缺失项6")
+    with pytest.raises(AssistantContractError) as captured:
+        parse_assistant_content(json.dumps(content, ensure_ascii=False))
+    assert "受限数组" in str(captured.value)
 
 
 def test_deepseek_requires_server_side_sanitization_confirmation(engine, service):

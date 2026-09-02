@@ -17,6 +17,7 @@ from app.ai.contract import (
 from app.repositories.base import OptimisticLockConflict
 from app.services.proposals import BODY_FIELDS, _proposal, _validate_body
 from app.services.files import FileServiceError
+from app.text import has_meaningful_text
 
 
 APPLY_FIELDS = frozenset(
@@ -431,6 +432,15 @@ class AssistantService:
             external_values = {}
             for field in fields:
                 value = draft["content"][field]
+                if (
+                    (isinstance(value, list) and (
+                        not value or any(not has_meaningful_text(item) for item in value)
+                    ))
+                    or (isinstance(value, str) and not has_meaningful_text(value))
+                ):
+                    raise AssistantServiceError(
+                        "AI_FIELD_EMPTY", "空建议不可采纳，请先补充材料", 422
+                    )
                 external_values[field] = "\n".join(value) if field in ARRAY_APPLY_FIELDS else value
             validated = _validate_body(external_values, merged=dict(proposal))
             update_values = {

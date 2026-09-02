@@ -6,9 +6,16 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 import time
 
+# Support the documented direct entrypoint from the repository root.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from app.ai.deepseek import DeepSeekProposalAssistant
+from app.ai.contract import PROMPT_VERSION
 from app.tests.ai_eval.dataset import DATASET_SHA256, DATASET_VERSION, load_samples
 from app.tests.ai_eval.scorer import evaluate
 
@@ -50,7 +57,7 @@ def main() -> int:
         "runAt": datetime.now(timezone.utc).isoformat(),
         "datasetVersion": DATASET_VERSION,
         "datasetSha256": DATASET_SHA256,
-        "promptVersion": "proposal-v1",
+        "promptVersion": PROMPT_VERSION,
         "records": records,
         "report": evaluate(records),
     }

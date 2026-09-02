@@ -25,6 +25,10 @@ class DeepSeekProposalAssistant:
             "model": self.model_version,
             "messages": build_messages(source_text),
             "response_format": {"type": "json_object"},
+            # V4 enables high-effort thinking by default. This bounded
+            # extraction task needs the JSON answer, not hidden reasoning that
+            # can consume the entire 2,000-token output budget.
+            "thinking": {"type": "disabled"},
             "max_tokens": 2000,
             "stream": False,
         }
