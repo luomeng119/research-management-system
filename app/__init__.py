@@ -137,28 +137,30 @@ def create_app(test_config=None):
         inspector = sa.inspect(engine)
         if provider_kind != "DISABLED" and inspector.has_table("proposal_ai_drafts"):
             if provider_kind == "DEEPSEEK":
-                from app.ai.deepseek import DeepSeekProposalAssistant
+                api_key = app.config.get("DEEPSEEK_API_KEY")
+                model = app.config.get("DEEPSEEK_MODEL")
+                if api_key and model:
+                    from app.ai.deepseek import DeepSeekProposalAssistant
 
-                provider = DeepSeekProposalAssistant(
-                    api_key=app.config.get("DEEPSEEK_API_KEY"),
-                    model=app.config.get("DEEPSEEK_MODEL"),
-                )
+                    provider = DeepSeekProposalAssistant(
+                        api_key=api_key,
+                        model=model,
+                    )
+                else:
+                    provider = None
             else:
-                from app.ai.local_model import LocalProposalAssistant
+                provider = None
+            if provider is not None:
+                from app.repositories.assistant import AssistantRepository
+                from app.services.assistant import AssistantService
 
-                provider = LocalProposalAssistant(
-                    base_url=app.config.get("LOCAL_MODEL_BASE_URL"),
-                    model=app.config.get("LOCAL_MODEL_NAME"),
+                assistant_service = AssistantService(
+                    AssistantRepository(engine), audit_service, provider,
+                    file_service=file_service,
                 )
-            from app.repositories.assistant import AssistantRepository
-            from app.services.assistant import AssistantService
-
-            assistant_service = AssistantService(
-                AssistantRepository(engine), audit_service, provider,
-                file_service=file_service,
-            )
     if assistant_service is not None:
         app.extensions["assistant_service"] = assistant_service
+    app.config["AI_ASSISTANT_AVAILABLE"] = assistant_service is not None
 
     if app.config.get("LOG_FILE"):
         from app.security.logging import configure_json_logging

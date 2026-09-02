@@ -15,9 +15,33 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.ai.deepseek import DeepSeekProposalAssistant
-from app.ai.contract import PROMPT_VERSION
+from app.ai.contract import PROMPT_VERSION, finalize_assistant_content
 from app.tests.ai_eval.dataset import DATASET_SHA256, DATASET_VERSION, load_samples
 from app.tests.ai_eval.scorer import evaluate
+
+
+def _build_evaluation_record(
+    *, sample_id: str, provider_raw: str, finalized: str, model: str,
+    metadata: dict, latency_seconds: float, error: dict | None,
+    provider_output_available: bool = True,
+) -> dict:
+    return {
+        "sampleId": sample_id,
+        "providerKind": "DEEPSEEK",
+        "modelVersion": metadata.get("model") or model,
+        "providerRawOutput": provider_raw if provider_output_available else None,
+        "providerRawOutputAvailable": provider_output_available,
+        "providerOutputSha256": (
+            hashlib.sha256(provider_raw.encode("utf-8")).hexdigest()
+            if provider_output_available else None
+        ),
+        "finalizedOutput": finalized,
+        "finalizedOutputSha256": hashlib.sha256(finalized.encode("utf-8")).hexdigest(),
+        "latencySeconds": round(latency_seconds, 3),
+        "inputTokens": metadata.get("inputTokens"),
+        "outputTokens": metadata.get("outputTokens"),
+        "error": error,
+    }
 
 
 def main() -> int:
@@ -34,25 +58,28 @@ def main() -> int:
     for sample in load_samples():
         started = time.monotonic()
         raw = ""
+        provider_raw = ""
         error = None
+        provider_output_available = False
         try:
-            raw = provider.generate(
+            provider_raw = provider.generate(
                 sample["input"], deadline_seconds=60, cancel_check=lambda: False
+            )
+            provider_output_available = True
+            raw = json.dumps(
+                finalize_assistant_content(sample["input"], provider_raw),
+                ensure_ascii=False,
+                separators=(",", ":"),
             )
         except Exception as caught:
             error = {"type": type(caught).__name__, "message": str(caught)[:160]}
         metadata = dict(provider.last_metadata)
-        records.append({
-            "sampleId": sample["id"],
-            "providerKind": "DEEPSEEK",
-            "modelVersion": metadata.get("model") or args.model,
-            "rawOutput": raw,
-            "outputSha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
-            "latencySeconds": round(time.monotonic() - started, 3),
-            "inputTokens": metadata.get("inputTokens"),
-            "outputTokens": metadata.get("outputTokens"),
-            "error": error,
-        })
+        records.append(_build_evaluation_record(
+            sample_id=sample["id"], provider_raw=provider_raw, finalized=raw,
+            model=args.model, metadata=metadata,
+            latency_seconds=time.monotonic() - started, error=error,
+            provider_output_available=provider_output_available,
+        ))
     result = {
         "runAt": datetime.now(timezone.utc).isoformat(),
         "datasetVersion": DATASET_VERSION,

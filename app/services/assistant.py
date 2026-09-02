@@ -12,7 +12,7 @@ from pathlib import Path
 
 from app.ai.contract import (
     AssistantContractError, PROMPT_VERSION, build_messages,
-    parse_assistant_content,
+    finalize_assistant_content,
 )
 from app.repositories.base import OptimisticLockConflict
 from app.services.proposals import BODY_FIELDS, _proposal, _validate_body
@@ -293,7 +293,10 @@ class AssistantService:
             )
             if self.run_registry.is_cancelled(run_id):
                 raise AssistantServiceError("AI_CANCELLED", "助手运行已取消", 409)
-            content = parse_assistant_content(raw)
+            # Attachment text may contain quoted or hostile instructions.
+            # Deterministic completion therefore inspects only the explicit
+            # text box; the full model output still passes strict parsing.
+            content = finalize_assistant_content(source_text, raw)
             now = datetime.now(timezone.utc)
             draft_id = uuid.uuid4()
             with self.run_registry.completing(run_id):

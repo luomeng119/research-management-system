@@ -29,6 +29,7 @@ class DeepSeekProposalAssistant:
             # extraction task needs the JSON answer, not hidden reasoning that
             # can consume the entire 2,000-token output budget.
             "thinking": {"type": "disabled"},
+            "temperature": 0,
             "max_tokens": 2000,
             "stream": False,
         }

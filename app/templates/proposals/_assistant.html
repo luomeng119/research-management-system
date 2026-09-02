@@ -5,7 +5,8 @@
       <h5 class="mb-0"><i class="bi bi-stars me-2 text-primary"></i>科研提案助手</h5>
       <span class="badge text-bg-light">辅助整理</span>
     </div>
-    <p class="small text-muted mt-2 mb-3">只整理您主动选中的文字，不作立项判断。正式部署使用本地模型。</p>
+    <p class="small text-muted mt-2 mb-3">系统本地部署；AI 是可选的在线整理服务，不作立项判断，断网时不影响手工业务。</p>
+    {% if not config.get('AI_ASSISTANT_AVAILABLE') %}<div class="alert alert-light small py-2">当前未连接 AI，您仍可正常手工填写和保存。</div>{% endif %}
     <label class="form-label small" for="assistant-source">待整理文字</label>
     <textarea class="form-control" id="assistant-source" rows="6" maxlength="6000" placeholder="可在左侧原始依据中选择并复制到这里"></textarea>
     {% set text_suffixes = ('.txt','.md','.csv','.json','.xml','.yml','.yaml','.log') %}
@@ -16,12 +17,12 @@
       <label class="form-check small"><input class="form-check-input assistant-file" type="checkbox" value="{{ file.fileId }}">{{ file.originalName }}</label>
       {% endif %}{% endfor %}
     </div>{% endif %}
-    {% if config.get('AI_PROVIDER') == 'DEEPSEEK' %}<div class="form-check mt-2">
+    {% if config.get('AI_ASSISTANT_AVAILABLE') and config.get('AI_PROVIDER') == 'DEEPSEEK' %}<div class="form-check mt-2">
       <input class="form-check-input" type="checkbox" id="assistant-sanitized">
-      <label class="form-check-label small" for="assistant-sanitized">开发期远程调用时，我确认内容已脱敏</label>
+      <label class="form-check-label small" for="assistant-sanitized">我确认本次输入文字和勾选附件允许发送，且已完成必要脱敏</label>
     </div>{% endif %}
     <div class="d-flex gap-2 mt-3">
-      <button class="btn btn-primary btn-sm" type="button" id="assistant-generate"><i class="bi bi-magic me-1"></i>生成建议</button>
+      <button class="btn btn-primary btn-sm" type="button" id="assistant-generate" {% if not config.get('AI_ASSISTANT_AVAILABLE') %}disabled{% endif %}><i class="bi bi-magic me-1"></i>生成建议</button>
       <button class="btn btn-outline-secondary btn-sm d-none" type="button" id="assistant-cancel"><i class="bi bi-x-circle me-1"></i>取消</button>
     </div>
     <div class="small mt-3" id="assistant-message" role="status" aria-live="polite"></div>
@@ -50,7 +51,7 @@
   generate.addEventListener('click', async () => {
     if (!hasMeaningfulText(source.value)) return showMessage('请先填写需要整理的文字。', true);
     const sanitized = document.getElementById('assistant-sanitized');
-    if (sanitized && !sanitized.checked) return showMessage('请先确认开发期材料已脱敏。', true);
+    if (sanitized && !sanitized.checked) return showMessage('请先确认本次材料允许发送且已完成必要脱敏。', true);
     runId = (crypto.randomUUID ? crypto.randomUUID() : `run-${Date.now()}`);
     controller = new AbortController();
     generate.disabled = true; cancel.classList.remove('d-none'); result.classList.add('d-none');

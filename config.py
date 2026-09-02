@@ -49,14 +49,11 @@ LLM_MAX_TOKENS = 256       # 生成最大 token 数
 # 是否启用本地小模型推理（需手动开启，会占用约 2-3GB 内存）
 ENABLE_LLM = False
 
-# 科研提案助手。正式离线环境只允许回环地址上的本地模型。
+# 科研提案助手。业务系统本地部署；V1 的 AI 是可选在线能力，未配置或断网不影响核心业务。
 DEPLOYMENT_MODE = os.environ.get('DEPLOYMENT_MODE', 'DEVELOPMENT').upper()
 AI_PROVIDER = os.environ.get('AI_PROVIDER', 'DISABLED').upper()
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-v4-flash')
-LOCAL_MODEL_BASE_URL = os.environ.get('LOCAL_MODEL_BASE_URL', 'http://127.0.0.1:8000')
-LOCAL_MODEL_NAME = os.environ.get('LOCAL_MODEL_NAME', 'proposal-assistant-local')
-AI_REQUEST_TIMEOUT_SECONDS = 60
 
 # GGUF 模型所在目录
 LLM_MODEL_DIR = os.path.join(BASE_DIR, 'models')
