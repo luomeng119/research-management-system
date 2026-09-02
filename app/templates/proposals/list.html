@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}科研提案{% endblock %}
+{% block content %}
+{% set source_labels = {'IDEA':'想法','CREATIVE':'创意','MEETING_CONCLUSION':'会议结论','FINISHED_MATERIAL':'成品材料','OTHER':'其他'} %}
+{% set status_labels = {'DRAFT':'草稿','ARGUMENTATION':'论证中','ESTABLISHED':'已立项','DEFERRED':'已暂缓','REJECTED':'不立项'} %}
+<div class="container-fluid py-3">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div><h2 class="mb-1">科研提案</h2><p class="text-muted mb-0">把想法、创意或已有材料整理为可论证的科研提案</p></div>
+    <a class="btn btn-primary" href="{{ url_for('proposals.new_page') }}"><i class="bi bi-plus-lg me-1"></i>新建提案</a>
+  </div>
+  {% if page_error %}<div class="alert alert-danger">{{ page_error }}</div>{% endif %}
+  <div class="card p-3">
+    {% if result['items'] %}
+    <div class="table-responsive"><table class="table align-middle"><thead><tr><th>提案编号</th><th>提案名称</th><th>来源</th><th>状态</th><th>更新时间</th></tr></thead><tbody>
+      {% for item in result['items'] %}<tr><td>{{ item.businessId }}</td><td><a href="{{ url_for('proposals.detail_page', business_id=item.businessId) }}">{{ item.title }}</a></td><td>{{ source_labels.get(item.sourceType, item.sourceType) }}</td><td><span class="badge text-bg-light border">{{ status_labels.get(item.status, item.status) }}</span></td><td>{{ item.updatedAt }}</td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="d-flex justify-content-between align-items-center">
+      <div class="text-muted small">共 {{ result.total }} 条</div>
+      {% if result.page > 1 or result.page * result.pageSize < result.total %}
+      <nav class="d-flex gap-2" aria-label="提案列表分页">
+        {% if result.page > 1 %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('proposals.list_page', page=result.page - 1, pageSize=result.pageSize, status=request.args.get('status'), sourceType=request.args.get('sourceType'), keyword=request.args.get('keyword'), updatedAfter=request.args.get('updatedAfter')) }}">上一页</a>{% endif %}
+        {% if result.page * result.pageSize < result.total %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('proposals.list_page', page=result.page + 1, pageSize=result.pageSize, status=request.args.get('status'), sourceType=request.args.get('sourceType'), keyword=request.args.get('keyword'), updatedAfter=request.args.get('updatedAfter')) }}">下一页</a>{% endif %}
+      </nav>
+      {% endif %}
+    </div>
+    {% else %}<div class="empty-state"><i class="bi bi-lightbulb"></i><h5>尚无科研提案</h5><a href="{{ url_for('proposals.new_page') }}" class="btn btn-outline-primary">新建提案</a></div>{% endif %}
+  </div>
+</div>
+{% endblock %}

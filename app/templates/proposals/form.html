@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ '编辑科研提案' if proposal else '新建科研提案' }}{% endblock %}
+{% block content %}
+{% set source_labels = {'IDEA':'想法','CREATIVE':'创意','MEETING_CONCLUSION':'会议结论','FINISHED_MATERIAL':'成品材料','OTHER':'其他'} %}
+{% set status_labels = {'DRAFT':'草稿','ARGUMENTATION':'论证中','ESTABLISHED':'已立项','DEFERRED':'已暂缓','REJECTED':'不立项'} %}
+<div class="container-fluid py-3" style="max-width: 1080px;">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div><a href="{{ url_for('proposals.list_page') }}" class="text-decoration-none">‹ 返回提案列表</a><h2 class="mt-2 mb-0">{{ '编辑科研提案' if proposal else '新建科研提案' }}</h2></div>
+    <span class="badge text-bg-secondary">{{ status_labels.get(proposal.status, proposal.status) if proposal else '草稿' }}</span>
+  </div>
+  <form method="post" novalidate>
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+    {% if proposal %}<input type="hidden" name="version" value="{{ proposal.version }}">{% endif %}
+    <div class="card p-4">
+      <h5 class="mb-3"><i class="bi bi-lightbulb me-2"></i>原始依据</h5>
+      {% set fields = [
+        ('title','提案名称','text'),
+        ('sourceSummary','原始依据摘要','textarea'),
+        ('researchProblem','拟解决的研究问题','textarea'),
+        ('objectives','研究目标','textarea'),
+        ('researchContent','主要研究内容','textarea'),
+        ('expectedOutcomes','预期成果','textarea')
+      ] %}
+      <div class="mb-3">
+        <label class="form-label" for="sourceType">来源类型 *</label>
+        <select class="form-select {{ 'is-invalid' if errors.get('sourceType') }}" id="sourceType" name="sourceType">
+          <option value="">请选择</option>
+          {% for value in source_types %}<option value="{{ value }}" {{ 'selected' if form.get('sourceType') == value }}>{{ source_labels.get(value, value) }}</option>{% endfor %}
+        </select>
+        {% if errors.get('sourceType') %}<div class="invalid-feedback">{{ errors.sourceType }}</div>{% endif %}
+      </div>
+      {% for name, label, kind in fields %}
+      <div class="mb-3">
+        <label class="form-label" for="{{ name }}">{{ label }} *</label>
+        {% if kind == 'textarea' %}<textarea class="form-control {{ 'is-invalid' if errors.get(name) }}" id="{{ name }}" name="{{ name }}" rows="3">{{ form.get(name, '') }}</textarea>{% else %}<input class="form-control {{ 'is-invalid' if errors.get(name) }}" id="{{ name }}" name="{{ name }}" value="{{ form.get(name, '') }}">{% endif %}
+        {% if errors.get(name) %}<div class="invalid-feedback">{{ errors[name] }}</div>{% endif %}
+      </div>
+      {% endfor %}
+      <p class="text-muted small"><i class="bi bi-paperclip me-1"></i>提案保存后可在详情页上传依据附件。会议结论仅作为来源，系统不建立会议对象。</p>
+      <div class="text-end"><button class="btn btn-primary" type="submit"><i class="bi bi-save me-1"></i>保存草稿</button></div>
+    </div>
+  </form>
+</div>
+{% endblock %}

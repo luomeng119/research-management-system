@@ -72,6 +72,32 @@ class FilesRepository:
             statement = statement.with_for_update(read=True, of=table)
         return connection.execute(statement).scalar_one_or_none() is not None
 
+    def object_allows_file_write(
+        self, connection: Connection, object_type: str, object_id: str, *, lock: bool = False
+    ) -> bool | None:
+        """Return None for a missing object, otherwise whether file mutation is allowed."""
+        definition = OBJECT_TABLES.get(object_type)
+        if definition is None:
+            return None
+        if object_type not in self._object_tables:
+            if not self.object_exists(connection, object_type, object_id):
+                return None
+        table, key = self._object_tables[object_type]
+        value: object = object_id
+        if isinstance(table.c[key].type, (sa.Integer, sa.BigInteger)):
+            try:
+                value = int(object_id)
+            except (TypeError, ValueError):
+                return None
+        columns = [table.c.status] if object_type == "PROPOSAL" and "status" in table.c else [sa.literal("WRITABLE")]
+        statement = sa.select(*columns).select_from(table).where(table.c[key] == value).limit(1)
+        if lock and connection.dialect.name == "postgresql":
+            statement = statement.with_for_update(of=table)
+        status = connection.execute(statement).scalar_one_or_none()
+        if status is None:
+            return None
+        return status not in {"ESTABLISHED", "REJECTED"}
+
     def create_file(
         self,
         connection: Connection,

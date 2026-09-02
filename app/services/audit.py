@@ -26,6 +26,7 @@ EVENT_PROPERTIES = {
     "maintenance_access_denied": {"endpoint"},
     "csrf_rejected": {"method", "endpoint"},
     "proposal_created": {"source_type"},
+    "proposal_updated": {"field_count"},
     "proposal_status_changed": {"from_status", "to_status"},
     "proposal_decision_recorded": {"decision", "project_category"},
     "project_created_from_proposal": {"project_category", "idempotency_reused"},

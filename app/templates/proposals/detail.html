@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}{{ proposal.title }}{% endblock %}
+{% block content %}
+{% set source_labels = {'IDEA':'想法','CREATIVE':'创意','MEETING_CONCLUSION':'会议结论','FINISHED_MATERIAL':'成品材料','OTHER':'其他'} %}
+{% set status_labels = {'DRAFT':'草稿','ARGUMENTATION':'论证中','ESTABLISHED':'已立项','DEFERRED':'已暂缓','REJECTED':'不立项'} %}
+{% set decision_labels = {'DEFER':'暂缓','REJECT':'不立项'} %}
+<div class="container-fluid py-3" style="max-width: 1120px;">
+  <a href="{{ url_for('proposals.list_page') }}" class="text-decoration-none">‹ 返回提案列表</a>
+  <div class="d-flex justify-content-between align-items-start mt-2 mb-3">
+    <div><h2 class="mb-1">{{ proposal.title }}</h2><div class="text-muted">{{ proposal.businessId }} · {{ source_labels.get(proposal.sourceType, proposal.sourceType) }}</div></div>
+    <div class="d-flex align-items-center gap-2">
+      {% if proposal.status == 'DRAFT' %}<a class="btn btn-outline-primary btn-sm" href="{{ url_for('proposals.edit_page', business_id=proposal.businessId) }}"><i class="bi bi-pencil me-1"></i>编辑提案</a>{% endif %}
+      <span class="badge text-bg-light border">{{ status_labels.get(proposal.status, proposal.status) }}</span>
+    </div>
+  </div>
+  {% if action_error %}<div class="alert alert-danger">{{ action_error }}</div>{% endif %}
+
+  <div class="card p-4 mb-3">
+    <h5><i class="bi bi-file-earmark-text me-2"></i>提案内容</h5>
+    <dl class="row mb-0">
+      <dt class="col-sm-3">原始依据摘要</dt><dd class="col-sm-9">{{ proposal.sourceSummary }}</dd>
+      <dt class="col-sm-3">研究问题</dt><dd class="col-sm-9">{{ proposal.researchProblem }}</dd>
+      <dt class="col-sm-3">研究目标</dt><dd class="col-sm-9">{{ proposal.objectives }}</dd>
+      <dt class="col-sm-3">主要内容</dt><dd class="col-sm-9">{{ proposal.researchContent }}</dd>
+      <dt class="col-sm-3">预期成果</dt><dd class="col-sm-9">{{ proposal.expectedOutcomes }}</dd>
+    </dl>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-lg-7">
+      <div class="card p-4 h-100">
+        <h5><i class="bi bi-diagram-3 me-2"></i>论证记录</h5>
+        {% if argumentations %}
+          {% for item in argumentations %}
+          <div class="border-top py-3">
+            <strong>{{ item.facts.summary }}</strong>
+            <div class="text-muted small mb-1">{{ item.facts.argumentationDate }}</div>
+            <div>{{ item.conclusion }}</div><div class="text-muted small">依据：{{ item.basis }}</div>
+          </div>
+          {% endfor %}
+        {% else %}<p class="text-muted mb-0">尚无论证记录</p>{% endif %}
+        {% if argumentation_pagination.page > 1 or argumentation_pagination.page * argumentation_pagination.pageSize < argumentation_pagination.total %}
+        <nav class="d-flex justify-content-between mt-2" aria-label="论证记录分页">
+          {% if argumentation_pagination.page > 1 %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('proposals.detail_page', business_id=proposal.businessId, argumentationPage=argumentation_pagination.page - 1, decisionPage=decision_pagination.page) }}">上一页</a>{% else %}<span></span>{% endif %}
+          {% if argumentation_pagination.page * argumentation_pagination.pageSize < argumentation_pagination.total %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('proposals.detail_page', business_id=proposal.businessId, argumentationPage=argumentation_pagination.page + 1, decisionPage=decision_pagination.page) }}">下一页</a>{% endif %}
+        </nav>
+        {% endif %}
+      </div>
+    </div>
+    <div class="col-lg-5">
+      <div class="card p-4 h-100">
+        <h5><i class="bi bi-paperclip me-2"></i>依据附件</h5>
+        {% if files %}
+        <ul class="list-unstyled mb-3">
+          {% for file in files %}
+          <li class="mb-2"><i class="bi bi-file-earmark me-1"></i>
+            {% if file.versionNo is defined %}<a href="{{ url_for('files.download_file', file_id=file.fileId, version_no=file.versionNo, objectType='PROPOSAL', objectId=proposal.businessId) }}">{{ file.originalName or file.fileId }}</a>{% else %}{{ file.originalName or file.fileId }}{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}<p class="text-muted">尚无附件</p>{% endif %}
+        {% if proposal.status not in ['ESTABLISHED', 'REJECTED'] %}
+        <form method="post" enctype="multipart/form-data" action="{{ url_for('proposals.upload_attachment_page', business_id=proposal.businessId) }}">
+          <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+          <label class="form-label" for="attachment">上传附件</label>
+          <div class="input-group"><input class="form-control" id="attachment" name="file" type="file" required><button class="btn btn-outline-primary" type="submit">上传</button></div>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {% if proposal.status in ['DRAFT', 'ARGUMENTATION'] %}
+  <div class="card p-4 mb-3">
+    <h5><i class="bi bi-chat-square-text me-2"></i>新增论证</h5>
+    <form method="post" action="{{ url_for('proposals.add_argumentation_page', business_id=proposal.businessId) }}">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="version" value="{{ proposal.version }}">
+      <div class="row g-3">
+        <div class="col-md-8"><label class="form-label" for="summary">论证摘要</label><textarea class="form-control" id="summary" name="summary" required>{{ argumentation_form.summary if argumentation_form else '' }}</textarea></div>
+        <div class="col-md-4"><label class="form-label" for="argumentationDate">论证日期</label><input class="form-control" id="argumentationDate" type="date" name="argumentationDate" value="{{ argumentation_form.argumentationDate if argumentation_form else '' }}" required></div>
+        <div class="col-md-6"><label class="form-label" for="conclusion">论证结论</label><textarea class="form-control" id="conclusion" name="conclusion" required>{{ argumentation_form.conclusion if argumentation_form else '' }}</textarea></div>
+        <div class="col-md-6"><label class="form-label" for="basis">论证依据</label><textarea class="form-control" id="basis" name="basis" required>{{ argumentation_form.basis if argumentation_form else '' }}</textarea></div>
+      </div>
+      <div class="text-end mt-3"><button class="btn btn-primary" type="submit">保存论证</button></div>
+    </form>
+  </div>
+  {% endif %}
+
+  {% if proposal.status == 'ARGUMENTATION' %}
+  <div class="card p-4 mb-3">
+    <h5><i class="bi bi-check2-square me-2"></i>论证处理</h5>
+    <p class="text-muted small">本阶段可暂缓、不立项或退回草稿补充；“立项”在后续项目创建阶段原子完成。</p>
+    <form method="post" action="{{ url_for('proposals.decide_page', business_id=proposal.businessId) }}">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="version" value="{{ proposal.version }}"><input type="hidden" name="idempotencyKey" value="{{ idempotency_key }}">
+      <div class="row g-3">
+        <div class="col-md-3"><label class="form-label" for="decision">处理结果</label><select class="form-select" id="decision" name="decision" required><option value="">请选择</option><option value="DEFER" {{ 'selected' if decision_form and decision_form.decision == 'DEFER' }}>暂缓</option><option value="REJECT" {{ 'selected' if decision_form and decision_form.decision == 'REJECT' }}>不立项</option></select></div>
+        <div class="col-md-3"><label class="form-label" for="decisionDate">处理日期</label><input class="form-control" id="decisionDate" type="date" name="decisionDate" value="{{ decision_form.decisionDate if decision_form else '' }}" required></div>
+        <div class="col-md-3"><label class="form-label" for="decisionConclusion">处理结论</label><input class="form-control" id="decisionConclusion" name="conclusion" value="{{ decision_form.conclusion if decision_form else '' }}" required></div>
+        <div class="col-md-3"><label class="form-label" for="decisionBasis">处理依据</label><input class="form-control" id="decisionBasis" name="basis" value="{{ decision_form.basis if decision_form else '' }}" required></div>
+      </div>
+      <div class="text-end mt-3"><button class="btn btn-primary" type="submit">记录处理</button></div>
+    </form>
+    <form class="text-end mt-2" method="post" action="{{ url_for('proposals.return_to_draft_page', business_id=proposal.businessId) }}">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="version" value="{{ proposal.version }}"><button class="btn btn-outline-secondary" type="submit">退回补充</button>
+    </form>
+  </div>
+  {% elif proposal.status == 'DEFERRED' %}
+  <div class="card p-4 mb-3"><h5><i class="bi bi-arrow-repeat me-2"></i>暂缓后处理</h5><form method="post" action="{{ url_for('proposals.reopen_page', business_id=proposal.businessId) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="version" value="{{ proposal.version }}"><button class="btn btn-primary" type="submit">重新论证</button></form></div>
+  {% endif %}
+
+  <div class="card p-4">
+    <h5><i class="bi bi-journal-check me-2"></i>处理记录</h5>
+    {% if decisions %}{% for item in decisions %}<div class="border-top py-3"><strong>{{ decision_labels.get(item.decision, item.decision) }}</strong><span class="text-muted small ms-2">{{ item.decisionDate }}</span><div>{{ item.conclusion }}</div><div class="text-muted small">依据：{{ item.basis }}</div></div>{% endfor %}{% else %}<p class="text-muted mb-0">尚无处理记录</p>{% endif %}
+    {% if decision_pagination.page > 1 or decision_pagination.page * decision_pagination.pageSize < decision_pagination.total %}
+    <nav class="d-flex justify-content-between mt-2" aria-label="处理记录分页">
+      {% if decision_pagination.page > 1 %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('proposals.detail_page', business_id=proposal.businessId, argumentationPage=argumentation_pagination.page, decisionPage=decision_pagination.page - 1) }}">上一页</a>{% else %}<span></span>{% endif %}
+      {% if decision_pagination.page * decision_pagination.pageSize < decision_pagination.total %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('proposals.detail_page', business_id=proposal.businessId, argumentationPage=argumentation_pagination.page, decisionPage=decision_pagination.page + 1) }}">下一页</a>{% endif %}
+    </nav>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

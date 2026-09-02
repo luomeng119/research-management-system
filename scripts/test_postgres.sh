@@ -8,8 +8,8 @@ fi
 
 t02_admin_hint=${1%%\?*}
 t02_database_name=${t02_admin_hint##*/}
-if [[ ! "$t02_database_name" =~ (^|_)t0(2|3|4|5)($|_) ]]; then
-  echo "refusing database identifier outside the T02/T03/T04/T05 contract: $t02_database_name" >&2
+if [[ ! "$t02_database_name" =~ (^|_)t0(2|3|4|5|6)($|_) ]]; then
+  echo "refusing database identifier outside the T02/T03/T04/T05/T06 contract: $t02_database_name" >&2
   exit 65
 fi
 t03_contract=0
@@ -23,6 +23,10 @@ fi
 t05_contract=0
 if [[ "$t02_database_name" =~ (^|_)t05($|_) ]]; then
   t05_contract=1
+fi
+t06_contract=0
+if [[ "$t02_database_name" =~ (^|_)t06($|_) ]]; then
+  t06_contract=1
 fi
 
 for t02_command in initdb pg_ctl psql createdb; do
@@ -228,6 +232,11 @@ if [[ "$t05_contract" -eq 1 ]]; then
   T05_TEST_DATABASE_URL="$MIGRATION_DATABASE_URL" \
     "$t02_python" -m pytest app/tests/test_legacy_migration.py -q \
     -k postgresql_concurrent_same_batch_and_identity_sequence
+fi
+if [[ "$t06_contract" -eq 1 ]]; then
+  T06_TEST_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+    "$t02_python" -m pytest app/tests/test_proposals.py -q \
+    -k postgresql_concurrent_version_and_decision_idempotency
 fi
 "$t02_python" -m pytest app/tests/test_db_contract.py -q
 if [[ "$t03_contract" -eq 1 ]]; then

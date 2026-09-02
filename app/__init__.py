@@ -110,6 +110,21 @@ def create_app(test_config=None):
     if file_service is not None:
         app.extensions["file_service"] = file_service
 
+    proposal_service = app.config.get("PROPOSAL_SERVICE")
+    if proposal_service is None and engine is not None and audit_service is not None:
+        import sqlalchemy as sa
+
+        inspector = sa.inspect(engine)
+        if all(inspector.has_table(name) for name in (
+            "proposals", "proposal_argumentations", "proposal_decisions"
+        )):
+            from app.repositories.proposals import ProposalsRepository
+            from app.services.proposals import ProposalService
+
+            proposal_service = ProposalService(ProposalsRepository(engine), audit_service)
+    if proposal_service is not None:
+        app.extensions["proposal_service"] = proposal_service
+
     if app.config.get("LOG_FILE"):
         from app.security.logging import configure_json_logging
 
@@ -125,6 +140,7 @@ def create_app(test_config=None):
     from app.routes.argumentation import argumentation_bp
     from app.routes.argumentation.template_routes import template_bp
     from app.web.files import bp as files_bp
+    from app.web.proposals import bp as proposals_bp
 
     for blueprint in (
         api.bp, auth.bp, projects.bp, equipment.bp, standards.bp, users.bp,
@@ -133,6 +149,7 @@ def create_app(test_config=None):
         preview_bp, utils.bp, expense.bp, documents.bp, host_devices.bp,
         research_units.bp, generic_tables_bp, generic_tables_api_bp,
         files_bp,
+        proposals_bp,
     ):
         app.register_blueprint(blueprint)
     app.register_blueprint(argumentation_bp, url_prefix="/argumentation")

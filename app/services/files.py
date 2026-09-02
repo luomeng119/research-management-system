@@ -200,6 +200,25 @@ class FileService:
         if not exists:
             raise FileServiceError("OBJECT_NOT_FOUND", "关联业务对象不存在", 404)
 
+    def _validate_object_write(self, object_type: str, object_id: str) -> None:
+        with self.repository.engine.connect() as connection:
+            writable = self.repository.object_allows_file_write(
+                connection, object_type, str(object_id)
+            )
+        if writable is None:
+            raise FileServiceError("OBJECT_NOT_FOUND", "关联业务对象不存在", 404)
+        if not writable:
+            raise FileServiceError("OBJECT_READ_ONLY", "终态业务对象不允许修改附件", 409)
+
+    def _lock_object_write(self, connection, object_type: str, object_id: str) -> None:
+        writable = self.repository.object_allows_file_write(
+            connection, object_type, str(object_id), lock=True
+        )
+        if writable is None:
+            raise FileServiceError("OBJECT_NOT_FOUND", "关联业务对象不存在", 404)
+        if not writable:
+            raise FileServiceError("OBJECT_READ_ONLY", "终态业务对象不允许修改附件", 409)
+
     @staticmethod
     def _validate_name(original_name: str) -> tuple[str, str]:
         if not isinstance(original_name, str) or not original_name.strip():
@@ -372,7 +391,7 @@ class FileService:
 
     def upload(self, stream, *, original_name: str, object_type: str, object_id: str, actor_user_id: int, request_id: str) -> dict:
         object_type = str(object_type or "").upper()
-        self._validate_object(object_type, str(object_id))
+        self._validate_object_write(object_type, str(object_id))
         staged = self._stage(stream, original_name)
         relative_path, final_path = self._destination(staged.extension)
         file_id = uuid.uuid4()
@@ -380,8 +399,7 @@ class FileService:
         moved = False
         try:
             with self.repository.engine.begin() as connection:
-                if not self.repository.object_exists(connection, object_type, str(object_id), lock=True):
-                    raise FileServiceError("OBJECT_NOT_FOUND", "关联业务对象不存在", 404)
+                self._lock_object_write(connection, object_type, str(object_id))
                 self.repository.create_file(
                     connection,
                     file_id=file_id,
@@ -434,15 +452,14 @@ class FileService:
 
     def add_version(self, file_id: str, stream, *, original_name: str, object_type: str, object_id: str, expected_version: int, actor_user_id: int, request_id: str) -> dict:
         object_type = str(object_type or "").upper()
-        self._validate_object(object_type, str(object_id))
+        self._validate_object_write(object_type, str(object_id))
         staged = self._stage(stream, original_name)
         relative_path, final_path = self._destination(staged.extension)
         started = time.monotonic()
         moved = False
         try:
             with self.repository.engine.begin() as connection:
-                if not self.repository.object_exists(connection, object_type, str(object_id), lock=True):
-                    raise FileServiceError("OBJECT_NOT_FOUND", "关联业务对象不存在", 404)
+                self._lock_object_write(connection, object_type, str(object_id))
                 file_row = self.repository.get_linked_file(
                     connection, file_id=file_id, object_type=object_type, object_id=str(object_id), lock=True
                 )
@@ -503,8 +520,7 @@ class FileService:
         started = time.monotonic()
         try:
             with self.repository.engine.begin() as connection:
-                if not self.repository.object_exists(connection, object_type, str(object_id), lock=True):
-                    raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+                self._lock_object_write(connection, object_type, str(object_id))
                 row = self.repository.get_linked_file(
                     connection,
                     file_id=file_id,

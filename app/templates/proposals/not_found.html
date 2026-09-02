@@ -1,0 +1,3 @@
+{% extends "base.html" %}
+{% block title %}提案不存在{% endblock %}
+{% block content %}<div class="container py-5"><div class="alert alert-warning">{{ message }}</div><a href="{{ url_for('proposals.list_page') }}">返回提案列表</a></div>{% endblock %}
