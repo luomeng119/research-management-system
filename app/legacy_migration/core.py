@@ -871,32 +871,54 @@ def _create_project_registry(
         "target_columns": {"id", "category", "business_id", "status"},
         "migration_key_fields": ["id"], "migration_key_values": [],
     }
+    project_sources: list[tuple[str, str, dict[str, Any]]] = []
+    business_id_sources: dict[str, list[str]] = {}
     for project_table_name, category in categories.items():
         project_table = _reflect_table(connection, project_table_name)
         if project_table is None:
             continue
         projects = connection.execute(sa.select(project_table.c.id, project_table.c.project_id)).mappings().all()
-        for project in projects:
-            registry_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"legacy-project:{category}:{project['project_id']}")
-            registry_id = _uuid_value(connection, registry_uuid)
-            values = {
-                "id": registry_id, "category": category,
-                "business_id": project["project_id"], "status": "ACTIVE",
-            }
-            connection.execute(registry.insert().values(**{k: v for k, v in values.items() if k in registry.c}))
-            expected_rows.setdefault("project_registry", []).append(values.copy())
-            if "registry_id" in project_table.c:
-                connection.execute(project_table.update().where(project_table.c.id == project["id"]).values(registry_id=registry_id))
-                if project_table_name in report["tables"]:
-                    report["tables"][project_table_name]["target_columns"] = sorted({
-                        *report["tables"][project_table_name]["target_columns"],
-                        "registry_id",
-                    })
-            stats["source"] += 1
-            stats["converted"] += 1
-            stats["inserted"] += 1
-            stats["row_hashes"].append(_normalized_hash(values))
-            stats["migration_key_values"].append([str(registry_id)])
+        for project_row in projects:
+            project = dict(project_row)
+            project_sources.append((project_table_name, category, project))
+            business_id_sources.setdefault(str(project["project_id"]), []).append(project_table_name)
+    duplicates = {
+        business_id: sources
+        for business_id, sources in business_id_sources.items()
+        if len(sources) > 1
+    }
+    if duplicates:
+        sample = ", ".join(
+            f"{business_id}({','.join(sources)})"
+            for business_id, sources in sorted(duplicates.items())[:20]
+        )
+        raise StructuralMigrationError(
+            "legacy project ids must be globally unique across project categories: " + sample
+        )
+    for project_table_name, category, project in project_sources:
+        project_table = _reflect_table(connection, project_table_name)
+        if project_table is None:
+            continue
+        registry_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"legacy-project:{category}:{project['project_id']}")
+        registry_id = _uuid_value(connection, registry_uuid)
+        values = {
+            "id": registry_id, "category": category,
+            "business_id": project["project_id"], "status": "ACTIVE",
+        }
+        connection.execute(registry.insert().values(**{k: v for k, v in values.items() if k in registry.c}))
+        expected_rows.setdefault("project_registry", []).append(values.copy())
+        if "registry_id" in project_table.c:
+            connection.execute(project_table.update().where(project_table.c.id == project["id"]).values(registry_id=registry_id))
+            if project_table_name in report["tables"]:
+                report["tables"][project_table_name]["target_columns"] = sorted({
+                    *report["tables"][project_table_name]["target_columns"],
+                    "registry_id",
+                })
+        stats["source"] += 1
+        stats["converted"] += 1
+        stats["inserted"] += 1
+        stats["row_hashes"].append(_normalized_hash(values))
+        stats["migration_key_values"].append([str(registry_id)])
     if not stats["source"]:
         return
     report["counts"]["source"] += stats["source"]

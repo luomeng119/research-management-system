@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
 
 
-HEAD_REVISION = "0002_proposal_assistant"
+HEAD_REVISION = "0003_project_establishment"
 
 CORE_TABLES = {
     "users",
@@ -459,7 +459,10 @@ def test_proposal_decision_ai_draft_and_project_category_columns_match_api_contr
             "research_content",
             "expected_outcomes",
         },
-        "proposal_decisions": {"decision", "decision_date", "conclusion", "basis"},
+        "proposal_decisions": {
+            "decision", "decision_date", "conclusion", "basis",
+            "request_fingerprint", "result_snapshot",
+        },
         "proposal_ai_drafts": {
             "status",
             "provider_kind",
@@ -660,6 +663,7 @@ def test_schema_has_status_checks_uniques_and_list_indexes(migration_engine):
         for item in inspector.get_unique_constraints("project_registry")
     }
     assert ("category", "business_id") in registry_uniques
+    assert ("business_id",) in registry_uniques
 
     expected_indexes = {
         "ix_proposals_status_updated",

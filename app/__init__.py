@@ -129,6 +129,22 @@ def create_app(test_config=None):
     if proposal_service is not None:
         app.extensions["proposal_service"] = proposal_service
 
+    project_service = app.config.get("PROJECT_SERVICE")
+    if project_service is None and engine is not None and audit_service is not None:
+        import sqlalchemy as sa
+
+        inspector = sa.inspect(engine)
+        if all(inspector.has_table(name) for name in (
+            "proposals", "proposal_decisions", "project_registry",
+            "projects", "security_projects", "crypto_projects",
+        )):
+            from app.repositories.projects import ProjectsRepository
+            from app.services.projects import ProjectService
+
+            project_service = ProjectService(ProjectsRepository(engine), audit_service)
+    if project_service is not None:
+        app.extensions["project_service"] = project_service
+
     assistant_service = app.config.get("ASSISTANT_SERVICE")
     if assistant_service is None and engine is not None and audit_service is not None:
         import sqlalchemy as sa
@@ -179,6 +195,7 @@ def create_app(test_config=None):
     from app.web.files import bp as files_bp
     from app.web.proposals import bp as proposals_bp
     from app.web.assistant import bp as assistant_bp
+    from app.web.projects import bp as project_registry_bp
 
     for blueprint in (
         api.bp, auth.bp, projects.bp, equipment.bp, standards.bp, users.bp,
@@ -189,6 +206,7 @@ def create_app(test_config=None):
         files_bp,
         proposals_bp,
         assistant_bp,
+        project_registry_bp,
     ):
         app.register_blueprint(blueprint)
     app.register_blueprint(argumentation_bp, url_prefix="/argumentation")

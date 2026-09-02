@@ -287,6 +287,19 @@ def test_batch_manifest_change_and_mid_import_failure_roll_back(tmp_path):
             assert connection.scalar(sa.text(f"select count(*) from {table}")) == 0
 
 
+def test_migration_rejects_project_ids_reused_across_categories(tmp_path):
+    root = _make_sources(tmp_path)
+    with sqlite3.connect(root / "research.db") as db:
+        db.execute(
+            "insert into security_projects(id, project_id, name) values (21, 'P-001', 'Same id')"
+        )
+    engine = _target_engine()
+    with pytest.raises(StructuralMigrationError, match="globally unique"):
+        migrate_legacy(engine, root, "duplicate-project-id", allow_test_sqlite=True)
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text("select count(*) from project_registry")) == 0
+
+
 def test_production_migration_rejects_non_postgresql_target(tmp_path):
     root = _make_sources(tmp_path)
     with pytest.raises(SourceSafetyError, match="PostgreSQL"):

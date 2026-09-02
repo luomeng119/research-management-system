@@ -3,11 +3,26 @@ from flask import Blueprint, render_template, request, redirect, url_for, sessio
 from datetime import datetime
 from app.models import CryptoProjectModel, EquipmentModel, EquipmentGroupModel
 from app.routes._shared import build_folder_tree, RESEARCH_FOLDER_TYPES
+from app.routes._project_bridge import (
+    legacy_page, safe_project_documents_path, safe_project_path,
+)
+from app.security.auth import current_identity
+from app.services.projects import ProjectServiceError
 import os
 import re
 import zipfile
 
 bp = Blueprint('crypto_projects', __name__, url_prefix='/crypto_projects')
+
+
+def _get_project(project_id):
+    service = current_app.extensions.get('project_service')
+    if service is not None:
+        try:
+            return service.get_legacy(category='CRYPTO_APPLICATION', business_id=project_id)
+        except ProjectServiceError:
+            return None
+    return CryptoProjectModel().get_by_id(project_id)
 
 
 def _safe_filename(filename):
@@ -17,24 +32,39 @@ def _safe_filename(filename):
 
 
 def _safe_join(*parts):
-    path = os.path.normpath(os.path.join(*parts))
-    base = os.path.normpath(current_app.config['UPLOAD_DIR'])
-    if not path.startswith(base):
-        raise ValueError("非法路径")
-    return path
+    return safe_project_path(parts[0], parts[1], *parts[2:])
 
 @bp.route('/')
 def index():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    project_model = CryptoProjectModel()
     status_filter = request.args.get('status', '')
     search_keyword = request.args.get('search', '').strip()
-    page = int(request.args.get('page', 1))
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
     per_page = 50
     
-    all_projects = project_model.get_all()
+    service = current_app.extensions.get('project_service')
+    if service is not None:
+        result, status_groups = legacy_page(
+            service, category='CRYPTO_APPLICATION', page=page, page_size=per_page,
+            status=status_filter, keyword=search_keyword,
+        )
+        projects_page = result['items']; total = result['total']
+        total_pages = (total + per_page - 1) // per_page if total else 1
+        partial = request.args.get('partial') == '1'
+        template = 'projects/partial_table.html' if partial else 'projects/index.html'
+        return render_template(template,
+            projects=projects_page, status_groups=status_groups,
+            status_filter=status_filter, search_keyword=search_keyword,
+            visible_directories=['crypto_projects', 'equipment', 'standards'],
+            project_type='crypto_projects', project_type_display='密码应用项目',
+            page=page, total_pages=total_pages, total=total)
+
+    all_projects = CryptoProjectModel().get_all()
     
     if status_filter:
         projects = [p for p in all_projects if p['status'] == status_filter]
@@ -85,39 +115,69 @@ def add():
         leader = request.form.get('leader', '').strip() or user_name
         today = datetime.now().strftime('%Y-%m-%d')
         start_date = request.form.get('start_date', '') or today
-        end_date_plan = request.form.get('end_date_plan', '') or today
+        end_date_plan = request.form.get('planned_end_date', '') or request.form.get('end_date_plan', '')
         
         end_date_actual = request.form.get('end_date_actual', '')
-        status = request.form.get('status', '启动')
+        status = request.form.get('status', '任务下达')
         if not name:
             flash('项目名称不能为空', 'error')
             return redirect(url_for('projects.add'))
-        project_model = CryptoProjectModel()
-        project_id = project_model.add(project_id, name, leader, start_date, end_date_plan, end_date_actual, status)
+        service = current_app.extensions.get('project_service')
+        if service is not None:
+            try:
+                created = service.create_standalone('CRYPTO_APPLICATION', {
+                    'projectId': project_id, 'name': name, 'leader': leader,
+                    'startDate': start_date, 'plannedEndDate': end_date_plan,
+                    'actualEndDate': end_date_actual, 'status': status,
+                    'taskNumber': request.form.get('task_number', ''),
+                }, actor_user_id=current_identity().user_id)
+                project_id = created['businessId']
+            except ProjectServiceError as error:
+                flash(error.message, 'error')
+                return render_template('projects/add.html', today=today, default_leader=leader), error.status_code
+        else:
+            project_id = CryptoProjectModel().add(project_id, name, leader, start_date, end_date_plan, end_date_actual, status)
         project_dir = os.path.join(current_app.config['UPLOAD_DIR'], project_id)
-        os.makedirs(project_dir, exist_ok=True)
-        for folder in FOLDER_TYPES:
-            os.makedirs(os.path.join(project_dir, folder), exist_ok=True)
-        flash('项目创建成功', 'success')
-        return redirect(url_for('projects.index'))
+        try:
+            os.makedirs(project_dir, exist_ok=True)
+            for folder in RESEARCH_FOLDER_TYPES:
+                os.makedirs(os.path.join(project_dir, folder), exist_ok=True)
+        except OSError:
+            flash('项目已创建，但文件目录暂时无法初始化，不影响项目业务数据', 'warning')
+        else:
+            flash('项目创建成功', 'success')
+        return redirect(url_for('crypto_projects.index'))
     today = datetime.now().strftime('%Y-%m-%d')
     current_user = session.get('name') or session.get('user')
-    return render_template('projects/add.html', today=today, default_leader=current_user)
+    return render_template('projects/add.html', today=today, default_leader=current_user,
+                           return_url=url_for('crypto_projects.index'))
 
 @bp.route('/detail/<project_id>')
 def detail(project_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    project_model = CryptoProjectModel()
-    project = project_model.get_by_id(project_id)
+    service = current_app.extensions.get('project_service')
+    if service is not None:
+        try:
+            project = service.get_legacy(category='CRYPTO_APPLICATION', business_id=project_id)
+        except ProjectServiceError:
+            project = None
+    else:
+        project = CryptoProjectModel().get_by_id(project_id)
     if not project:
         flash('项目不存在', 'error')
-        return redirect(url_for('projects.index'))
+        return redirect(url_for('crypto_projects.index'))
     
     equipment_model = EquipmentModel()
     equipment_group_model = EquipmentGroupModel()
-    project_dir = os.path.join(current_app.config['UPLOAD_DIR'], project_id)
+    try:
+        project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
+        folder_path = safe_project_path(
+            current_app.config['UPLOAD_DIR'], project_id, folder or FOLDER_TYPES[0]
+        )
+    except ValueError:
+        return jsonify({'success': False, 'message': '非法路径'}), 400
     folder_tree = build_folder_tree(project_dir)
     # 获取项目关联的设备组（通过 project_id 关联）
     project_groups = equipment_group_model.get_all(project_id)
@@ -157,13 +217,16 @@ def upload(project_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     folder = request.form.get('folder', '')
-    project_dir = os.path.join(current_app.config['UPLOAD_DIR'], project_id)
+    try:
+        project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
+    except ValueError:
+        flash('非法项目路径', 'error')
+        return redirect(url_for('crypto_projects.index'))
     if 'file' not in request.files:
         return jsonify({'success': False, 'message': '请选择文件'})
     file = request.files['file']
     if file.filename == '':
         return jsonify({'success': False, 'message': '请选择文件'})
-    folder_path = os.path.join(project_dir, folder) if folder else os.path.join(project_dir, FOLDER_TYPES[0])
     os.makedirs(folder_path, exist_ok=True)
     
     # 版本管理：重复上传保存到历史版本
@@ -223,7 +286,13 @@ def upload_folder(project_id):
         return jsonify({'success': False, 'message': '未登录'})
     
     target_folder = request.form.get('folder', '')
-    project_dir = os.path.join(current_app.config['UPLOAD_DIR'], project_id)
+    try:
+        project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
+        base_target = safe_project_path(
+            current_app.config['UPLOAD_DIR'], project_id, target_folder or FOLDER_TYPES[0]
+        )
+    except ValueError:
+        return jsonify({'success': False, 'message': '非法路径'}), 400
     
     if 'files' not in request.files:
         return jsonify({'success': False, 'message': '请选择文件夹'})
@@ -233,7 +302,6 @@ def upload_folder(project_id):
         return jsonify({'success': False, 'message': '文件夹为空'})
     
     uploaded_count = 0
-    base_target = os.path.join(project_dir, target_folder) if target_folder else os.path.join(project_dir, FOLDER_TYPES[0])
     
     for file in files:
         if file.filename:
@@ -256,14 +324,14 @@ def create_folder(project_id):
     parent_folder = request.form.get('parent_folder', '')
     if not folder_name:
         return jsonify({'success': False, 'message': '请输入文件夹名称'})
-    project_dir = os.path.join(current_app.config['UPLOAD_DIR'], project_id)
+    try:
+        project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
+        new_path = safe_project_path(
+            current_app.config['UPLOAD_DIR'], project_id, parent_folder, folder_name
+        )
+    except ValueError:
+        return jsonify({'success': False, 'message': '非法路径'}), 400
     os.makedirs(project_dir, exist_ok=True)
-    
-    # 在父文件夹下创建子文件夹
-    if parent_folder:
-        new_path = os.path.join(project_dir, parent_folder, folder_name)
-    else:
-        new_path = os.path.join(project_dir, folder_name)
     
     if os.path.exists(new_path):
         return jsonify({'success': False, 'message': '文件夹已存在'})
@@ -291,7 +359,10 @@ def preview_file(project_id, filepath):
     """文件预览接口"""
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-    full_path = os.path.join(current_app.config['UPLOAD_DIR'], project_id, filepath)
+    try:
+        full_path = safe_project_path(current_app.config['UPLOAD_DIR'], project_id, filepath)
+    except ValueError:
+        return jsonify({'success': False, 'message': '非法路径'}), 400
     if not os.path.exists(full_path):
         return jsonify({'success': False, 'message': '文件不存在'})
     return send_file(full_path)
@@ -303,7 +374,10 @@ def delete_folder(project_id):
     folderpath = request.form.get('folder_path', '').strip()
     if not folderpath:
         return jsonify({'success': False, 'message': '文件夹路径不能为空'})
-    full_path = os.path.join(current_app.config['UPLOAD_DIR'], project_id, folderpath)
+    try:
+        full_path = safe_project_path(current_app.config['UPLOAD_DIR'], project_id, folderpath)
+    except ValueError:
+        return jsonify({'success': False, 'message': '非法路径'}), 400
     if not os.path.exists(full_path):
         return jsonify({'success': False, 'message': '文件夹不存在'})
     try:
@@ -320,7 +394,10 @@ def delete_file(project_id):
     filepath = request.form.get('file_path', '').strip()
     if not filepath:
         return jsonify({'success': False, 'message': '文件路径不能为空'})
-    full_path = os.path.join(current_app.config['UPLOAD_DIR'], project_id, filepath)
+    try:
+        full_path = safe_project_path(current_app.config['UPLOAD_DIR'], project_id, filepath)
+    except ValueError:
+        return jsonify({'success': False, 'message': '非法路径'}), 400
     if not os.path.exists(full_path):
         return jsonify({'success': False, 'message': '文件不存在'})
     try:
@@ -338,12 +415,20 @@ def rename_file(project_id):
     new_name = request.form.get('new_name', '').strip()
     if not filepath or not new_name:
         return jsonify({'success': False, 'message': '文件路径和新文件名不能为空'})
-    full_path = os.path.join(current_app.config['UPLOAD_DIR'], project_id, filepath)
+    try:
+        full_path = safe_project_path(current_app.config['UPLOAD_DIR'], project_id, filepath)
+    except ValueError:
+        return jsonify({'success': False, 'message': '非法路径'}), 400
     if not os.path.exists(full_path):
         return jsonify({'success': False, 'message': '文件不存在'})
     dir_path = os.path.dirname(filepath)
     new_filepath = os.path.join(dir_path, new_name) if dir_path else new_name
-    new_full_path = os.path.join(current_app.config['UPLOAD_DIR'], project_id, new_filepath)
+    try:
+        new_full_path = safe_project_path(
+            current_app.config['UPLOAD_DIR'], project_id, new_filepath
+        )
+    except ValueError:
+        return jsonify({'success': False, 'message': '非法路径'}), 400
     if os.path.exists(new_full_path):
         return jsonify({'success': False, 'message': '文件名已存在'})
     try:
@@ -356,11 +441,10 @@ def rename_file(project_id):
 def archive_project(project_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
-    project_model = CryptoProjectModel()
-    project = project_model.get_by_id(project_id)
+    project = _get_project(project_id)
     if not project:
         flash('项目不存在', 'error')
-        return redirect(url_for('projects.index'))
+        return redirect(url_for('crypto_projects.index'))
     
     # 支持两种方式：1. form表单的folders数组 2. JSON的paths数组
     import json
@@ -374,17 +458,26 @@ def archive_project(project_id):
         except:
             pass
     
-    project_dir = os.path.join(current_app.config['UPLOAD_DIR'], project_id)
+    try:
+        project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
+    except ValueError:
+        flash('非法项目路径', 'error')
+        return redirect(url_for('crypto_projects.index'))
     if not os.path.exists(project_dir):
         flash('项目文件夹不存在', 'error')
         return redirect(url_for('projects.detail', project_id=project_id))
-    zip_filename = f"{project['name']}_{project_id}.zip"
+    zip_filename = f"{_safe_filename(project['name'])}_{project_id}.zip"
     zip_path = os.path.join(current_app.config['UPLOAD_DIR'], zip_filename)
     try:
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             if selected_folders:
                 for folder in selected_folders:
-                    folder_path = os.path.join(project_dir, folder)
+                    try:
+                        folder_path = safe_project_path(
+                            current_app.config['UPLOAD_DIR'], project_id, folder
+                        )
+                    except ValueError:
+                        continue
                     if os.path.exists(folder_path):
                         for root, dirs, files in os.walk(folder_path):
                             for f in files:
@@ -408,8 +501,9 @@ def link_equipment(project_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     leader = session.get('user')
-    project_model = CryptoProjectModel()
-    project = project_model.get_by_id(project_id)
+    project = _get_project(project_id)
+    if not project:
+        return jsonify({'success': False, 'message': '项目不存在'}), 404
     equipment_id = request.form.get('equipment_id', '').strip()
     quantity = request.form.get('quantity', '1').strip()
     location = request.form.get('location', '').strip()
@@ -430,8 +524,9 @@ def unlink_equipment(project_id, group_id, equipment_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     leader = session.get('user')
-    project_model = CryptoProjectModel()
-    project = project_model.get_by_id(project_id)
+    project = _get_project(project_id)
+    if not project:
+        return jsonify({'success': False, 'message': '项目不存在'}), 404
     equipment_group_model = EquipmentGroupModel()
     equipment_group_model.remove_member(group_id, equipment_id)
     return jsonify({'success': True, 'message': '取消关联成功'})
@@ -441,11 +536,10 @@ def export_equipment(project_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    project_model = CryptoProjectModel()
-    project = project_model.get_by_id(project_id)
+    project = _get_project(project_id)
     if not project:
         flash('项目不存在', 'error')
-        return redirect(url_for('projects.index'))
+        return redirect(url_for('crypto_projects.index'))
     
     # 获取项目设备（从设备组获取）
     equipment_group_model = EquipmentGroupModel()
@@ -495,7 +589,9 @@ def update_equipment(project_id, group_id, equipment_id):
     """更新设备组中的设备数量"""
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-    project = CryptoProjectModel().get_by_id(project_id)
+    project = _get_project(project_id)
+    if not project:
+        return jsonify({'success': False, 'message': '项目不存在'}), 404
     quantity = request.form.get('quantity', '').strip()
     location = request.form.get('location', '').strip()
     equipment_group_model = EquipmentGroupModel()
@@ -520,6 +616,18 @@ def update_project_field(project_id):
     
     if field not in field_map:
         return jsonify({'success': False, 'message': '无效字段'})
+
+    service = current_app.extensions.get('project_service')
+    if service is not None:
+        try:
+            service.update_legacy_field(
+                category='CRYPTO_APPLICATION', business_id=project_id,
+                field=field_map[field], value=value,
+                actor_user_id=current_identity().user_id,
+            )
+            return jsonify({'success': True, 'message': '更新成功'})
+        except ProjectServiceError as error:
+            return jsonify({'success': False, 'message': error.message}), error.status_code
     
     project = CryptoProjectModel().get_by_id(project_id)
     if not project:
@@ -543,11 +651,23 @@ def batch_update_status():
         return jsonify({'success': False, 'message': '请先选择项目'})
     updated = 0
     for pid in project_ids:
-        project = CryptoProjectModel().get_by_id(pid)
-        if not project:
-            continue
-        CryptoProjectModel().update(pid, **{'状态': new_status})
-        updated += 1
+        service = current_app.extensions.get('project_service')
+        if service is not None:
+            try:
+                service.update_legacy_field(
+                    category='CRYPTO_APPLICATION', business_id=pid,
+                    field='status', value=new_status,
+                    actor_user_id=current_identity().user_id,
+                )
+                updated += 1
+            except ProjectServiceError:
+                continue
+        else:
+            project = CryptoProjectModel().get_by_id(pid)
+            if not project:
+                continue
+            CryptoProjectModel().update(pid, **{'状态': new_status})
+            updated += 1
     return jsonify({'success': True, 'message': f'已更新 {updated} 个项目状态'})
 
 @bp.route('/batch_export', methods=['POST'])
@@ -573,7 +693,7 @@ def batch_export():
     file_tracker = {}  # {relative_path: (full_path, modified_time)}
     
     for project_id in project_ids:
-        project = CryptoProjectModel().get_by_id(project_id)
+        project = _get_project(project_id)
         if not project:
             continue
         
@@ -582,7 +702,7 @@ def batch_export():
         # 清理文件夹名中的非法字符
         folder_name = ''.join(c for c in folder_name if c not in ['\\', '/', ':', '*', '?', '"', '<', '>', '|'])
 
-        project_dir = os.path.join(docs_base, project['project_id'])
+        project_dir = safe_project_path(docs_base, project['project_id'])
         
         if os.path.exists(project_dir):
             # 遍历项目文件，保留层级结构
@@ -620,6 +740,13 @@ def batch_export():
 def delete(project_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
+    service = current_app.extensions.get('project_service')
+    if service is not None:
+        try:
+            service.delete_legacy_standalone(category='CRYPTO_APPLICATION', business_id=project_id)
+            return jsonify({'success': True, 'message': '删除成功'})
+        except ProjectServiceError as error:
+            return jsonify({'success': False, 'message': error.message}), error.status_code
     project = CryptoProjectModel().get_by_id(project_id)
     if not project:
         return jsonify({'success': False, 'message': '项目不存在'})
@@ -632,11 +759,13 @@ def project_documents(project_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    project_model = CryptoProjectModel()
-    project = project_model.get_by_id(project_id)
+    project = _get_project(project_id)
+    if not project:
+        flash('项目不存在', 'error')
+        return redirect(url_for('crypto_projects.index'))
     
     # 获取项目文档目录
-    docs_dir = os.path.join(current_app.config['UPLOAD_DIR'], 'projects', project_id)
+    docs_dir = safe_project_documents_path(current_app.config['UPLOAD_DIR'], project_id)
     documents = []
     
     if os.path.exists(docs_dir):
@@ -654,13 +783,16 @@ def project_documents(project_id):
     
     return render_template('projects/documents.html', 
                          project=project,
-                         documents=documents)
+                         documents=documents,
+                         document_blueprint='crypto_projects')
 
 @bp.route('/upload_doc/<project_id>', methods=['POST'])
 def upload_project_doc(project_id):
     """上传项目文档"""
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
+    if not _get_project(project_id):
+        return jsonify({'success': False, 'message': '项目不存在'}), 404
     
     if 'document' not in request.files:
         return jsonify({'success': False, 'message': '请选择文件'})
@@ -669,7 +801,7 @@ def upload_project_doc(project_id):
     if file.filename == '':
         return jsonify({'success': False, 'message': '请选择文件'})
     
-    docs_dir = os.path.join(current_app.config['UPLOAD_DIR'], 'projects', project_id)
+    docs_dir = safe_project_documents_path(current_app.config['UPLOAD_DIR'], project_id)
     os.makedirs(docs_dir, exist_ok=True)
     
     filename = _safe_filename(file.filename)
@@ -677,15 +809,19 @@ def upload_project_doc(project_id):
     file.save(file_path)
 
     flash('文档上传成功', 'success')
-    return redirect(url_for('projects.project_documents', project_id=project_id))
+    return redirect(url_for('crypto_projects.project_documents', project_id=project_id))
 
 @bp.route('/delete_doc/<project_id>/<filename>', methods=['POST'])
 def delete_project_doc(project_id, filename):
     """删除项目文档"""
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
+    if not _get_project(project_id):
+        return jsonify({'success': False, 'message': '项目不存在'}), 404
     try:
-        file_path = _safe_join(current_app.config['UPLOAD_DIR'], 'projects', project_id, _safe_filename(filename))
+        file_path = safe_project_documents_path(
+            current_app.config['UPLOAD_DIR'], project_id, _safe_filename(filename)
+        )
     except ValueError:
         return jsonify({'success': False, 'message': '非法路径'})
     
@@ -700,13 +836,18 @@ def download_project_doc(project_id, filename):
     """下载项目文档"""
     if 'user' not in session:
         return redirect(url_for('auth.login'))
+    if not _get_project(project_id):
+        flash('项目不存在', 'error')
+        return redirect(url_for('crypto_projects.index'))
     try:
-        file_path = _safe_join(current_app.config['UPLOAD_DIR'], 'projects', project_id, _safe_filename(filename))
+        file_path = safe_project_documents_path(
+            current_app.config['UPLOAD_DIR'], project_id, _safe_filename(filename)
+        )
     except ValueError:
         flash('非法路径', 'error')
-        return redirect(url_for('projects.project_documents', project_id=project_id))
+        return redirect(url_for('crypto_projects.project_documents', project_id=project_id))
     if os.path.exists(file_path):
         return send_file(file_path, as_attachment=True)
     else:
         flash('文件不存在', 'error')
-        return redirect(url_for('projects.project_documents', project_id=project_id))
+        return redirect(url_for('crypto_projects.project_documents', project_id=project_id))

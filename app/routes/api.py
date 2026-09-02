@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, jsonify, session, current_app, request
 from app.models import ProjectModel, EquipmentModel, StandardModel, DIRECTORIES, OperationLogModel, SecurityProjectModel, CryptoProjectModel, ExpertModel
+from app.routes._project_bridge import all_legacy_projects
 from config import VERSION
 from app.security.auth import maintenance_required
 import os
@@ -14,11 +15,14 @@ def get_user_directories():
 @bp.route('/tree')
 def tree():
     """获取目录树结构（根据用户权限过滤）"""
-    project_model = ProjectModel()
     equipment_model = EquipmentModel()
     standard_model = StandardModel()
     
-    projects = project_model.get_all()
+    project_service = current_app.extensions.get('project_service')
+    projects = (
+        all_legacy_projects(project_service, 'GENERAL_RESEARCH')
+        if project_service is not None else ProjectModel().get_all()
+    )
     equipment = equipment_model.get_all()
     standards = standard_model.get_all()
     
@@ -102,8 +106,10 @@ def tree():
     
     # 安全保密项目
     if 'security_projects' in visible_dirs:
-        security_model = SecurityProjectModel()
-        security_projects = security_model.get_all()
+        security_projects = (
+            all_legacy_projects(project_service, 'SECURITY_CONFIDENTIALITY')
+            if project_service is not None else SecurityProjectModel().get_all()
+        )
         security_status_groups = {}
         for p in security_projects:
             status = p['status'] if p['status'] else '未知'
@@ -142,8 +148,10 @@ def tree():
     
     # 密码应用项目
     if 'crypto_projects' in visible_dirs:
-        crypto_model = CryptoProjectModel()
-        crypto_projects = crypto_model.get_all()
+        crypto_projects = (
+            all_legacy_projects(project_service, 'CRYPTO_APPLICATION')
+            if project_service is not None else CryptoProjectModel().get_all()
+        )
         crypto_status_groups = {}
         for p in crypto_projects:
             status = p['status'] if p['status'] else '未知'

@@ -32,9 +32,11 @@
                     </thead>
                     <tbody>
                         {% for doc in documents %}
+                        {% set download_url = url_for(document_blueprint ~ '.download_project_doc', project_id=project['project_id'], filename=doc.name) %}
+                        {% set delete_url = url_for(document_blueprint ~ '.delete_project_doc', project_id=project['project_id'], filename=doc.name) %}
                         <tr>
                             <td>
-                                <a href="javascript:void(0)" onclick="openPreview('{{ doc.path }}', '{{ doc.name }}', 'project', '/projects/download_doc/{{ project['project_id'] }}/{{ doc.name }}')" class="text-decoration-none">
+                                <a href="javascript:void(0)" onclick="openPreview('{{ doc.path }}', '{{ doc.name }}', 'project', '{{ download_url }}')" class="text-decoration-none">
                                     <i class="bi bi-file-{{ 'pdf' if doc.type == 'pdf' else 'word' if doc.type in ['doc','docx'] else 'earmark' }} text-{{ 'danger' if doc.type == 'pdf' else 'primary' }}"></i>
                                     {{ doc.name }}
                                 </a>
@@ -43,13 +45,13 @@
                             <td>{{ (doc.size/1024)|round(1) }} KB</td>
                             <td>{{ doc.upload_time }}</td>
                             <td>
-                                <button class="btn btn-sm btn-outline-primary" onclick="openPreview('{{ doc.path }}', '{{ doc.name }}', 'project', '/projects/download_doc/{{ project['project_id'] }}/{{ doc.name }}')" title="预览">
+                                <button class="btn btn-sm btn-outline-primary" onclick="openPreview('{{ doc.path }}', '{{ doc.name }}', 'project', '{{ download_url }}')" title="预览">
                                     <i class="bi bi-eye"></i>
                                 </button>
-                                <a href="/projects/download_doc/{{ project['project_id'] }}/{{ doc.name }}" class="btn btn-sm btn-outline-success" title="下载">
+                                <a href="{{ download_url }}" class="btn btn-sm btn-outline-success" title="下载">
                                     <i class="bi bi-download"></i>
                                 </a>
-                                <button class="btn btn-sm btn-outline-danger" onclick="deleteDoc('{{ doc.name }}')" title="删除">
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteDoc('{{ delete_url }}', '{{ doc.name }}')" title="删除">
                                     <i class="bi bi-trash"></i>
                                 </button>
                             </td>
@@ -69,7 +71,8 @@
 <div class="modal fade" id="uploadDocModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
-            <form method="POST" action="/projects/upload_doc/{{ project['project_id'] }}" enctype="multipart/form-data">
+            <form method="POST" action="{{ url_for(document_blueprint ~ '.upload_project_doc', project_id=project['project_id']) }}" enctype="multipart/form-data">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                 <div class="modal-header">
                     <h5 class="modal-title">上传项目文档</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -95,10 +98,11 @@ function showUploadModal() {
     new bootstrap.Modal(document.getElementById('uploadDocModal')).show();
 }
 
-function deleteDoc(docName) {
+function deleteDoc(deleteUrl, docName) {
     if (confirm('确认删除文档"' + docName + '"？')) {
-        fetch('/projects/delete_doc/{{ project['project_id'] }}/' + docName, {
-            method: 'POST'
+        fetch(deleteUrl, {
+            method: 'POST',
+            headers: {'X-CSRF-Token': window.APP_CSRF_TOKEN}
         })
         .then(r => r.json())
         .then(data => {

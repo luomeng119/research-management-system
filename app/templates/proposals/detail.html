@@ -3,7 +3,7 @@
 {% block content %}
 {% set source_labels = {'IDEA':'想法','CREATIVE':'创意','MEETING_CONCLUSION':'会议结论','FINISHED_MATERIAL':'成品材料','OTHER':'其他'} %}
 {% set status_labels = {'DRAFT':'草稿','ARGUMENTATION':'论证中','ESTABLISHED':'已立项','DEFERRED':'已暂缓','REJECTED':'不立项'} %}
-{% set decision_labels = {'DEFER':'暂缓','REJECT':'不立项'} %}
+{% set decision_labels = {'ESTABLISH':'立项','DEFER':'暂缓','REJECT':'不立项'} %}
 <div class="container-fluid py-3" style="max-width: 1120px;">
   <a href="{{ url_for('proposals.list_page') }}" class="text-decoration-none">‹ 返回提案列表</a>
   <div class="d-flex justify-content-between align-items-start mt-2 mb-3">
@@ -89,14 +89,20 @@
   {% if proposal.status == 'ARGUMENTATION' %}
   <div class="card p-4 mb-3">
     <h5><i class="bi bi-check2-square me-2"></i>论证处理</h5>
-    <p class="text-muted small">本阶段可暂缓、不立项或退回草稿补充；“立项”在后续项目创建阶段原子完成。</p>
+    <p class="text-muted small">立项时决定记录、项目创建、提案关联和状态变更会一次提交；任一步失败均不会改变提案。</p>
     <form method="post" action="{{ url_for('proposals.decide_page', business_id=proposal.businessId) }}">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="version" value="{{ proposal.version }}"><input type="hidden" name="idempotencyKey" value="{{ idempotency_key }}">
       <div class="row g-3">
-        <div class="col-md-3"><label class="form-label" for="decision">处理结果</label><select class="form-select" id="decision" name="decision" required><option value="">请选择</option><option value="DEFER" {{ 'selected' if decision_form and decision_form.decision == 'DEFER' }}>暂缓</option><option value="REJECT" {{ 'selected' if decision_form and decision_form.decision == 'REJECT' }}>不立项</option></select></div>
+        <div class="col-md-3"><label class="form-label" for="decision">处理结果</label><select class="form-select" id="decision" name="decision" required><option value="">请选择</option>{% if project_establishment_available %}<option value="ESTABLISH" {{ 'selected' if decision_form and decision_form.decision == 'ESTABLISH' }}>立项</option>{% endif %}<option value="DEFER" {{ 'selected' if decision_form and decision_form.decision == 'DEFER' }}>暂缓</option><option value="REJECT" {{ 'selected' if decision_form and decision_form.decision == 'REJECT' }}>不立项</option></select></div>
         <div class="col-md-3"><label class="form-label" for="decisionDate">处理日期</label><input class="form-control" id="decisionDate" type="date" name="decisionDate" value="{{ decision_form.decisionDate if decision_form else '' }}" required></div>
         <div class="col-md-3"><label class="form-label" for="decisionConclusion">处理结论</label><input class="form-control" id="decisionConclusion" name="conclusion" value="{{ decision_form.conclusion if decision_form else '' }}" required></div>
         <div class="col-md-3"><label class="form-label" for="decisionBasis">处理依据</label><input class="form-control" id="decisionBasis" name="basis" value="{{ decision_form.basis if decision_form else '' }}" required></div>
+      </div>
+      <div class="row g-3 mt-1" id="establish-fields" {% if not decision_form or decision_form.decision != 'ESTABLISH' %}hidden{% endif %}>
+        <div class="col-md-3"><label class="form-label" for="projectCategory">项目类别</label><select class="form-select establish-required" id="projectCategory" name="projectCategory"><option value="GENERAL_RESEARCH">一般科研</option><option value="SECURITY_CONFIDENTIALITY">安全保密</option><option value="CRYPTO_APPLICATION">密码应用</option></select></div>
+        <div class="col-md-3"><label class="form-label" for="projectName">项目名称</label><input class="form-control establish-required" id="projectName" name="projectName" value="{{ decision_form.projectName if decision_form else proposal.title }}"></div>
+        <div class="col-md-3"><label class="form-label" for="projectLeader">负责人</label><input class="form-control establish-required" id="projectLeader" name="projectLeader" value="{{ decision_form.projectLeader if decision_form else '' }}" placeholder="如：张老师"></div>
+        <div class="col-md-3"><label class="form-label" for="plannedEndDate">计划结束日期（选填）</label><input class="form-control" id="plannedEndDate" type="date" name="plannedEndDate" value="{{ decision_form.plannedEndDate if decision_form else '' }}"></div>
       </div>
       <div class="text-end mt-3"><button class="btn btn-primary" type="submit">记录处理</button></div>
     </form>
@@ -104,6 +110,20 @@
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="version" value="{{ proposal.version }}"><button class="btn btn-outline-secondary" type="submit">退回补充</button>
     </form>
   </div>
+  <script>
+    (() => {
+      const decision = document.getElementById('decision');
+      const fields = document.getElementById('establish-fields');
+      if (!decision || !fields) return;
+      const sync = () => {
+        const enabled = decision.value === 'ESTABLISH';
+        fields.hidden = !enabled;
+        fields.querySelectorAll('.establish-required').forEach(item => item.required = enabled);
+      };
+      decision.addEventListener('change', sync);
+      sync();
+    })();
+  </script>
   {% elif proposal.status == 'DEFERRED' %}
   <div class="card p-4 mb-3"><h5><i class="bi bi-arrow-repeat me-2"></i>暂缓后处理</h5><form method="post" action="{{ url_for('proposals.reopen_page', business_id=proposal.businessId) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="version" value="{{ proposal.version }}"><button class="btn btn-primary" type="submit">重新论证</button></form></div>
   {% endif %}

@@ -9,6 +9,7 @@ from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from app.security.auth import business_required, current_identity
 from app.services.files import FileServiceError
 from app.services.proposals import ProposalServiceError, SOURCE_TYPES, STATUSES
+from app.services.projects import ProjectServiceError
 
 
 bp = Blueprint("proposals", __name__)
@@ -86,6 +87,7 @@ def _detail_context(business_id: str, **extra):
         "decision_pagination": decisions,
         "files": _files(business_id),
         "idempotency_key": extra.pop("idempotency_key", uuid.uuid4().hex),
+        "project_establishment_available": "project_service" in current_app.extensions,
         **extra,
     }
 
@@ -219,20 +221,37 @@ def decide_page(business_id: str):
     form = request.form.to_dict()
     try:
         identity = current_identity()
-        _service().decide(
-            business_id,
-            {
-                "decision": form.get("decision"),
-                "decisionDate": form.get("decisionDate"),
-                "conclusion": form.get("conclusion"),
-                "basis": form.get("basis"),
-            },
-            idempotency_key=form.get("idempotencyKey", ""),
-            expected_version=form.get("version"), actor_user_id=identity.user_id,
-            request_id=_request_id(),
-        )
+        payload = {
+            "decision": form.get("decision"),
+            "decisionDate": form.get("decisionDate"),
+            "conclusion": form.get("conclusion"),
+            "basis": form.get("basis"),
+        }
+        if payload["decision"] == "ESTABLISH":
+            payload["project"] = {
+                "category": form.get("projectCategory"),
+                "name": form.get("projectName"),
+                "leader": form.get("projectLeader"),
+                "plannedEndDate": form.get("plannedEndDate"),
+            }
+            project_service = current_app.extensions.get("project_service")
+            if project_service is None:
+                raise ProjectServiceError("SERVICE_UNAVAILABLE", "项目服务未配置", 503)
+            project_service.establish_from_proposal(
+                business_id, payload,
+                idempotency_key=form.get("idempotencyKey", ""),
+                expected_version=form.get("version"), actor_user_id=identity.user_id,
+                request_id=_request_id(),
+            )
+        else:
+            _service().decide(
+                business_id, payload,
+                idempotency_key=form.get("idempotencyKey", ""),
+                expected_version=form.get("version"), actor_user_id=identity.user_id,
+                request_id=_request_id(),
+            )
         return redirect(url_for("proposals.detail_page", business_id=business_id))
-    except ProposalServiceError as error:
+    except (ProposalServiceError, ProjectServiceError) as error:
         return _detail_error(
             business_id, error, decision_form=form,
             idempotency_key=form.get("idempotencyKey") or uuid.uuid4().hex,
@@ -384,15 +403,26 @@ def decide_api(business_id: str):
     try:
         payload = _json()
         identity = current_identity()
-        result = _service().decide(
-            business_id, payload,
-            idempotency_key=request.headers.get("Idempotency-Key", ""),
-            expected_version=payload.get("version"), actor_user_id=identity.user_id,
-            request_id=_request_id(),
-        )
+        if payload.get("decision") == "ESTABLISH":
+            service = current_app.extensions.get("project_service")
+            if service is None:
+                raise ProjectServiceError("SERVICE_UNAVAILABLE", "项目服务未配置", 503)
+            result = service.establish_from_proposal(
+                business_id, payload,
+                idempotency_key=request.headers.get("Idempotency-Key", ""),
+                expected_version=payload.get("version"), actor_user_id=identity.user_id,
+                request_id=_request_id(),
+            )
+        else:
+            result = _service().decide(
+                business_id, payload,
+                idempotency_key=request.headers.get("Idempotency-Key", ""),
+                expected_version=payload.get("version"), actor_user_id=identity.user_id,
+                request_id=_request_id(),
+            )
         result.pop("_reused", None)
         return jsonify(result), 201
-    except ProposalServiceError as error:
+    except (ProposalServiceError, ProjectServiceError) as error:
         return _error(error)
 
 

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify, send_file
+from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify, send_file, current_app
 from datetime import datetime
 from app.models import EquipmentModel, EquipmentGroupModel, ProjectModel, SecurityProjectModel, CryptoProjectModel
+from app.routes._project_bridge import all_legacy_projects
 import openpyxl
 from io import BytesIO
 
@@ -10,6 +11,20 @@ bp = Blueprint('equipment_groups', __name__, url_prefix='/equipment/groups')
 def get_all_projects():
     """获取所有类型的项目（科研项目、安全保密项目、密码应用项目）"""
     all_projects = []
+    project_service = current_app.extensions.get('project_service')
+    if project_service is not None:
+        labels = {
+            'GENERAL_RESEARCH': '科研项目',
+            'SECURITY_CONFIDENTIALITY': '安全保密项目',
+            'CRYPTO_APPLICATION': '密码应用项目',
+        }
+        for category, label in labels.items():
+            for project in all_legacy_projects(project_service, category):
+                all_projects.append({
+                    'id': project['project_id'], 'name': project['name'],
+                    'leader': project['leader'], 'type': label,
+                })
+        return all_projects
     
     # 科研项目
     pm = ProjectModel()
@@ -76,8 +91,7 @@ def new():
         if not project_name:
             # 如果关联了项目，使用项目名称作为默认
             if project_id:
-                project_model = ProjectModel()
-                proj = project_model.get_by_id(project_id)
+                proj = next((item for item in my_projects if item['id'] == project_id), None)
                 if proj:
                     project_name = proj['name']
             if not project_name:
