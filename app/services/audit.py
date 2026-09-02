@@ -30,6 +30,7 @@ EVENT_PROPERTIES = {
     "proposal_status_changed": {"from_status", "to_status"},
     "proposal_decision_recorded": {"decision", "project_category"},
     "project_created_from_proposal": {"project_category", "idempotency_reused"},
+    "project_status_changed": {"from_status", "to_status"},
     "project_record_added": {"record_type", "project_status"},
     "file_operation_completed": {"operation", "file_type", "size_bucket"},
     "import_batch_completed": {"module", "valid_count", "error_count", "duplicate_count"},

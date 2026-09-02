@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+
+{% block title %}{% if project %}{{ project.name }}{% else %}项目详情{% endif %} - 科研创新管理{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/research-path.css">
+{% endblock %}
+
+{% block content %}
+{% if page_error %}
+<div class="alert alert-danger" role="alert">{{ page_error }}</div>
+{% else %}
+{% set status_labels = {'PENDING':'待启动','ACTIVE':'执行中','PAUSED':'已暂停','CLOSING':'结题中','CLOSED':'已结题','TERMINATED':'已终止'} %}
+{% set category_labels = {'GENERAL_RESEARCH':'一般科研项目','SECURITY_CONFIDENTIALITY':'安全保密项目','CRYPTO_APPLICATION':'密码应用项目'} %}
+<main class="lifecycle-page" data-project-id="{{ project.id }}" data-project-version="{{ project.version }}" data-project-status="{{ project.status }}">
+  <div class="d-flex justify-content-between align-items-center gap-3 mb-3">
+    <a class="btn btn-sm btn-outline-secondary" href="/projects/"><i class="bi bi-arrow-left"></i> 返回项目列表</a>
+    <div class="d-flex gap-2">
+      {% if project.category == 'GENERAL_RESEARCH' %}
+      <a class="btn btn-sm btn-outline-secondary" href="/projects/detail/{{ project.businessId }}"><i class="bi bi-folder2-open"></i> 原项目文件</a>
+      {% elif project.category == 'SECURITY_CONFIDENTIALITY' %}
+      <a class="btn btn-sm btn-outline-secondary" href="/security_projects/detail/{{ project.businessId }}"><i class="bi bi-folder2-open"></i> 原项目文件</a>
+      {% else %}
+      <a class="btn btn-sm btn-outline-secondary" href="/crypto_projects/detail/{{ project.businessId }}"><i class="bi bi-folder2-open"></i> 原项目文件</a>
+      {% endif %}
+      <button class="btn btn-sm btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#progressModal"><i class="bi bi-plus-circle"></i> 记录进展</button>
+    </div>
+  </div>
+
+  <header class="project-heading">
+    <div>
+      <p class="project-kicker">{{ project.businessId }} · {{ category_labels[project.category] }}</p>
+      <h1>{{ project.name }}</h1>
+      <p>负责人：{{ project.leader or '未记录' }} · 计划结束：{{ project.plannedEndDate or '未记录' }}</p>
+    </div>
+    <span class="project-status status-{{ project.status|lower }}" id="projectStatusLabel">{{ status_labels[project.status] }}</span>
+  </header>
+
+  <nav class="project-tabs" role="tablist" aria-label="项目详情">
+    <button class="active" type="button" role="tab" aria-selected="true" data-panel="overview">概况</button>
+    <button type="button" role="tab" aria-selected="false" data-panel="research-path"><i class="bi bi-diagram-3"></i> 研究路径</button>
+    <button type="button" role="tab" aria-selected="false" data-panel="progress">进展记录 <span>{{ progress|length }}</span></button>
+    <button type="button" role="tab" aria-selected="false" data-panel="changes">变更记录 <span>{{ changes|length }}</span></button>
+    <button type="button" role="tab" aria-selected="false" data-panel="outputs">成果 <span>{{ outputs|length }}</span></button>
+    <button type="button" role="tab" aria-selected="false" data-panel="closure">结题</button>
+  </nav>
+
+  <section class="project-panel" data-panel-content="overview">
+    <div class="panel-card">
+      <div class="panel-title"><div><h2>当前阶段</h2><p>状态只能通过受控动作转换并记录原因</p></div></div>
+      <ol class="stage-track" aria-label="项目阶段">
+        {% set stages = [('PENDING','待启动'),('ACTIVE','执行中'),('CLOSING','结题中'),('CLOSED','已结题')] %}
+        {% set stage_index = {'PENDING':0,'ACTIVE':1,'PAUSED':1,'CLOSING':2,'CLOSED':3,'TERMINATED':0}[project.status] %}
+        {% for key, label in stages %}
+        <li class="{% if loop.index0 < stage_index or project.status == 'CLOSED' %}done{% elif loop.index0 == stage_index %}current{% endif %}"><i></i><span>{{ label }}</span></li>
+        {% endfor %}
+      </ol>
+      <div class="status-actions mt-3" id="statusActions">
+        {% if project.status == 'PENDING' %}<button class="btn btn-sm btn-success" data-status="ACTIVE">启动项目</button><button class="btn btn-sm btn-outline-danger" data-status="TERMINATED">终止</button>{% endif %}
+        {% if project.status == 'ACTIVE' %}<button class="btn btn-sm btn-outline-secondary" data-status="PAUSED">暂停</button><button class="btn btn-sm btn-primary" data-status="CLOSING">进入结题</button><button class="btn btn-sm btn-outline-danger" data-status="TERMINATED">终止</button>{% endif %}
+        {% if project.status == 'PAUSED' %}<button class="btn btn-sm btn-success" data-status="ACTIVE">恢复执行</button><button class="btn btn-sm btn-outline-danger" data-status="TERMINATED">终止</button>{% endif %}
+        {% if project.status == 'CLOSING' %}<button class="btn btn-sm btn-outline-secondary" data-status="ACTIVE">退回补充</button>{% endif %}
+      </div>
+    </div>
+    <div class="panel-card mt-3">
+      <div class="panel-title"><div><h2>最近进展</h2><p>按记录时间倒序</p></div></div>
+      {% if progress %}
+      <div class="record-list">{% for item in progress[:5] %}<article><span class="record-state state-{{ item.status|lower }}">{{ {'NORMAL':'正常','RISK':'有风险','BLOCKED':'受阻'}[item.status] }}</span><div><h3>{{ item.summary }}</h3><p>{{ item.issues or '未记录问题' }}</p><small>{{ item.recordedAt }} · 记录人账号 {{ item.createdBy }}</small></div></article>{% endfor %}</div>
+      {% else %}<p class="empty-copy">尚无进展记录。</p>{% endif %}
+    </div>
+  </section>
+
+  <section class="research-path-panel" data-panel-content="research-path" hidden>
+    <header class="research-path-head"><div><h2>研究路径</h2><p>由项目阶段与真实进展记录生成；这里只呈现关系，不创建或派发任务。</p></div><div class="research-path-actions"><button class="btn btn-sm btn-outline-secondary" id="togglePathMotion" type="button" aria-pressed="false"><i class="bi bi-pause"></i><span>暂停动态线</span></button><button class="btn btn-sm btn-outline-secondary" id="fitResearchPath" type="button"><i class="bi bi-arrows-fullscreen"></i>适应视图</button></div></header>
+    <div class="path-legend" aria-label="研究路径状态图例"><span class="done"><i></i>已完成（实线）</span><span class="active"><i></i>进行中（动态虚线）</span><span class="pending"><i></i>未开始（灰色虚线）</span><span class="risk"><i></i>有风险（橙色虚线）</span><span class="blocked"><i></i>受阻（红色点线）</span></div>
+    <div class="research-path-layout">
+      <div class="research-path-canvas-wrap"><div id="researchPathCanvas" role="img" aria-label="{{ project.name }}的只读研究路径"><div class="path-loading">正在生成只读研究路径…</div></div><p class="canvas-help">拖动画布、滚轮缩放；点击节点查看依据。业务节点不可编辑。</p></div>
+      <aside class="path-inspector" id="pathInspector" aria-live="polite"><span class="path-inspector-status pending">未选择</span><h3>选择一个节点</h3><p>查看该节点的来源记录与状态说明。</p><dl><div><dt>负责人</dt><dd>未记录</dd></div><div><dt>计划时间</dt><dd>未记录</dd></div><div><dt>依据记录</dt><dd>未记录</dd></div><div><dt>问题</dt><dd>未记录</dd></div></dl><footer><strong>下一步</strong><p>未记录</p></footer></aside>
+    </div>
+    <p class="path-boundary"><strong>V1 边界：</strong>路径图只读取已有业务记录，不承担会议管理、自由脑图编辑、任务派发或自动催办。</p>
+  </section>
+
+  <section class="project-panel" data-panel-content="progress" hidden><div class="panel-card"><div class="panel-title"><div><h2>进展记录</h2><p>完成情况、问题与下一步均作为业务事实留痕</p></div><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#progressModal">新增进展</button></div><div class="record-list" data-record-list="progress">{% for item in progress %}<article><span class="record-state state-{{ item.status|lower }}">{{ {'NORMAL':'正常','RISK':'有风险','BLOCKED':'受阻'}[item.status] }}</span><div><h3>{{ item.summary }}</h3><p>问题：{{ item.issues or '无' }} · 下一步：{{ item.nextActions or '未记录' }}</p><small>{{ item.recordedAt }} · 记录人账号 {{ item.createdBy }}</small></div></article>{% else %}<p class="empty-copy">尚无进展记录。</p>{% endfor %}</div>{% if recordTruncated.progress %}<button class="btn btn-sm btn-outline-secondary mt-3 load-more-records" type="button" data-record-type="progress" data-page="2">加载更早进展</button>{% endif %}</div></section>
+  <section class="project-panel" data-panel-content="changes" hidden><div class="panel-card"><div class="panel-title"><div><h2>变更记录</h2><p>只记录变更事实与决定，不建设审批流</p></div><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#changeModal">登记变更</button></div><div class="record-list" data-record-list="changes">{% for item in changes %}<article><span class="record-state">{{ item.changeType }}</span><div><h3>{{ item.afterSummary }}</h3><p>变更前：{{ item.beforeSummary or '未记录' }} · 依据：{{ item.basis or '未记录' }}</p><small>{{ item.decisionDate or item.createdAt }} · {{ item.decision or '历史记录' }}</small></div></article>{% else %}<p class="empty-copy">尚无变更记录。</p>{% endfor %}</div>{% if recordTruncated.changes %}<button class="btn btn-sm btn-outline-secondary mt-3 load-more-records" type="button" data-record-type="changes" data-page="2">加载更早变更</button>{% endif %}</div></section>
+  <section class="project-panel" data-panel-content="outputs" hidden><div class="panel-card"><div class="panel-title"><div><h2>成果登记</h2><p>报告、论文、专利、软件、标准、样机和数据等</p></div><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#outputModal">登记成果</button></div><div class="record-list" data-record-list="outputs">{% for item in outputs %}<article><span class="record-state">{{ item.outputType }}</span><div><h3>{{ item.title }}</h3><p>{{ item.description or '未填写说明' }}</p><small>{{ item.formedDate or item.createdAt }} · {{ item.contributors or '未记录完成人' }}</small></div></article>{% else %}<p class="empty-copy">尚无成果记录。</p>{% endfor %}</div>{% if recordTruncated.outputs %}<button class="btn btn-sm btn-outline-secondary mt-3 load-more-records" type="button" data-record-type="outputs" data-page="2">加载更早成果</button>{% endif %}</div></section>
+  <section class="project-panel" data-panel-content="closure" hidden><div class="panel-card"><div class="panel-title"><div><h2>结题记录</h2><p>项目进入结题中后才能提交结论</p></div>{% if project.status == 'CLOSING' %}<button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#closureModal">记录结题</button>{% endif %}</div>{% if closure %}<dl class="closure-summary"><div><dt>结论</dt><dd>{{ {'PASS':'通过','FAIL':'未通过','TERMINATED':'终止'}.get(closure.conclusion, '历史记录') }}</dd></div><div><dt>结题时间</dt><dd>{{ closure.closedAt }}</dd></div><div><dt>完成情况</dt><dd>{{ closure.summary }}</dd></div><div><dt>遗留问题</dt><dd>{{ closure.remainingIssues or '无' }}</dd></div></dl>{% else %}<p class="empty-copy">尚无结题记录。</p>{% endif %}</div></section>
+</main>
+
+{% macro form_modal(id, title, body) %}<div class="modal fade" id="{{ id }}" tabindex="-1"><div class="modal-dialog"><form class="modal-content lifecycle-form" data-kind="{{ id[:-5] }}"><div class="modal-header"><h2 class="modal-title fs-5">{{ title }}</h2><button class="btn-close" type="button" data-bs-dismiss="modal"></button></div><div class="modal-body">{{ body|safe }}<div class="form-error text-danger small mt-2" role="alert"></div></div><div class="modal-footer"><button class="btn btn-secondary" type="button" data-bs-dismiss="modal">取消</button><button class="btn btn-primary" type="submit">保存</button></div></form></div></div>{% endmacro %}
+{{ form_modal('progressModal','记录项目进展','<label class="form-label">记录时间</label><input class="form-control mb-3" type="datetime-local" name="recordedAt" required><label class="form-label">状态</label><select class="form-select mb-3" name="status"><option value="NORMAL">正常</option><option value="RISK">有风险</option><option value="BLOCKED">受阻</option></select><label class="form-label">完成情况</label><textarea class="form-control mb-3" name="summary" required></textarea><label class="form-label">问题与风险</label><textarea class="form-control mb-3" name="issues"></textarea><label class="form-label">下一步</label><textarea class="form-control" name="nextActions"></textarea>') }}
+{{ form_modal('changeModal','登记项目变更','<label class="form-label">决定日期</label><input class="form-control mb-3" type="date" name="decisionDate" required><label class="form-label">变更类型</label><select class="form-select mb-3" name="changeType"><option value="GOAL">目标</option><option value="PERIOD">周期</option><option value="LEADER">负责人</option><option value="CONTENT">内容</option><option value="OTHER">其他</option></select><label class="form-label">变更前摘要</label><textarea class="form-control mb-3" name="beforeSummary"></textarea><label class="form-label">变更后摘要</label><textarea class="form-control mb-3" name="afterSummary" required></textarea><label class="form-label">变更原因</label><textarea class="form-control mb-3" name="basis" required></textarea><label class="form-label">决定</label><select class="form-select" name="decision"><option value="AGREED">同意</option><option value="REJECTED">不同意</option><option value="FILED">备案</option></select>') }}
+{{ form_modal('outputModal','登记项目成果','<label class="form-label">成果形成日期</label><input class="form-control mb-3" type="date" name="formedDate" required><label class="form-label">成果类型</label><select class="form-select mb-3" name="outputType"><option value="REPORT">报告</option><option value="PAPER">论文</option><option value="PATENT">专利</option><option value="SOFTWARE">软件</option><option value="STANDARD">标准</option><option value="PROTOTYPE">样机</option><option value="DATA">数据</option><option value="OTHER">其他</option></select><label class="form-label">成果名称</label><input class="form-control mb-3" name="title" required><label class="form-label">完成人</label><input class="form-control mb-3" name="contributors" required placeholder="如：张老师、李老师"><label class="form-label">成果说明</label><textarea class="form-control" name="description"></textarea>') }}
+{{ form_modal('closureModal','记录项目结题','<label class="form-label">结题时间</label><input class="form-control mb-3" type="datetime-local" name="closedAt" required><label class="form-label">结题结论</label><select class="form-select mb-3" name="conclusion"><option value="PASS">通过</option><option value="FAIL">未通过，退回补充</option><option value="TERMINATED">终止</option></select><label class="form-label">完成情况摘要</label><textarea class="form-control mb-3" name="summary" required></textarea><label class="form-label">遗留问题</label><textarea class="form-control mb-3" name="remainingIssues"></textarea><label class="form-label">无成果原因（已有成果时可不填）</label><textarea class="form-control" name="noOutputReason"></textarea>') }}
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  const page = document.querySelector('.lifecycle-page');
+  if (!page) return;
+  let version = Number(page.dataset.projectVersion);
+  const projectId = page.dataset.projectId;
+  const panels = document.querySelectorAll('[data-panel-content]');
+  document.querySelectorAll('.project-tabs [data-panel]').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      document.querySelectorAll('.project-tabs [data-panel]').forEach(t => { t.classList.toggle('active', t === tab); t.setAttribute('aria-selected', String(t === tab)); });
+      panels.forEach(panel => { panel.hidden = panel.dataset.panelContent !== tab.dataset.panel; });
+      if (tab.dataset.panel === 'research-path') window.ResearchPath && window.ResearchPath.mount();
+    });
+  });
+  async function send(url, payload) {
+    const response = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...payload, version})});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error && data.error.message || '保存失败');
+    version = Number(data.projectVersion || data.version || version);
+    return data;
+  }
+  const localNow = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString();
+  document.querySelectorAll('input[type="datetime-local"]').forEach(input => { if (!input.value) input.value = localNow.slice(0, 16); });
+  document.querySelectorAll('input[type="date"]').forEach(input => { if (!input.value) input.value = localNow.slice(0, 10); });
+  function recordArticle(kind, item) {
+    const article = document.createElement('article');
+    const badge = document.createElement('span');
+    badge.className = `record-state ${kind === 'progress' ? `state-${String(item.status || '').toLowerCase()}` : ''}`;
+    badge.textContent = kind === 'progress' ? ({NORMAL:'正常', RISK:'有风险', BLOCKED:'受阻'}[item.status] || item.status) : (item.changeType || item.outputType || '记录');
+    const body = document.createElement('div');
+    const title = document.createElement('h3');
+    const copy = document.createElement('p');
+    const meta = document.createElement('small');
+    if (kind === 'progress') {
+      title.textContent = item.summary || '未填写';
+      copy.textContent = `问题：${item.issues || '无'} · 下一步：${item.nextActions || '未记录'}`;
+      meta.textContent = `${item.recordedAt || '未记录'} · 记录人账号 ${item.createdBy ?? '未记录'}`;
+    } else if (kind === 'changes') {
+      title.textContent = item.afterSummary || '未填写';
+      copy.textContent = `变更前：${item.beforeSummary || '未记录'} · 依据：${item.basis || '未记录'}`;
+      meta.textContent = `${item.decisionDate || item.createdAt || '未记录'} · ${item.decision || '历史记录'}`;
+    } else {
+      title.textContent = item.title || '未填写';
+      copy.textContent = item.description || '未填写说明';
+      meta.textContent = `${item.formedDate || item.createdAt || '未记录'} · ${item.contributors || '未记录完成人'}`;
+    }
+    body.append(title, copy, meta);
+    article.append(badge, body);
+    return article;
+  }
+  document.querySelectorAll('.load-more-records').forEach(button => button.addEventListener('click', async function () {
+    const kind = button.dataset.recordType;
+    const pageNumber = Number(button.dataset.page || 2);
+    button.disabled = true;
+    try {
+      const response = await fetch(`/api/projects/${projectId}/${kind}?page=${pageNumber}&pageSize=50`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error && payload.error.message || '读取失败');
+      const list = document.querySelector(`[data-record-list="${kind}"]`);
+      payload.data.forEach(item => list.append(recordArticle(kind, item)));
+      if (pageNumber >= payload.pagination.totalPages) button.remove();
+      else { button.dataset.page = String(pageNumber + 1); button.disabled = false; }
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = `${error.message}，点击重试`;
+    }
+  }));
+  document.querySelectorAll('#statusActions [data-status]').forEach(button => button.addEventListener('click', async function () {
+    const reason = window.prompt('请填写本次状态变化原因');
+    if (!reason) return;
+    try { await send(`/api/projects/${projectId}/status-transitions`, {toStatus: button.dataset.status, reason}); window.location.reload(); }
+    catch (error) { window.alert(error.message); }
+  }));
+  document.querySelectorAll('.lifecycle-form').forEach(function (form) {
+    form.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(form).entries());
+      const kind = form.dataset.kind;
+      if (kind === 'progress') data.recordedAt = new Date(data.recordedAt).toISOString();
+      if (kind === 'closure') data.closedAt = new Date(data.closedAt).toISOString();
+      const path = {progress:'progress', change:'changes', output:'outputs', closure:'closure'}[kind];
+      try { await send(`/api/projects/${projectId}/${path}`, data); window.location.reload(); }
+      catch (error) { form.querySelector('.form-error').textContent = error.message; }
+    });
+  });
+});
+</script>
+<script>window.__G6_LOAD_FAILED__ = false;</script>
+<script defer src="/static/vendor/g6.min.js" onerror="window.__G6_LOAD_FAILED__=true"></script>
+<script defer src="/static/js/research-path.js"></script>
+{% endif %}
+{% endblock %}

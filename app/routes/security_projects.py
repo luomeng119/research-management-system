@@ -184,9 +184,6 @@ def detail(project_id):
     equipment_group_model = EquipmentGroupModel()
     try:
         project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
-        folder_path = safe_project_path(
-            current_app.config['UPLOAD_DIR'], project_id, folder or FOLDER_TYPES[0]
-        )
     except ValueError:
         return jsonify({'success': False, 'message': '非法路径'}), 400
     folder_tree = build_folder_tree(project_dir)
@@ -635,11 +632,15 @@ def update_project_field(project_id):
                 category='SECURITY_CONFIDENTIALITY', business_id=project_id,
                 field=field_map[field], value=value,
                 actor_user_id=current_identity().user_id,
+                request_id=getattr(request, 'request_id', 'legacy-project-update'),
             )
             return jsonify({'success': True, 'message': '更新成功'})
         except ProjectServiceError as error:
             return jsonify({'success': False, 'message': error.message}), error.status_code
     
+    if field_map[field] == 'status':
+        return jsonify({'success': False, 'message': '项目状态服务暂不可用，未执行修改'}), 503
+
     project = SecurityProjectModel().get_by_id(project_id)
     if not project:
         return jsonify({'success': False, 'message': '项目不存在'})

@@ -1,0 +1,10 @@
+{
+  "name": "research-innovation-management-v1-e2e",
+  "private": true,
+  "scripts": {
+    "test:e2e": "playwright test --project=chromium --workers=1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

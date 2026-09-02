@@ -9,6 +9,8 @@ screenshots/
 
 # Python cache
 __pycache__/
+node_modules/
+build/
 *.pyc
 *.pyo
 

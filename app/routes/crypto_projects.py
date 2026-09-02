@@ -173,9 +173,6 @@ def detail(project_id):
     equipment_group_model = EquipmentGroupModel()
     try:
         project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
-        folder_path = safe_project_path(
-            current_app.config['UPLOAD_DIR'], project_id, folder or FOLDER_TYPES[0]
-        )
     except ValueError:
         return jsonify({'success': False, 'message': '非法路径'}), 400
     folder_tree = build_folder_tree(project_dir)
@@ -624,11 +621,15 @@ def update_project_field(project_id):
                 category='CRYPTO_APPLICATION', business_id=project_id,
                 field=field_map[field], value=value,
                 actor_user_id=current_identity().user_id,
+                request_id=getattr(request, 'request_id', 'legacy-project-update'),
             )
             return jsonify({'success': True, 'message': '更新成功'})
         except ProjectServiceError as error:
             return jsonify({'success': False, 'message': error.message}), error.status_code
     
+    if field_map[field] == 'status':
+        return jsonify({'success': False, 'message': '项目状态服务暂不可用，未执行修改'}), 503
+
     project = CryptoProjectModel().get_by_id(project_id)
     if not project:
         return jsonify({'success': False, 'message': '项目不存在'})
@@ -658,16 +659,16 @@ def batch_update_status():
                     category='CRYPTO_APPLICATION', business_id=pid,
                     field='status', value=new_status,
                     actor_user_id=current_identity().user_id,
+                    request_id=getattr(request, 'request_id', 'legacy-project-batch-update'),
                 )
                 updated += 1
             except ProjectServiceError:
                 continue
         else:
-            project = CryptoProjectModel().get_by_id(pid)
-            if not project:
-                continue
-            CryptoProjectModel().update(pid, **{'状态': new_status})
-            updated += 1
+            return jsonify({
+                'success': False,
+                'message': '项目状态服务暂不可用，批量修改未执行',
+            }), 503
     return jsonify({'success': True, 'message': f'已更新 {updated} 个项目状态'})
 
 @bp.route('/batch_export', methods=['POST'])

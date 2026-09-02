@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
 
 
-HEAD_REVISION = "0003_project_establishment"
+HEAD_REVISION = "0004_project_lifecycle"
 
 CORE_TABLES = {
     "users",
@@ -476,6 +476,28 @@ def test_proposal_decision_ai_draft_and_project_category_columns_match_api_contr
     for table_name, required in expected_columns.items():
         actual = {column["name"] for column in inspector.get_columns(table_name)}
         assert required <= actual
+
+
+def test_project_lifecycle_columns_and_enums_match_confirmed_prd(migration_engine):
+    inspector = sa.inspect(migration_engine)
+    expected_columns = {
+        "project_progress": {"recorded_at", "status", "summary", "risk_level", "issues", "next_actions"},
+        "project_changes": {"change_type", "before_summary", "after_summary", "basis", "decision", "decision_date"},
+        "project_outputs": {"output_type", "title", "description", "formed_date", "contributors"},
+        "project_closures": {"summary", "closed_at", "conclusion", "remaining_issues", "no_output_reason"},
+    }
+    for table_name, required in expected_columns.items():
+        actual = {column["name"] for column in inspector.get_columns(table_name)}
+        assert required <= actual
+
+    progress_checks = " ".join(
+        item["sqltext"] for item in inspector.get_check_constraints("project_progress")
+    )
+    closure_checks = " ".join(
+        item["sqltext"] for item in inspector.get_check_constraints("project_closures")
+    )
+    assert all(status in progress_checks for status in ("NORMAL", "RISK", "BLOCKED"))
+    assert all(value in closure_checks for value in ("PASS", "FAIL", "TERMINATED"))
 
 
 def test_api_contract_samples_insert_and_invalid_enums_are_rejected(runtime_engine):

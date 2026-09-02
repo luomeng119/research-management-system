@@ -1149,7 +1149,7 @@ class EquipmentGroupModel:
         pass
     
     def get_db(self):
-        return sqlite3.connect('data/research.db')
+        return sqlite3.connect(DB_PATH)
     
     def create_tables(self):
         conn = self.get_db()

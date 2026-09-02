@@ -137,6 +137,7 @@ def create_app(test_config=None):
         if all(inspector.has_table(name) for name in (
             "proposals", "proposal_decisions", "project_registry",
             "projects", "security_projects", "crypto_projects",
+            "project_progress", "project_changes", "project_outputs", "project_closures",
         )):
             from app.repositories.projects import ProjectsRepository
             from app.services.projects import ProjectService

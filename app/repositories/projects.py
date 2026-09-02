@@ -26,6 +26,27 @@ class ProjectsRepository:
             category: sa.Table(name, metadata, autoload_with=engine)
             for category, name in CATEGORY_TABLES.items()
         }
+        inspector = sa.inspect(engine)
+        self.progress = (
+            sa.Table("project_progress", metadata, autoload_with=engine)
+            if inspector.has_table("project_progress") else None
+        )
+        self.changes = (
+            sa.Table("project_changes", metadata, autoload_with=engine)
+            if inspector.has_table("project_changes") else None
+        )
+        self.outputs = (
+            sa.Table("project_outputs", metadata, autoload_with=engine)
+            if inspector.has_table("project_outputs") else None
+        )
+        self.closures = (
+            sa.Table("project_closures", metadata, autoload_with=engine)
+            if inspector.has_table("project_closures") else None
+        )
+        self.object_files = (
+            sa.Table("object_files", metadata, autoload_with=engine)
+            if inspector.has_table("object_files") else None
+        )
 
     @staticmethod
     def _id(connection: Connection, value):
@@ -99,6 +120,14 @@ class ProjectsRepository:
                 self.registry.c.id == self._id(connection, registry_id)
             )
         ).mappings().first()
+
+    def get_registry_for_update(self, connection: Connection, registry_id):
+        statement = sa.select(self.registry).where(
+            self.registry.c.id == self._id(connection, registry_id)
+        )
+        if connection.dialect.name == "postgresql":
+            statement = statement.with_for_update(of=self.registry)
+        return connection.execute(statement).mappings().first()
 
     def get_registry_by_category_business_id(
         self, connection: Connection, *, category: str, business_id: str, lock=False
@@ -217,6 +246,113 @@ class ProjectsRepository:
             ).values(**self._values(self.registry, values))
         )
         return result.rowcount
+
+    def transition_registry(
+        self, connection: Connection, *, registry_id, expected_version: int, values: dict
+    ) -> int:
+        return optimistic_update(
+            connection,
+            self.registry,
+            record_id=self._id(connection, registry_id),
+            expected_version=expected_version,
+            values=self._values(self.registry, values),
+        )
+
+    def insert_process_record(
+        self, connection: Connection, *, record_type: str, values: dict
+    ) -> None:
+        table = {
+            "PROGRESS": self.progress,
+            "CHANGE": self.changes,
+            "OUTPUT": self.outputs,
+            "CLOSURE": self.closures,
+        }[record_type]
+        payload = dict(values)
+        payload["id"] = self._id(connection, payload["id"])
+        payload["project_registry_id"] = self._id(
+            connection, payload["project_registry_id"]
+        )
+        connection.execute(table.insert().values(**self._values(table, payload)))
+
+    def list_process_records(
+        self, connection: Connection, *, record_type: str, registry_id,
+        limit: int | None = None, offset: int = 0,
+    ) -> list[dict]:
+        table = {
+            "PROGRESS": self.progress,
+            "CHANGE": self.changes,
+            "OUTPUT": self.outputs,
+        }[record_type]
+        order_column = (
+            table.c.recorded_at if record_type == "PROGRESS" else table.c.created_at
+        )
+        statement = (
+            sa.select(table)
+            .where(
+                table.c.project_registry_id == self._id(connection, registry_id)
+            )
+            .order_by(order_column.desc(), table.c.id.desc())
+            .offset(offset)
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        rows = connection.execute(statement).mappings()
+        return [dict(row) for row in rows]
+
+    def count_process_records_by_type(
+        self, connection: Connection, *, record_type: str, registry_id
+    ) -> int:
+        table = {
+            "PROGRESS": self.progress,
+            "CHANGE": self.changes,
+            "OUTPUT": self.outputs,
+        }[record_type]
+        return int(connection.scalar(
+            sa.select(sa.func.count()).select_from(table).where(
+                table.c.project_registry_id == self._id(connection, registry_id)
+            )
+        ) or 0)
+
+    def get_closure(self, connection: Connection, registry_id):
+        return connection.execute(
+            sa.select(self.closures).where(
+                self.closures.c.project_registry_id
+                == self._id(connection, registry_id)
+            )
+        ).mappings().first()
+
+    def update_closure(
+        self, connection: Connection, *, closure_id, expected_version: int, values: dict
+    ) -> int:
+        return optimistic_update(
+            connection,
+            self.closures,
+            record_id=self._id(connection, closure_id),
+            expected_version=expected_version,
+            values=self._values(self.closures, values),
+        )
+
+    def count_process_records(self, connection: Connection, registry_id) -> int:
+        project_id = self._id(connection, registry_id)
+        tables = (self.progress, self.changes, self.outputs, self.closures)
+        return sum(
+            int(connection.scalar(
+                sa.select(sa.func.count()).select_from(table).where(
+                    table.c.project_registry_id == project_id
+                )
+            ) or 0)
+            for table in tables if table is not None
+        )
+
+    def count_project_files(self, connection: Connection, business_id: str) -> int:
+        if self.object_files is None:
+            return 0
+        return int(connection.scalar(
+            sa.select(sa.func.count()).select_from(self.object_files).where(
+                self.object_files.c.object_type == "PROJECT",
+                self.object_files.c.object_id == business_id,
+            )
+        ) or 0)
 
     def delete_category_project(
         self, connection: Connection, *, category: str, registry_id

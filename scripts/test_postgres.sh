@@ -162,6 +162,25 @@ fi
 echo "migration existing-draft upgrade (unknown version is non-applicable): $t07_upgrade_probe"
 psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
   -d "$t02_database" -v ON_ERROR_STOP=1 \
+  -c "INSERT INTO project_registry (category,business_id,status) VALUES ('GENERAL_RESEARCH','T09-DOWNGRADE-PROBE','ACTIVE');" \
+  -c "INSERT INTO project_progress (project_registry_id,status,summary,issues) SELECT id,'RISK','迁移保护探针','已记录的问题' FROM project_registry WHERE business_id='T09-DOWNGRADE-PROBE';" >/dev/null
+if "$t02_python" -m alembic -c alembic.ini downgrade 0003_project_establishment >/dev/null 2>&1; then
+  echo "0004 downgrade silently discarded lifecycle fields" >&2
+  exit 83
+fi
+t09_lifecycle_probe=$(psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
+  -d "$t02_database" -Atc "SELECT count(*) FROM project_progress WHERE issues='已记录的问题'")
+if [[ "$t09_lifecycle_probe" != "1" || "$(show_revision)" != "$t02_head_revision" ]]; then
+  echo "0004 downgrade guard did not preserve lifecycle evidence: count=$t09_lifecycle_probe revision=$(show_revision)" >&2
+  exit 84
+fi
+psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
+  -d "$t02_database" -v ON_ERROR_STOP=1 \
+  -c "DELETE FROM project_progress WHERE issues='已记录的问题';" \
+  -c "DELETE FROM project_registry WHERE business_id='T09-DOWNGRADE-PROBE';" >/dev/null
+echo "migration 0004 lossy-downgrade guard: lifecycle evidence preserved"
+psql -h 127.0.0.1 -p "$t02_port" -U "$t02_migration_role" \
+  -d "$t02_database" -v ON_ERROR_STOP=1 \
   -c "INSERT INTO proposal_decisions (proposal_id,decision,decision_date,conclusion,basis,idempotency_key,request_fingerprint,result_snapshot) SELECT id,'ESTABLISH',CURRENT_DATE,'downgrade guard','test evidence','t08-migration-guard',repeat('a',64),'{\"project\":{}}'::jsonb FROM proposals WHERE business_id='T07-UPGRADE-PROBE';" >/dev/null
 if "$t02_python" -m alembic -c alembic.ini downgrade 0002_proposal_assistant >/dev/null 2>&1; then
   echo "0003 downgrade silently discarded establishment idempotency evidence" >&2
@@ -298,6 +317,8 @@ if [[ "$t07_contract" -eq 1 ]]; then
 fi
 "$t02_python" -m pytest app/tests/test_project_establishment.py -q \
   -k postgresql_concurrent_establishment_is_atomic_and_idempotent
+T09_TEST_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+  "$t02_python" -m pytest app/tests/test_project_lifecycle.py -q
 "$t02_python" -m pytest app/tests/test_db_contract.py -q
 if [[ "$t03_contract" -eq 1 ]]; then
   "$t02_python" -m pytest app/tests/test_auth_audit_postgres.py -q

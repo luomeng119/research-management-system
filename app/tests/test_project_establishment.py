@@ -100,6 +100,50 @@ def _schema(engine):
             sa.Column("created_at", sa.DateTime(timezone=True)),
             sa.Column("task_number", sa.Text),
         )
+    lifecycle_common = lambda: (
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("project_registry_id", sa.String(36), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True)),
+        sa.Column("updated_at", sa.DateTime(timezone=True)),
+        sa.Column("created_by", sa.Integer),
+        sa.Column("updated_by", sa.Integer),
+        sa.Column("version", sa.Integer, nullable=False, default=1),
+    )
+    sa.Table(
+        "project_progress", metadata, *lifecycle_common(),
+        sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("status", sa.Text, nullable=False),
+        sa.Column("summary", sa.Text, nullable=False),
+        sa.Column("risk_level", sa.Text),
+        sa.Column("issues", sa.Text),
+        sa.Column("next_actions", sa.Text),
+    )
+    sa.Table(
+        "project_changes", metadata, *lifecycle_common(),
+        sa.Column("change_type", sa.Text, nullable=False),
+        sa.Column("before_summary", sa.Text),
+        sa.Column("after_summary", sa.Text, nullable=False),
+        sa.Column("basis", sa.Text),
+        sa.Column("decision", sa.Text),
+        sa.Column("decision_date", sa.Date),
+    )
+    sa.Table(
+        "project_outputs", metadata, *lifecycle_common(),
+        sa.Column("output_type", sa.Text, nullable=False),
+        sa.Column("title", sa.Text, nullable=False),
+        sa.Column("description", sa.Text),
+        sa.Column("formed_date", sa.Date),
+        sa.Column("contributors", sa.Text),
+    )
+    sa.Table(
+        "project_closures", metadata, *lifecycle_common(),
+        sa.Column("summary", sa.Text, nullable=False),
+        sa.Column("closed_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("conclusion", sa.Text),
+        sa.Column("remaining_issues", sa.Text),
+        sa.Column("no_output_reason", sa.Text),
+        sa.UniqueConstraint("project_registry_id"),
+    )
     sa.Table(
         "audit_events",
         metadata,
