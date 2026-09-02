@@ -319,6 +319,9 @@ fi
   -k postgresql_concurrent_establishment_is_atomic_and_idempotent
 T09_TEST_DATABASE_URL="$MIGRATION_DATABASE_URL" \
   "$t02_python" -m pytest app/tests/test_project_lifecycle.py -q
+T10_TEST_DATABASE_URL="$DATABASE_URL" \
+  "$t02_python" -m pytest app/tests/test_legacy_modules.py -q \
+  -k postgresql_expert_runtime_contract
 "$t02_python" -m pytest app/tests/test_db_contract.py -q
 if [[ "$t03_contract" -eq 1 ]]; then
   "$t02_python" -m pytest app/tests/test_auth_audit_postgres.py -q

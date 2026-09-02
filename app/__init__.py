@@ -146,6 +146,24 @@ def create_app(test_config=None):
     if project_service is not None:
         app.extensions["project_service"] = project_service
 
+    resources_service = app.config.get("RESOURCES_SERVICE")
+    if resources_service is None and engine is not None and audit_service is not None:
+        import sqlalchemy as sa
+
+        inspector = sa.inspect(engine)
+        if all(inspector.has_table(name) for name in (
+            "experts", "expert_groups", "expert_group_members",
+            "expert_import_batches",
+        )):
+            from app.repositories.resources import ResearchResourcesRepository
+            from app.services.resources import ResearchResourcesService
+
+            resources_service = ResearchResourcesService(
+                ResearchResourcesRepository(engine), audit_service
+            )
+    if resources_service is not None:
+        app.extensions["resources_service"] = resources_service
+
     assistant_service = app.config.get("ASSISTANT_SERVICE")
     if assistant_service is None and engine is not None and audit_service is not None:
         import sqlalchemy as sa

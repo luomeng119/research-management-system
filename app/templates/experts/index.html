@@ -53,7 +53,9 @@ function instantSearch() {
 
 function doSearch() {
     var keyword = document.getElementById('searchInput').value.trim();
-    var url = '{{ url_for("experts.index") }}' + (keyword ? '?search=' + encodeURIComponent(keyword) : '') + '&partial=1';
+    var params = new URLSearchParams({partial: '1'});
+    if (keyword) params.set('search', keyword);
+    var url = '{{ url_for("experts.index") }}?' + params.toString();
     fetch(url, {credentials: 'same-origin'})
         .then(r => r.text())
         .then(html => {
@@ -75,8 +77,9 @@ function clearSearch() {
 // ========== 原有功能 ==========
 function deleteExpert(expertId) {
     if (confirm('确定删除此专家信息？')) {
-        fetch('/experts/delete/' + expertId, {method: 'GET', credentials: 'same-origin'})
-            .then(() => location.reload())
+        fetch('/experts/delete/' + expertId, {method: 'POST', credentials: 'same-origin'})
+            .then(r => r.json())
+            .then(data => data.success ? location.reload() : alert(data.message || '删除失败'))
             .catch(() => location.reload());
     }
 }

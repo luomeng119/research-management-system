@@ -9,7 +9,8 @@ import psutil
 import urllib.request
 import urllib.error
 import json
-from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for
+from functools import wraps
+from flask import Blueprint, abort, current_app, render_template, request, jsonify, session, redirect, url_for
 from werkzeug.utils import secure_filename
 from app.security.auth import maintenance_required
 
@@ -21,6 +22,15 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 # 推理服务器地址
 INFERENCE_URL = "http://127.0.0.1:18789"
+
+
+def local_model_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not current_app.config.get('ENABLE_LLM', False):
+            abort(404)
+        return view(*args, **kwargs)
+    return wrapped
 
 
 def allowed_file(filename):
@@ -43,6 +53,7 @@ def document_correction():
 
 # ============ 模型配置页面 ============
 @bp.route('/model_config')
+@local_model_required
 @maintenance_required
 def model_config():
     if 'user' not in session:
@@ -51,6 +62,7 @@ def model_config():
 
 
 @bp.route('/api/models', methods=['GET'])
+@local_model_required
 @maintenance_required
 def api_models_list():
     """获取所有模型配置"""
@@ -66,6 +78,7 @@ def api_models_list():
 
 
 @bp.route('/api/models', methods=['POST'])
+@local_model_required
 @maintenance_required
 def api_models_create():
     """新建模型配置"""
@@ -97,6 +110,7 @@ def api_models_create():
 
 
 @bp.route('/api/models/<int:id>', methods=['PUT'])
+@local_model_required
 @maintenance_required
 def api_models_update(id):
     """更新模型配置"""
@@ -118,6 +132,7 @@ def api_models_update(id):
 
 
 @bp.route('/api/models/<int:id>', methods=['DELETE'])
+@local_model_required
 @maintenance_required
 def api_models_delete(id):
     """删除模型配置"""
@@ -133,6 +148,7 @@ def api_models_delete(id):
 
 
 @bp.route('/api/models/activate/<int:id>', methods=['POST'])
+@local_model_required
 @maintenance_required
 def api_models_activate(id):
     """激活指定模型"""
@@ -159,6 +175,7 @@ def api_models_activate(id):
 
 # ============ 状态监控页面 ============
 @bp.route('/monitor')
+@local_model_required
 @maintenance_required
 def monitor():
     if 'user' not in session:
@@ -167,6 +184,7 @@ def monitor():
 
 
 @bp.route('/api/monitor/status', methods=['GET'])
+@local_model_required
 @maintenance_required
 def api_monitor_status():
     """获取推理服务器状态"""
@@ -227,11 +245,17 @@ def api_monitor_status():
 
 
 @bp.route('/api/monitor/restart', methods=['POST'])
+@local_model_required
 @maintenance_required
 def api_monitor_restart():
     """重启推理服务器"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
+    if not current_app.config.get('ENABLE_LLM', False):
+        return jsonify({
+            'success': False,
+            'error': 'V1 未启用本地模型，请使用人工校对',
+        }), 503
     try:
         import subprocess
         # 杀掉现有进程
@@ -259,6 +283,11 @@ def api_correct():
     """文本校对API"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
+    if not current_app.config.get('ENABLE_LLM', False):
+        return jsonify({
+            'success': False,
+            'error': 'V1 未启用本地模型，请使用人工校对',
+        }), 503
 
     text = request.form.get('text', '').strip()
     if not text:
@@ -289,6 +318,11 @@ def api_upload_and_correct():
     """文件上传并校对"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
+    if not current_app.config.get('ENABLE_LLM', False):
+        return jsonify({
+            'success': False,
+            'error': 'V1 未启用本地模型，请使用人工校对',
+        }), 503
 
     if 'file' not in request.files:
         return jsonify({'success': False, 'error': '没有文件'}), 400

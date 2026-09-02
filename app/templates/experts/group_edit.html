@@ -159,12 +159,19 @@ function loadExperts() {
             if (data.items && data.items.length) {
                 data.items.forEach(e => {
                     const tr = document.createElement('tr');
-                    tr.innerHTML = `<td><input type="checkbox" name="expert_ids" value="${e.expert_id}" class="expert-cb"></td>
-                        <td>${e.name || ''}</td>
-                        <td>${e.unit || ''}</td>
-                        <td>${e.position || ''}</td>
-                        <td>${e.expertise || ''}</td>
-                        <td>${e.phone || ''}</td>`;
+                    const selectCell = document.createElement('td');
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.name = 'expert_ids';
+                    checkbox.value = e.expert_id;
+                    checkbox.className = 'expert-cb';
+                    selectCell.appendChild(checkbox);
+                    tr.appendChild(selectCell);
+                    ['name', 'unit', 'position', 'expertise', 'phone'].forEach(field => {
+                        const cell = document.createElement('td');
+                        cell.textContent = e[field] || '';
+                        tr.appendChild(cell);
+                    });
                     tbody.appendChild(tr);
                 });
             } else {

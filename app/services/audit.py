@@ -32,6 +32,7 @@ EVENT_PROPERTIES = {
     "project_created_from_proposal": {"project_category", "idempotency_reused"},
     "project_status_changed": {"from_status", "to_status"},
     "project_record_added": {"record_type", "project_status"},
+    "expert_sensitive_accessed": {"operation", "record_count"},
     "file_operation_completed": {"operation", "file_type", "size_bucket"},
     "import_batch_completed": {"module", "valid_count", "error_count", "duplicate_count"},
     "assistant_generation_completed": {"adapter_kind", "model_version", "prompt_version", "input_token_count", "output_token_count", "schema_valid", "remote_input_confirmed"},

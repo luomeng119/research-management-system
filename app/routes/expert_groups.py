@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify, send_file
+from flask import Blueprint, current_app, render_template, request, redirect, url_for, session, flash, jsonify, send_file
 from datetime import datetime
 from app.models import ExpertModel, ExpertGroupModel
 import openpyxl
@@ -7,13 +7,62 @@ from io import BytesIO
 
 bp = Blueprint('expert_groups', __name__, url_prefix='/experts/groups')
 
+
+def _xlsx_cell(value):
+    if isinstance(value, str) and value.startswith(('=', '+', '-', '@')):
+        return "'" + value
+    return value
+
+
+def _resources_service():
+    service = current_app.extensions.get('resources_service')
+    if service is None and current_app.extensions.get('database_engine') is not None:
+        raise RuntimeError('专家库服务未就绪')
+    return service
+
+
+def _actor():
+    return {
+        'user_id': int(session.get('user_id') or 0),
+        'name': session.get('name') or session.get('user') or '',
+        'request_id': getattr(request, 'request_id', 'legacy-expert-group-request'),
+    }
+
+
+def _legacy_expert(item):
+    return {
+        'id': item.get('id'), 'expert_id': item.get('expertId'),
+        'name': item.get('name'), 'unit': item.get('unit'),
+        'position': item.get('position'), 'expertise': item.get('expertise'),
+        'phone': item.get('phone'), 'id_card': item.get('idCard'),
+        'bank_card': item.get('bankCard'), 'bank_name': item.get('bankName'),
+        'selected_by': item.get('selectedBy'),
+        'selected_at': item.get('selectedAt'),
+    }
+
+
+def _legacy_group(item):
+    return {
+        'group_id': item.get('groupId'),
+        'meeting_name': item.get('groupName'),
+        'creator': item.get('creator'),
+        'created_at': item.get('createdAt'),
+        'member_count': item.get('memberCount', len(item.get('members', []))),
+        'members': [_legacy_expert(member) for member in item.get('members', [])],
+    }
+
 @bp.route('/')
 def index():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    model = ExpertGroupModel()
-    groups = model.get_all()
+    service = _resources_service()
+    if service is not None:
+        groups = [_legacy_group(item) for item in service.list_expert_groups(
+            page=max(1, int(request.args.get('page', 1) or 1)), page_size=100
+        )['items']]
+    else:
+        groups = ExpertGroupModel().get_all()
     return render_template('experts/groups.html', groups=groups)
 
 @bp.route('/new', methods=['GET', 'POST'])
@@ -22,13 +71,18 @@ def new():
         return redirect(url_for('auth.login'))
     
     if request.method == 'POST':
-        meeting_name = request.form.get('meeting_name', '').strip()
+        meeting_name = request.form.get('group_name', request.form.get('meeting_name', '')).strip()
         if not meeting_name:
-            meeting_name = datetime.now().strftime('%Y-%m-%d会议')
+            meeting_name = datetime.now().strftime('%Y-%m-%d专家组')
         
         creator = session.get('user')
-        model = ExpertGroupModel()
-        group_id = model.create_group(meeting_name, creator)
+        service = _resources_service()
+        if service is not None:
+            group_id = service.create_expert_group(
+                {'groupName': meeting_name}, creator=creator
+            )['groupId']
+        else:
+            group_id = ExpertGroupModel().create_group(meeting_name, creator)
         flash('专家组创建成功', 'success')
         return redirect(url_for('expert_groups.edit', group_id=group_id))
     
@@ -39,10 +93,16 @@ def edit(group_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    group_model = ExpertGroupModel()
-    expert_model = ExpertModel()
-    
-    group = group_model.get_by_id(group_id)
+    service = _resources_service()
+    if service is not None:
+        try:
+            group = _legacy_group(service.get_expert_group(group_id))
+        except Exception:
+            group = None
+    else:
+        group_model = ExpertGroupModel()
+        expert_model = ExpertModel()
+        group = group_model.get_by_id(group_id)
     if not group:
         flash('专家组不存在', 'error')
         return redirect(url_for('expert_groups.index'))
@@ -54,6 +114,13 @@ def edit(group_id):
         filter_position = request.args.get('position', '').strip()
         filter_expertise = request.args.get('expertise', '').strip()
         
+        if service is not None:
+            available_experts = [_legacy_expert(item) for item in service.list_available_experts(
+                group_id, keyword=search, unit=filter_unit,
+                position=filter_position, expertise=filter_expertise, limit=20,
+            )]
+            return jsonify({'items': available_experts})
+
         added_ids = [m['expert_id'] for m in group['members']]
         all_experts = expert_model.get_all()
         available_experts = [e for e in all_experts if e['expert_id'] not in added_ids]
@@ -78,15 +145,22 @@ def edit(group_id):
     filter_position = request.args.get('position', '').strip()
     filter_expertise = request.args.get('expertise', '').strip()
     
-    # 获取未添加的专家
-    added_ids = [m['expert_id'] for m in group['members']]
-    all_experts = expert_model.get_all()
-    available_experts = [e for e in all_experts if e['expert_id'] not in added_ids]
-    
-    # 获取唯一筛选选项
-    units = sorted(list(set(e.get('unit') for e in all_experts if e.get('unit'))))
-    positions = sorted(list(set(e.get('position') for e in all_experts if e.get('position'))))
-    expertises = sorted(list(set(e.get('expertise') for e in all_experts if e.get('expertise'))))
+    if service is not None:
+        available_experts = [_legacy_expert(item) for item in service.list_available_experts(
+            group_id, keyword=search, unit=filter_unit,
+            position=filter_position, expertise=filter_expertise, limit=20,
+        )]
+        facets = service.expert_facets()
+        units, positions, expertises = (
+            facets['units'], facets['positions'], facets['expertises']
+        )
+    else:
+        added_ids = [m['expert_id'] for m in group['members']]
+        all_experts = expert_model.get_all()
+        available_experts = [e for e in all_experts if e['expert_id'] not in added_ids]
+        units = sorted(list(set(e.get('unit') for e in all_experts if e.get('unit'))))
+        positions = sorted(list(set(e.get('position') for e in all_experts if e.get('position'))))
+        expertises = sorted(list(set(e.get('expertise') for e in all_experts if e.get('expertise'))))
     
     # 筛选
     if search:
@@ -110,13 +184,22 @@ def edit(group_id):
         if action == 'add':
             if expert_ids:
                 for eid in expert_ids:
-                    group_model.add_member(group_id, eid, session.get('user'))
+                    if service is not None:
+                        service.add_expert_group_member(group_id, eid, selected_by=session.get('user'))
+                    else:
+                        group_model.add_member(group_id, eid, session.get('user'))
                 flash(f'成功添加 {len(expert_ids)} 位专家', 'success')
             elif expert_id:
-                group_model.add_member(group_id, expert_id, session.get('user'))
+                if service is not None:
+                    service.add_expert_group_member(group_id, expert_id, selected_by=session.get('user'))
+                else:
+                    group_model.add_member(group_id, expert_id, session.get('user'))
                 flash('添加成功', 'success')
         elif action == 'remove' and expert_id:
-            group_model.remove_member(group_id, expert_id)
+            if service is not None:
+                service.remove_expert_group_member(group_id, expert_id)
+            else:
+                group_model.remove_member(group_id, expert_id)
             flash('移除成功', 'success')
         
         return redirect(url_for('expert_groups.edit', group_id=group_id))
@@ -128,8 +211,11 @@ def delete(group_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     
-    model = ExpertGroupModel()
-    model.delete_group(group_id)
+    service = _resources_service()
+    if service is not None:
+        service.delete_expert_group(group_id)
+    else:
+        ExpertGroupModel().delete_group(group_id)
     return jsonify({'success': True, 'message': '删除成功'})
 
 @bp.route('/export/<group_id>')
@@ -137,8 +223,18 @@ def export(group_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    model = ExpertGroupModel()
-    group = model.get_by_id(group_id)
+    service = _resources_service()
+    if service is not None:
+        actor = _actor()
+        try:
+            group = _legacy_group(service.export_expert_group_sensitive(
+                group_id, actor_user_id=actor['user_id'],
+                request_id=actor['request_id'],
+            ))
+        except Exception:
+            group = None
+    else:
+        group = ExpertGroupModel().get_by_id(group_id)
     if not group:
         flash('专家组不存在', 'error')
         return redirect(url_for('expert_groups.index'))
@@ -149,14 +245,14 @@ def export(group_id):
     ws = workbook.active
     ws.title = '专家组'
     
-    ws.append(['会议名称', group['meeting_name']])
-    ws.append(['创建人', group['creator']])
+    ws.append(['专家组名称', _xlsx_cell(group['meeting_name'])])
+    ws.append(['创建人', _xlsx_cell(group['creator'])])
     ws.append(['创建时间', group['created_at']])
     ws.append([])
     ws.append(['序号', '姓名', '单位', '职务', '专业领域', '手机', '银行卡号', '开户行', '挑选人', '挑选时间'])
     
     for i, m in enumerate(group['members'], 1):
-        ws.append([i, m['name'], m['unit'], m['position'], m['expertise'], m['phone'] or '', m['bank_card'] or '', m['bank_name'] or '', m['selected_by'], m['selected_at']])
+        ws.append([_xlsx_cell(value) for value in [i, m['name'], m['unit'], m['position'], m['expertise'], m['phone'] or '', m['bank_card'] or '', m['bank_name'] or '', m['selected_by'], m['selected_at']]])
     
     workbook.save(output)
     output.seek(0)

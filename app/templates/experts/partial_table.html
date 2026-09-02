@@ -28,7 +28,7 @@
             <tbody>
                 {% for e in experts %}
                 <tr>
-                    <td><input type="checkbox" class="expert-cb" value="{{ e['id'] }}"></td>
+                    <td><input type="checkbox" class="expert-cb" value="{{ e['expert_id'] }}"></td>
                     <td>{{ e['name'] }}</td>
                     <td>{{ e['unit'] or '-' }}</td>
                     <td>{{ e['position'] or '-' }}</td>
@@ -88,8 +88,9 @@ function gotoPage(p) {
 
 function deleteExpert(expertId) {
     if (confirm('确定删除此专家信息？')) {
-        fetch('/experts/delete/' + expertId, {method: 'GET', credentials: 'same-origin'})
-            .then(() => instantSearch())
+        fetch('/experts/delete/' + expertId, {method: 'POST', credentials: 'same-origin'})
+            .then(r => r.json())
+            .then(data => data.success ? instantSearch() : alert(data.message || '删除失败'))
             .catch(() => location.reload());
     }
 }

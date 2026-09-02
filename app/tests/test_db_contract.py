@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
 
 
-HEAD_REVISION = "0004_project_lifecycle"
+HEAD_REVISION = "0005_expert_import_batches"
 
 CORE_TABLES = {
     "users",

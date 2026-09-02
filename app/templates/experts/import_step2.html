@@ -172,14 +172,14 @@
                 </thead>
                 <tbody>
                 {% for row in processed %}
-                    {% set has_name = row.name|default('')|trim != '' %}
+                    {% set has_name = row.name|default('')|trim != '' and not row._error|default('') %}
                     <tr class="{{ 'row-skip' if not has_name else 'row-confirm' }}" data-row-idx="{{ row._row_idx }}">
                         <td>{{ loop.index }}</td>
                         <td>
                             {% if has_name %}
                             <span class="text-success">✓ 待确认</span>
                             {% else %}
-                            <span class="text-warning">⊘ 跳过</span>
+                            <span class="text-warning">⊘ {{ row._error|default('跳过') }}</span>
                             {% endif %}
                         </td>
                         <td>
@@ -211,7 +211,7 @@
     </form>
 
     <div class="action-bar">
-        <a href="/experts/import" class="btn btn-light">← 返回上一步</a>
+        <button type="button" class="btn btn-light" id="cancelImportBtn">← 取消导入</button>
         <span class="middle" id="confirmCount">确认 0 条</span>
         <button type="button" class="btn btn-success" id="commitBtn">确认导入 →</button>
     </div>
@@ -295,6 +295,13 @@ document.getElementById('commitBtn').addEventListener('click', async () => {
         btn.disabled = false;
         btn.textContent = '确认导入 →';
     }
+});
+
+document.getElementById('cancelImportBtn').addEventListener('click', async () => {
+    const r = await fetch('/experts/import/cancel', {method: 'POST'});
+    const data = await r.json();
+    if (data.success) window.location.href = data.redirect || '/experts/import';
+    else showAlert(data.message || '取消失败');
 });
 
 updateConfirmCount();
