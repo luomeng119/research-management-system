@@ -34,25 +34,26 @@
 
 ## 执行报告
 
-### TDD 证据
+### 最终实现
 
-- RED：`.venv/bin/python -m pytest app/tests/test_generic_tables_postgres.py -q` 在收集阶段因 `app.repositories.generic_tables` 不存在失败，证明原实现没有 PostgreSQL repository/service 边界。
-- GREEN：通用表格专项、REQ-020、版本回归、原有模块回归及立项回归合计 `56 passed, 4 skipped`；扩展后受影响集为 `60 passed, 4 skipped, 1 deselected`。
-- 隔离 PostgreSQL：`scripts/test_postgres.sh postgresql://localhost/rm_v1_t10` 通过；并发快照为 `1 passed, 6 deselected`，迁移往返、最小运行角色 ACL、其他必跑回归均通过，临时集群已清理。
-- 全量：`322 passed, 48 skipped, 2 failed`。其中 1 个是本批修改拒绝文案后的断言，已兼容旧字串；剩余 1 个是基线已存在的 T04 runner 旧计数断言（期望 `3 passed`，当前真实为 `7 passed`），不在本批文件所有权内；排除该已知旧断言后为 `60 passed, 4 skipped, 1 deselected`。
-- 静态：`python -m compileall -q app`、`bash -n scripts/test_postgres.sh`、`git diff --check` 均通过；新运行时边界无 `sqlite3/DB_PATH/PRAGMA/DDL/init_db`，模板不再把用户值插入 `onclick` 或动态 `innerHTML`。
+- 运行时已切换为 SQLAlchemy repository/service，兼容门面仅从 `app.extensions` 取服务，无 SQLite 回退或运行时 DDL。
+- 父表锁、current/锁定/同表校验、快照和回滚事务、并发版本号唯一性、跨表防护已落地。未锁但非 current 的历史版本在后端、页面控件和 JavaScript 中都只读。
+- `.xlsx` 导入保留水平表头和垂直数据合并语义；列表页改为“先解析，再单事务创建/填充/切换 current”，旧两步导入 URL 返回稳定 `ATOMIC_IMPORT_REQUIRED` 且不产生空版本。
+- 导入有 20 MiB 压缩文件、100 MiB 解压总量、50 MiB 单条目、200 倍压缩比、200 列和 5000 新增行上限；空/仅表头文件也先校验可编辑目标。
+- 列表及搜索使用数据库 `limit/offset`。导出、比较、统计和删列遇到超过 5000 行时显式返回 `RESULT_TOO_LARGE`，不再静默截断或部分成功；`page_size=-1` 同样显式受该上限约束。
+- 版本比较包含 `row_color`；导出表头/值防公式注入，嵌套 JSON 稳定序列化；临时导出文件在响应迭代器先关闭后删除，兼容 Windows。未预期异常只返回稳定代码和非敏感文案。
+- 未修改 Alembic schema，未引入新一级模块、AI、会议、任务、复杂权限、向量库、RAG 或 Agent。
 
-### 变更与边界
+### 最终验证证据
 
-- 新增 SQLAlchemy repository 和 service，兼容门面仅从 `app.extensions` 取服务；无 SQLite 回退。
-- 写操作锁定父表并校验 current/未锁/同表；快照、回滚为单事务数据库内复制，注入失败会全部回滚。
-- 保留表、版本、列、行、统计、比较、颜色、页宽、分页和 Excel URL/返回形状；历史版本只读，跨表比较/回滚/切换被拒绝。
-- 导入仅允许 `.xlsx`，有 20 MiB、200 列、5000 行、JSON 深度/单元格/单行上限；日期 ISO 化，NaN/Infinity 拒绝。导出防公式注入，上传异常路径和响应完成后均清理临时文件。
-- 未修改 Alembic schema，未新增一级模块、AI、会议、任务、角色、向量库、RAG 或 Agent。
+- 专项：`.venv/bin/python -m pytest app/tests/test_generic_tables_postgres.py app/tests/test_generic_tables_req020.py app/tests/test_generic_tables_versions.py -q` → `23 passed, 1 skipped`；跳过的是需要隔离 PostgreSQL 的并发项。
+- 受影响回归：通用表格专项 + `test_legacy_modules.py` + `test_project_establishment.py` 最终为 `70 passed, 4 skipped in 1.91s`；条件跳过项均由隔离 runner 覆盖。
+- 隔离 PostgreSQL：`scripts/test_postgres.sh postgresql://localhost/rm_v1_t10` 最终退出码 `0`；通用表格并发快照 `1 passed, 14 deselected`，迁移往返、ACL 失败回滚、最小运行角色、立项/生命周期/专家库/数据库合同回归均通过，临时集群已删除。
+- 全量：`.venv/bin/python -m pytest -q` → `338 passed, 48 skipped in 55.52s`，无失败。
+- 静态：`.venv/bin/python -m compileall -q app`、`bash -n scripts/test_postgres.sh`、`git diff --check` 均退出 `0`；运行时目标文件搜索无 `sqlite3/DB_PATH/PRAGMA/ALTER TABLE/CREATE TABLE/init_db`。
 
-### 已知 V1 取舍与提交
+### 提交
 
-- `page_size=-1` 的“全部”仍受 5000 行上限约束；这是防止内存和数据库无界扫描的 V1 边界。
-- `.xls` 明确不支持，用户需转为 `.xlsx`。
-- 实现提交：`1b15afc feat: migrate generic tables to PostgreSQL`。
-- 导出表头/嵌套 JSON 及模板 JS 安全加固：`7d8e484 fix: harden generic table export values`；加固后专项 `11 passed, 1 skipped`（PostgreSQL 项仅在隔离 runner 中执行）。
+- 初始迁移与加固：`1b15afc`、`7d8e484`。
+- 独立复核 10 项 Important 修复：`7ab9b6e fix: close generic table review findings`。
+- PostgreSQL runner 安全测试改用稳定完成标记：`479c139 test: use stable postgres runner completion marker`。
