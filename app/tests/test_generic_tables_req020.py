@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from sqlalchemy.pool import StaticPool
 
@@ -144,3 +145,40 @@ def test_export_temp_file_is_removed_when_response_closes(tmp_path, monkeypatch)
     _ = response.get_data()
     response.close()
     assert not exported.exists()
+
+
+def test_export_sanitizes_crlf_name_and_cleans_if_response_build_fails(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    table_id = client.post("/api/generic-tables", json={"name": "台\r\nInjected: yes"}).get_json()["table_id"]
+    version = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"][0]["version_id"]
+    service = client.application.extensions["generic_tables_service"]
+    first = tmp_path / "first.xlsx"; first.write_bytes(b"xlsx")
+    monkeypatch.setattr(service, "export_to_excel", lambda _version_id: str(first))
+    response = client.get(f"/api/generic-tables/versions/{version}/export", buffered=False)
+    assert response.status_code == 200
+    assert "\r" not in response.headers["Content-Disposition"] and "\n" not in response.headers["Content-Disposition"]
+    response.close()
+    assert not first.exists()
+
+    second = tmp_path / "second.xlsx"; second.write_bytes(b"xlsx")
+    monkeypatch.setattr(service, "export_to_excel", lambda _version_id: str(second))
+    monkeypatch.setattr("app.routes.generic_tables.send_file", lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("header rejected")))
+    with pytest.raises(ValueError, match="header rejected"):
+        client.get(f"/api/generic-tables/versions/{version}/export")
+    assert not second.exists()
+
+
+def test_detail_get_does_not_repair_missing_current_pointer(tmp_path):
+    client = _client(tmp_path)
+    table_id = client.post("/api/generic-tables", json={"name": "科研台账"}).get_json()["table_id"]
+    service = client.application.extensions["generic_tables_service"]
+    versions_before = service.get_versions(table_id)
+    with service.repository.engine.begin() as connection:
+        connection.execute(service.repository.tables.update().where(
+            service.repository.tables.c.table_id == table_id,
+        ).values(current_version_id=None))
+    response = client.get(f"/tables/{table_id}")
+    assert response.status_code == 409
+    assert response.get_data(as_text=True) == "表格当前版本数据异常"
+    assert service.get_by_id(table_id)["current_version_id"] is None
+    assert service.get_versions(table_id) == versions_before

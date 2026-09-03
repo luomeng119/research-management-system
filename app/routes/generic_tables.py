@@ -5,6 +5,7 @@
 """
 import os
 from pathlib import Path
+import re
 import tempfile
 import uuid
 import json
@@ -74,15 +75,9 @@ def detail_page(table_id):
     if not table:
         return "表格不存在", 404
     current_vid = table.get('current_version_id')
-    # 异常兜底：current 为空 → 取最大版本号 + 自动修复
+    # GET 必须保持只读；完整性异常由迁移/管理流程修复。
     if not current_vid:
-        versions = model.get_versions(table_id)
-        if versions:
-            current_vid = versions[0]['version_id']
-            model.set_current_version(table_id, current_vid)
-            table = model.get_by_id_with_current(table_id)
-        else:
-            return "表格无版本数据", 404
+        return "表格当前版本数据异常", 409
     versions = model.get_versions(table_id)
     version = model.get_version_by_id(current_vid)
     if not version:
@@ -538,8 +533,14 @@ def api_export(version_id):
         return jsonify({'error': '版本不存在'}), 404
     filepath = model.export_to_excel(version_id)
     table = model.get_by_id(version['table_id'])
-    filename = f"{table['name'] if table else '导出'}_{version.get('version_label', version.get('version_number', ''))}.xlsx"
-    response = send_file(filepath, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    raw_name = f"{table['name'] if table else '导出'}_{version.get('version_label', version.get('version_number', ''))}"
+    safe_name = re.sub(r'[\x00-\x1f\x7f/\\]+', '_', str(raw_name)).strip(' ._')[:120] or '导出'
+    filename = f"{safe_name}.xlsx"
+    try:
+        response = send_file(filepath, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception:
+        Path(filepath).unlink(missing_ok=True)
+        raise
     # ClosingIterator closes send_file's file wrapper first, then unlinks. This
     # ordering also works on Windows where an open file cannot be removed.
     response.response = ClosingIterator(response.response, [lambda: Path(filepath).unlink(missing_ok=True)])
