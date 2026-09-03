@@ -138,6 +138,9 @@ def test_upload_new_object_creates_standard_metadata_and_first_file_atomically(s
 
     def create_standard(connection):
         assert connection.in_transaction()
+        assert connection.dialect.name == "sqlite"
+        assert connection.scalar(sa.select(sa.literal(1))) == 1
+        assert list(connection.scalars(sa.select(sa.literal("metadata")))) == ["metadata"]
         connection.execute(
             standards.insert().values(doc_id="STD-2026-001", name="测试标准", status="ACTIVE")
         )
@@ -156,6 +159,45 @@ def test_upload_new_object_creates_standard_metadata_and_first_file_atomically(s
     assert len(_rows(engine, "object_files")) == 1
     assert (service.storage_root / result["storagePath"]).read_bytes().endswith(b"standard")
     assert service.audit_service.events[-1]["properties"]["operation"] == "UPLOAD"
+
+
+@pytest.mark.parametrize("operation", ["commit", "rollback", "begin", "begin_nested"])
+def test_upload_new_object_rejects_callback_transaction_control_without_residue(
+    service, engine, operation
+):
+    standards = sa.Table("standards", sa.MetaData(), autoload_with=engine)
+    rejected = False
+
+    def create_then_attempt_transaction_control(writer):
+        nonlocal rejected
+        writer.execute(
+            standards.insert().values(
+                doc_id=f"STD-2026-{operation}", name="事务控制探针", status="ACTIVE"
+            )
+        )
+        try:
+            getattr(writer, operation)()
+        except RuntimeError as exc:
+            if "metadata callback" not in str(exc):
+                raise AssertionError("callback transaction control was not explicitly rejected") from exc
+            rejected = True
+            raise
+        raise AssertionError("callback transaction control was not explicitly rejected")
+
+    with pytest.raises(FileServiceError) as error:
+        service.upload_new_object(
+            _pdf(), original_name="事务控制探针.pdf", object_type="STANDARD",
+            object_id=f"STD-2026-{operation}", create_metadata=create_then_attempt_transaction_control,
+            actor_user_id=1, request_id=f"req-standard-{operation}",
+        )
+
+    assert error.value.code == "FILE_OPERATION_FAILED"
+    assert rejected is True
+    assert _rows(engine, "standards") == []
+    assert _rows(engine, "stored_files") == []
+    assert _rows(engine, "stored_file_versions") == []
+    assert _rows(engine, "object_files") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
 
 
 def test_upload_new_object_creator_failure_leaves_no_metadata_or_file_residue(service, engine):
@@ -179,6 +221,42 @@ def test_upload_new_object_creator_failure_leaves_no_metadata_or_file_residue(se
     assert _rows(engine, "stored_files") == []
     assert _rows(engine, "stored_file_versions") == []
     assert _rows(engine, "object_files") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
+
+
+@pytest.mark.parametrize(
+    "repository_method",
+    ["object_allows_file_write", "create_file", "create_version", "link_object"],
+)
+def test_upload_new_object_repository_failure_leaves_no_metadata_or_file_residue(
+    service, engine, monkeypatch, repository_method
+):
+    standards = sa.Table("standards", sa.MetaData(), autoload_with=engine)
+
+    def create_standard(writer):
+        writer.execute(
+            standards.insert().values(
+                doc_id=f"STD-2026-{repository_method}", name="失败标准", status="ACTIVE"
+            )
+        )
+
+    def fail_repository_write(*_args, **_kwargs):
+        raise RuntimeError(f"injected {repository_method} failure")
+
+    monkeypatch.setattr(service.repository, repository_method, fail_repository_write)
+    with pytest.raises(FileServiceError) as error:
+        service.upload_new_object(
+            _pdf(), original_name="失败标准.pdf", object_type="STANDARD",
+            object_id=f"STD-2026-{repository_method}", create_metadata=create_standard,
+            actor_user_id=1, request_id=f"req-standard-{repository_method}-failure",
+        )
+
+    assert error.value.code == "FILE_OPERATION_FAILED"
+    assert _rows(engine, "standards") == []
+    assert _rows(engine, "stored_files") == []
+    assert _rows(engine, "stored_file_versions") == []
+    assert _rows(engine, "object_files") == []
+    assert service.audit_service.events == []
     assert not any(path.is_file() for path in service.storage_root.rglob("*"))
 
 
@@ -316,6 +394,12 @@ def test_archived_retained_resource_rejects_upload_version_and_archive_mutations
             resource_table.update().where(resource_table.c[id_column] == object_id).values(status="ARCHIVED")
         )
 
+    with pytest.raises(FileServiceError) as upload_error:
+        service.upload(
+            _pdf(b"another"), original_name="保留资源.pdf",
+            object_type=object_type, object_id=object_id,
+            actor_user_id=1, request_id=f"req-{object_type}-upload",
+        )
     with pytest.raises(FileServiceError) as version_error:
         service.add_version(
             uploaded["fileId"], _pdf(b"v2"), original_name="保留资源.pdf",
@@ -328,6 +412,7 @@ def test_archived_retained_resource_rejects_upload_version_and_archive_mutations
             actor_user_id=1, request_id=f"req-{object_type}-archive",
         )
 
+    assert upload_error.value.code == "OBJECT_READ_ONLY"
     assert version_error.value.code == "OBJECT_READ_ONLY"
     assert archive_error.value.code == "OBJECT_READ_ONLY"
     assert len(_rows(engine, "stored_file_versions")) == 1
@@ -788,6 +873,107 @@ def test_postgres_audit_failure_rolls_back_and_removes_moved_file(tmp_path):
         after = connection.execute(sa.select(sa.func.count()).select_from(files)).scalar_one()
     assert after == before
     assert not any(path.is_file() for path in pg_service.storage_root.rglob("*"))
+
+
+def test_postgres_concurrent_first_standard_upload_is_atomic_and_archived_is_read_only(tmp_path):
+    if "TEST_DATABASE_URL" not in os.environ:
+        pytest.skip("requires the isolated PostgreSQL contract runner")
+    from app.repositories.audit import AuditRepository
+    from app.services.audit import AuditService
+
+    suffix = uuid.uuid4().hex[:10]
+    pg_engine, user_id, _expense_id = _postgres_entities(suffix)
+    metadata = sa.MetaData()
+    standards = sa.Table("standards", metadata, autoload_with=pg_engine)
+    files = sa.Table("stored_files", metadata, autoload_with=pg_engine)
+    versions = sa.Table("stored_file_versions", metadata, autoload_with=pg_engine)
+    links = sa.Table("object_files", metadata, autoload_with=pg_engine)
+    audit_events = sa.Table("audit_events", metadata, autoload_with=pg_engine)
+    object_id = f"STD-RACE-{suffix}"
+    storage_root = tmp_path / "standard-race-files"
+    pg_service = FileService(
+        FilesRepository(pg_engine),
+        AuditService(AuditRepository(pg_engine), app_version="test-v1"),
+        storage_root=storage_root, max_bytes=1024, preview_max_bytes=512,
+    )
+    barrier = Barrier(2)
+
+    def create_standard(writer):
+        writer.execute(
+            standards.insert().values(
+                doc_id=object_id, name=f"并发标准 {suffix}", status="ACTIVE",
+            )
+        )
+
+    def upload(label):
+        barrier.wait(timeout=5)
+        try:
+            return pg_service.upload_new_object(
+                _pdf(label.encode()), original_name="并发标准.pdf", object_type="STANDARD",
+                object_id=object_id, create_metadata=create_standard,
+                actor_user_id=user_id, request_id=f"req-standard-race-{label}",
+            )
+        except FileServiceError as error:
+            return error.code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(upload, ("writer-a", "writer-b")))
+
+    successful = [result for result in results if isinstance(result, dict)]
+    assert len(successful) == 1
+    assert results.count("FILE_OPERATION_FAILED") == 1
+    first = successful[0]
+    with pg_engine.connect() as connection:
+        assert connection.scalar(
+            sa.select(sa.func.count()).select_from(standards).where(standards.c.doc_id == object_id)
+        ) == 1
+        assert connection.scalar(
+            sa.select(sa.func.count()).select_from(links).where(
+                links.c.object_type == "STANDARD", links.c.object_id == object_id
+            )
+        ) == 1
+        assert connection.scalar(
+            sa.select(sa.func.count()).select_from(files).where(
+                files.c.id == uuid.UUID(first["fileId"])
+            )
+        ) == 1
+        assert connection.scalar(
+            sa.select(sa.func.count()).select_from(versions).where(
+                versions.c.file_id == uuid.UUID(first["fileId"])
+            )
+        ) == 1
+        assert connection.scalar(
+            sa.select(sa.func.count()).select_from(audit_events).where(
+                audit_events.c.actor_user_id == user_id,
+                audit_events.c.metadata["operation"].as_string() == "UPLOAD",
+            )
+        ) == 1
+    assert len([path for path in storage_root.rglob("*") if path.is_file()]) == 1
+
+    with pg_engine.begin() as connection:
+        connection.execute(
+            standards.update().where(standards.c.doc_id == object_id).values(status="ARCHIVED")
+        )
+    with pytest.raises(FileServiceError) as version_error:
+        pg_service.add_version(
+            first["fileId"], _pdf(b"v2"), original_name="并发标准.pdf",
+            object_type="STANDARD", object_id=object_id, expected_version=1,
+            actor_user_id=user_id, request_id=f"req-standard-race-version-{suffix}",
+        )
+    with pytest.raises(FileServiceError) as archive_error:
+        pg_service.archive(
+            first["fileId"], object_type="STANDARD", object_id=object_id,
+            actor_user_id=user_id, request_id=f"req-standard-race-archive-{suffix}",
+        )
+    assert version_error.value.code == "OBJECT_READ_ONLY"
+    assert archive_error.value.code == "OBJECT_READ_ONLY"
+    with pg_engine.connect() as connection:
+        assert connection.scalar(
+            sa.select(sa.func.count()).select_from(versions).where(
+                versions.c.file_id == uuid.UUID(first["fileId"])
+            )
+        ) == 1
+    assert len([path for path in storage_root.rglob("*") if path.is_file()]) == 1
 
 
 def test_ooxml_zip_bomb_shape_is_rejected_without_residue(service, engine):

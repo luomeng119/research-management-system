@@ -3,13 +3,16 @@
 ## Result
 
 - Added `FileService.upload_new_object(...)`. It stages and validates bytes first,
-  then calls `create_metadata(active_connection)`, locks and validates the newly
-  created business object, creates the first stored file/version/link, moves the
-  file, records the audit event, and commits in one transaction.
+  then calls `create_metadata(writer)`, locks and validates the newly created
+  business object, creates the first stored file/version/link, moves the file,
+  records the audit event, and commits in one transaction.
 - Existing `FileService.upload(...)` signature and its pre-existing object
   validation remain unchanged. Both paths use the same private file-write flow.
-- The callback receives the active SQLAlchemy connection and is documented as
-  forbidden from starting or committing its own transaction.
+- The callback receives a restricted active-transaction SQLAlchemy writer. It
+  supports `execute`, `scalar`, `scalars`, `dialect`, and `in_transaction`, but
+  explicitly rejects transaction/lifecycle control (`commit`, `rollback`,
+  `begin`, `begin_nested`, `close`, `invalidate`, `detach`, and context-manager
+  entry/exit). It exposes no raw connection or engine attribute.
 - `TEMPLATE` now resolves to `reference_template_items.template_id`; structured
   argumentation `doc_templates` is no longer a controlled-file object target.
 - `STANDARD` and `TEMPLATE` with `status = 'ARCHIVED'` reject upload, new-version,
@@ -25,30 +28,41 @@
   has no attribute 'upload_new_object'`.
 - GREEN: the same focused test returned `1 passed` after the narrow seam was
   implemented.
+- Review-repair RED:
+  `.venv/bin/python -m pytest app/tests/test_file_service.py::test_upload_new_object_rejects_callback_transaction_control_without_residue -q`
+  returned `4 failed`; each expected failure showed that raw callback transaction
+  control was not explicitly rejected.
+- Review-repair GREEN: the same test returned `4 passed` after the restricted
+  writer replaced the raw callback connection.
 - Focused cleanup/read-only coverage:
   `.venv/bin/python -m pytest app/tests/test_file_service.py -k 'upload_new_object or archived_retained_resource' -q`
-  returned `8 passed, 32 deselected`.
+  returned `16 passed, 33 deselected`.
 - Full file-service regression:
   `.venv/bin/python -m pytest app/tests/test_file_service.py -q` returned
-  `37 passed, 3 skipped`.
-- Relevant PostgreSQL-selected coverage:
-  `.venv/bin/python -m pytest app/tests/test_file_service.py -k postgres -q`
-  returned `3 skipped, 37 deselected`; `TEST_DATABASE_URL` was absent, so no real
-  PostgreSQL contract runner was available in this workspace.
+  `45 passed, 4 skipped`.
+- Real isolated PostgreSQL T04 contract:
+  `scripts/test_postgres.sh postgresql://localhost/rm_v1_t04` completed. Its T04
+  selection returned `4 passed, 45 deselected`, including the same-`doc_id`
+  first-standard race: exactly one business row, file, V1, object link, and audit
+  record survived; the losing staged file was removed. The test then archived the
+  standard and verified both version and archive mutation reject with
+  `OBJECT_READ_ONLY` while no additional version or file appeared.
 - `git diff --check` passed.
 
 ## Failure evidence
 
-The focused SQLite tests inject metadata-creator, post-creator write-lock, audit,
-`os.replace`, and transaction-commit failures. Each checks the actual business
-metadata table, all three file metadata tables, staged/final filesystem files, and
-where applicable confirms no residue remains.
+The focused SQLite tests inject metadata-creator, post-creator write-lock query,
+`create_file`, `create_version`, `link_object`, audit, `os.replace`, and
+transaction-commit failures. They also attempt callback `commit`, `rollback`,
+`begin`, and `begin_nested`. Each checks the actual business metadata table, all
+three file metadata tables, audit absence where the audit boundary was not reached,
+and staged/final filesystem files; no residue remains.
+
+The archived STANDARD and TEMPLATE test explicitly exercises all three mutation
+paths after archival: fresh upload, new version, and file archive.
 
 ## Remaining risk
 
-- Real PostgreSQL execution remains required once the isolated
-  `TEST_DATABASE_URL` runner is available; the existing selected tests were skipped
-  only because that environment variable is unset.
 - The accepted T04 boundary remains: process termination after `os.replace` but
   before transaction cleanup/commit can leave a short-lived orphan final file;
   reconciliation belongs to the later T12 file/DB audit rather than this repair.

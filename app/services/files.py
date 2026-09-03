@@ -162,6 +162,54 @@ class _StagedFile:
     sha256: str
 
 
+class _MetadataWriter:
+    """Restricted view of the active connection for first-object metadata writes."""
+
+    __slots__ = ("__active_connection",)
+
+    def __init__(self, active_connection) -> None:
+        self.__active_connection = active_connection
+
+    @property
+    def dialect(self):
+        return self.__active_connection.dialect
+
+    def execute(self, statement, parameters=None, *, execution_options=None):
+        return self.__active_connection.execute(
+            statement, parameters, execution_options=execution_options
+        )
+
+    def scalar(self, statement, parameters=None, *, execution_options=None):
+        return self.__active_connection.scalar(
+            statement, parameters, execution_options=execution_options
+        )
+
+    def scalars(self, statement, parameters=None, *, execution_options=None):
+        return self.__active_connection.scalars(
+            statement, parameters, execution_options=execution_options
+        )
+
+    def in_transaction(self):
+        return self.__active_connection.in_transaction()
+
+    @staticmethod
+    def _reject_transaction_control(*_args, **_kwargs):
+        raise RuntimeError("metadata callback may not control its transaction")
+
+    commit = _reject_transaction_control
+    rollback = _reject_transaction_control
+    close = _reject_transaction_control
+    begin = _reject_transaction_control
+    begin_nested = _reject_transaction_control
+    invalidate = _reject_transaction_control
+    detach = _reject_transaction_control
+    __enter__ = _reject_transaction_control
+    __exit__ = _reject_transaction_control
+
+    def __getattr__(self, name):
+        raise AttributeError(f"metadata callback writer does not expose {name!r}")
+
+
 class FileService:
     def __init__(self, repository, audit_service, *, storage_root, max_bytes: int, preview_max_bytes: int):
         self.repository = repository
@@ -400,7 +448,7 @@ class FileService:
         try:
             with self.repository.engine.begin() as connection:
                 if create_metadata is not None:
-                    create_metadata(connection)
+                    create_metadata(_MetadataWriter(connection))
                 self._lock_object_write(connection, object_type, str(object_id))
                 self.repository.create_file(
                     connection,
@@ -467,8 +515,8 @@ class FileService:
     ) -> dict:
         """Create a business object and its first controlled file in one transaction.
 
-        ``create_metadata`` receives the active SQLAlchemy connection and must not
-        open or commit a transaction of its own.
+        ``create_metadata`` receives a restricted active-transaction writer. It
+        supports SQLAlchemy metadata statements but cannot control the transaction.
         """
         object_type = str(object_type or "").upper()
         staged = self._stage(stream, original_name)
