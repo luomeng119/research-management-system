@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -42,6 +43,14 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "legacy"
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _assert_file_descriptors_closed(descriptors: list[int]) -> None:
+    assert descriptors
+    for descriptor in descriptors:
+        with pytest.raises(OSError) as raised:
+            os.fstat(descriptor)
+        assert raised.value.errno == errno.EBADF
 
 
 def _make_sources(tmp_path: Path) -> Path:
@@ -710,17 +719,41 @@ def test_binary_dry_run_is_deterministic_and_has_zero_writes(tmp_path):
             assert connection.scalar(sa.text(f"select count(*) from {table}")) == 0
 
 
-def test_binary_migration_uses_controlled_storage_and_template_domain(tmp_path):
+def test_binary_migration_uses_controlled_storage_and_template_domain(
+    tmp_path, monkeypatch
+):
     root = _make_sources(tmp_path)
     _add_legacy_binary_references(root)
     engine = _target_engine()
     storage = tmp_path / "controlled-files"
     storage.mkdir(mode=0o700)
+    captured_descriptors: list[int] = []
+    original_prepare = legacy_binaries.prepare_binary_files
+    original_finalize = legacy_binaries.finalize_binary_files
+
+    def capture_prepared_descriptors(*args, **kwargs):
+        result = original_prepare(*args, **kwargs)
+        captured_descriptors.extend(item["stageDirFd"] for item in result)
+        return result
+
+    monkeypatch.setattr(
+        legacy_binaries, "prepare_binary_files", capture_prepared_descriptors
+    )
+
+    def capture_final_descriptors(*args, **kwargs):
+        result = original_finalize(*args, **kwargs)
+        captured_descriptors.extend(item["dirFd"] for item in result)
+        return result
+
+    monkeypatch.setattr(
+        legacy_binaries, "finalize_binary_files", capture_final_descriptors
+    )
 
     report = migrate_legacy(
         engine, root, "binary-v1", storage_root=storage,
         max_file_bytes=1024, allow_test_sqlite=True,
     )
+    _assert_file_descriptors_closed(captured_descriptors)
     repeated = migrate_legacy(
         engine, root, "binary-v1", storage_root=storage,
         max_file_bytes=1024, allow_test_sqlite=True,
@@ -971,12 +1004,33 @@ def test_binary_migration_rejects_same_content_identity_replacement(
         )
 
 
-def test_binary_commit_failure_cleans_created_files(tmp_path):
+def test_binary_commit_failure_cleans_created_files(tmp_path, monkeypatch):
     root = _make_sources(tmp_path)
     _add_legacy_binary_references(root)
     engine = _target_engine()
     storage = tmp_path / "storage"
     storage.mkdir(mode=0o700)
+    captured_descriptors: list[int] = []
+    original_prepare = legacy_binaries.prepare_binary_files
+    original_finalize = legacy_binaries.finalize_binary_files
+
+    def capture_prepared_descriptors(*args, **kwargs):
+        result = original_prepare(*args, **kwargs)
+        captured_descriptors.extend(item["stageDirFd"] for item in result)
+        return result
+
+    monkeypatch.setattr(
+        legacy_binaries, "prepare_binary_files", capture_prepared_descriptors
+    )
+
+    def capture_final_descriptors(*args, **kwargs):
+        result = original_finalize(*args, **kwargs)
+        captured_descriptors.extend(item["dirFd"] for item in result)
+        return result
+
+    monkeypatch.setattr(
+        legacy_binaries, "finalize_binary_files", capture_final_descriptors
+    )
 
     def fail_commit(_connection):
         raise RuntimeError("commit failed")
@@ -987,6 +1041,7 @@ def test_binary_commit_failure_cleans_created_files(tmp_path):
             engine, root, "commit-fail", storage_root=storage,
             max_file_bytes=1024, allow_test_sqlite=True,
         )
+    _assert_file_descriptors_closed(captured_descriptors)
     with engine.connect() as connection:
         assert connection.scalar(sa.text("select count(*) from legacy_migration_batches")) == 0
     assert [path for path in storage.rglob("*") if path.is_file()] == []

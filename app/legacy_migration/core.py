@@ -1608,9 +1608,9 @@ def _migrate_snapshot(
         try:
             _create_project_registry(connection, report, expected_rows)
             if binary_plan["summary"]["planned"]:
-                prepared = prepare_binary_files(
+                prepared.extend(prepare_binary_files(
                     Path(source_root), Path(storage_root), binary_plan
-                )
+                ))
                 apply_binary_metadata(connection, prepared, report, expected_rows)
             _verify_json_internal_ids(connection, report, issue_rows)
             report["target_amounts"] = _verify_expected_rows(
