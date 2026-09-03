@@ -597,7 +597,7 @@ def test_postgresql_expert_runtime_contract_reference_library_uses_runtime_metad
         with pytest.raises(Exception) as archived_write:
             service.file_service.add_version(nested["file"]["fileId"], BytesIO(b"%PDF-1.4\nnew"), original_name="nested.pdf", object_type="TEMPLATE", object_id=nested["templateId"], expected_version=1, actor_user_id=owner_id, request_id=f"req-pg-write-{suffix}")
         assert getattr(archived_write.value, "code", None) == "OBJECT_READ_ONLY"
-        assert any(log["operation_type"] == "ARCHIVE_FOLDER" for log in service.list_logs("templates", operation="ARCHIVE_FOLDER"))
+        assert any(log["operation_code"] == "ARCHIVE_FOLDER" for log in service.list_logs("templates", operation="ARCHIVE_FOLDER"))
         with engine.connect() as connection:
             assert connection.execute(sa.select(sa.func.count()).select_from(doc_templates)).scalar_one() == before_schemas
     finally:

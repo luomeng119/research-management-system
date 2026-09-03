@@ -36,6 +36,10 @@
   归属均在 SQL 中筛选并 `LIMIT 100`；SQL spy 与 101 条无关审计后的匹配上传回归
   证明不会全表载入后再切片。真实 `/templates/logs/templates?operation_type=上传文件`
   返回对应模板记录。
+- 日志表现层终修：日志 DTO 保留 `operation_code`（canonical audit code），并将
+  `UPLOAD`、`ARCHIVE`、文件夹创建/归档及文件/文件夹重命名映射为中文
+  `operation_type`。模板与标准日志页将“上传文件”显示为绿色 badge，将归档文件/文件夹
+  显示为危险色；真实路由渲染回归同时验证标签和 badge，SQL 查询下推未改变。
 - 影响面回归：
   `pytest app/tests/test_file_service.py app/tests/test_auth_audit.py
   app/tests/test_baseline_security.py app/tests/test_legacy_modules.py -q`

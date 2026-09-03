@@ -405,7 +405,8 @@ def test_real_audit_service_accepts_reference_taxonomy_and_logs_operation(refere
     )
     service.create_folder("审计目录", "其他模板", actor_user_id=7, request_id="req-audit")
     logs = service.list_logs("templates", operation="CREATE_FOLDER")
-    assert logs[0]["operation_type"] == "CREATE_FOLDER"
+    assert logs[0]["operation_code"] == "CREATE_FOLDER"
+    assert logs[0]["operation_type"] == "创建文件夹"
 
 
 def test_reference_logs_include_file_uploads_and_filter_before_the_limit(reference_engine, tmp_path):
@@ -469,7 +470,16 @@ def test_reference_logs_include_file_uploads_and_filter_before_the_limit(referen
         active_session.update(user_id=7, user="operator")
     page = client.get("/templates/logs/templates?operation_type=上传文件")
     assert page.status_code == 200, page.get_json()
-    assert "审计模板.pdf" in page.get_data(as_text=True)
+    rendered = page.get_data(as_text=True)
+    assert "审计模板.pdf" in rendered
+    assert "上传文件" in rendered
+    assert "badge bg-success" in rendered
+    assert ">UPLOAD<" not in rendered
+    archive_page = client.get("/templates/logs/templates?operation_type=归档文件")
+    archive_rendered = archive_page.get_data(as_text=True)
+    assert archive_page.status_code == 200
+    assert "归档文件" in archive_rendered
+    assert "badge bg-danger" in archive_rendered
 
 
 def test_standards_page_keeps_stored_name_as_dom_data_not_inline_script(reference_routes, reference_service):

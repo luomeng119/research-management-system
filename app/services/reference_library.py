@@ -22,6 +22,14 @@ UI_OPERATION_CODES = {
     "归档文件夹": "ARCHIVE_FOLDER",
 }
 AUDIT_OPERATION_CODES = frozenset(UI_OPERATION_CODES.values())
+AUDIT_OPERATION_LABELS = {
+    "UPLOAD": "上传文件",
+    "ARCHIVE": "归档文件",
+    "CREATE_FOLDER": "创建文件夹",
+    "ARCHIVE_FOLDER": "归档文件夹",
+    "RENAME": "重命名文件",
+    "RENAME_FOLDER": "重命名文件夹",
+}
 
 
 class ReferenceLibraryError(Exception):
@@ -194,7 +202,11 @@ class ReferenceLibraryService:
         return [
             {
                 "timestamp": row["created_at"], "operator": str(row["operator_name"] or ""),
-                "operation_type": (row["metadata"] or {}).get("operation", row["action"]),
+                "operation_code": (row["metadata"] or {}).get("operation", row["action"]),
+                "operation_type": AUDIT_OPERATION_LABELS.get(
+                    (row["metadata"] or {}).get("operation", row["action"]),
+                    (row["metadata"] or {}).get("operation", row["action"]),
+                ),
                 "file_name": str(row["file_name"] or ""), "detail": "",
             }
             for row in rows

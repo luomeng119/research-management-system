@@ -101,7 +101,7 @@
                             <td>
                                 {% if log.operation_type == '上传文件' %}
                                 <span class="badge bg-success">{{ log.operation_type }}</span>
-                                {% elif log.operation_type == '删除文件' or log.operation_type == '删除设备' %}
+                                {% elif log.operation_type in ('删除文件', '删除设备', '归档文件', '归档文件夹') %}
                                 <span class="badge bg-danger">{{ log.operation_type }}</span>
                                 {% elif log.operation_type == '添加设备' %}
                                 <span class="badge bg-primary">{{ log.operation_type }}</span>
