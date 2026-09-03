@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import math
 import os
 from pathlib import Path
+import re
 
 import openpyxl
 import pytest
@@ -166,6 +167,20 @@ def test_xlsx_replace_append_formula_defence_and_cleanup(service, tmp_path):
     legacy.write_bytes(b"not-xlsx")
     with pytest.raises(GenericTablesError, match=".xlsx"):
         service.import_rows_from_excel(version, legacy, "张老师")
+
+
+def test_export_escapes_formula_headers_and_serializes_nested_json(service):
+    table_id = service.create("甲表", "", "张老师")
+    version = service.get_by_id(table_id)["current_version_id"]
+    service.upsert_column(version, "meta", "=DANGEROUS", "text")
+    service.upsert_row(version, "r1", {"meta": {"level": 1}})
+    out = Path(service.export_to_excel(version))
+    try:
+        sheet = openpyxl.load_workbook(out, data_only=False).active
+        assert sheet.cell(1, 1).value == "'=DANGEROUS"
+        assert sheet.cell(2, 1).value == '{"level": 1}'
+    finally:
+        out.unlink(missing_ok=True)
 
 
 def test_source_has_no_runtime_sqlite_or_schema_ddl():

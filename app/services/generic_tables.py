@@ -456,6 +456,9 @@ class GenericTablesService:
 
     @staticmethod
     def _safe_excel(value):
+        if isinstance(value, (dict, list)):
+            import json
+            value = json.dumps(value, ensure_ascii=False)
         if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
             return "'" + value
         return value
@@ -465,7 +468,7 @@ class GenericTablesService:
         workbook = openpyxl.Workbook()
         sheet = workbook.active
         sheet.title = "数据导出"
-        sheet.append([column.get("col_name", column["col_key"]) for column in columns])
+        sheet.append([self._safe_excel(column.get("col_name", column["col_key"])) for column in columns])
         for row in rows:
             sheet.append([self._safe_excel(row["row_data"].get(column["col_key"], "")) for column in columns])
         handle, path = tempfile.mkstemp(suffix=".xlsx")

@@ -519,7 +519,7 @@
 
 <script>
 // ---------- 全局状态 ----------
-const VERSION_ID = '{{ current_version.version_id if current_version else "" }}';
+const VERSION_ID = {{ (current_version.version_id if current_version else "") | tojson }};
 // REQ-019: 快照版本锁定标志（1=锁定行数据，0=可编辑）
 const IS_LOCKED = {{ 'true' if (current_version and current_version.is_locked) else 'false' }};
 const COLUMNS = {{ columns | tojson }};
