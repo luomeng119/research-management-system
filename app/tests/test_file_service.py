@@ -51,6 +51,18 @@ def _schema(engine):
         sa.UniqueConstraint("object_type", "object_id", "file_id"),
     )
     sa.Table("expense_reimbursement", metadata, sa.Column("id", sa.Integer, primary_key=True))
+    sa.Table(
+        "standards", metadata,
+        sa.Column("doc_id", sa.Text, primary_key=True),
+        sa.Column("name", sa.Text, nullable=False),
+        sa.Column("status", sa.Text, nullable=False, server_default="ACTIVE"),
+    )
+    sa.Table(
+        "reference_template_items", metadata,
+        sa.Column("template_id", sa.Text, primary_key=True),
+        sa.Column("display_name", sa.Text, nullable=False),
+        sa.Column("status", sa.Text, nullable=False, server_default="ACTIVE"),
+    )
     metadata.create_all(engine)
     with engine.begin() as connection:
         connection.execute(metadata.tables["expense_reimbursement"].insert().values(id=7))
@@ -119,6 +131,206 @@ def test_upload_creates_uuid_path_hash_version_link_and_low_sensitivity_audit(se
     assert event["event_name"] == "file_operation_completed"
     assert set(event["properties"]) == {"operation", "file_type", "size_bucket"}
     assert "研究报告.pdf" not in repr(event)
+
+
+def test_upload_new_object_creates_standard_metadata_and_first_file_atomically(service, engine):
+    standards = sa.Table("standards", sa.MetaData(), autoload_with=engine)
+
+    def create_standard(connection):
+        assert connection.in_transaction()
+        connection.execute(
+            standards.insert().values(doc_id="STD-2026-001", name="测试标准", status="ACTIVE")
+        )
+
+    result = service.upload_new_object(
+        _pdf(b"standard"), original_name="测试标准.pdf", object_type="STANDARD",
+        object_id="STD-2026-001", create_metadata=create_standard,
+        actor_user_id=1, request_id="req-standard-create",
+    )
+
+    assert _rows(engine, "standards") == [
+        {"doc_id": "STD-2026-001", "name": "测试标准", "status": "ACTIVE"}
+    ]
+    assert len(_rows(engine, "stored_files")) == 1
+    assert len(_rows(engine, "stored_file_versions")) == 1
+    assert len(_rows(engine, "object_files")) == 1
+    assert (service.storage_root / result["storagePath"]).read_bytes().endswith(b"standard")
+    assert service.audit_service.events[-1]["properties"]["operation"] == "UPLOAD"
+
+
+def test_upload_new_object_creator_failure_leaves_no_metadata_or_file_residue(service, engine):
+    standards = sa.Table("standards", sa.MetaData(), autoload_with=engine)
+
+    def create_then_fail(connection):
+        connection.execute(
+            standards.insert().values(doc_id="STD-2026-FAIL", name="失败标准", status="ACTIVE")
+        )
+        raise RuntimeError("metadata unavailable")
+
+    with pytest.raises(FileServiceError) as error:
+        service.upload_new_object(
+            _pdf(), original_name="失败标准.pdf", object_type="STANDARD",
+            object_id="STD-2026-FAIL", create_metadata=create_then_fail,
+            actor_user_id=1, request_id="req-standard-creator-failure",
+        )
+
+    assert error.value.code == "FILE_OPERATION_FAILED"
+    assert _rows(engine, "standards") == []
+    assert _rows(engine, "stored_files") == []
+    assert _rows(engine, "stored_file_versions") == []
+    assert _rows(engine, "object_files") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
+
+
+def test_upload_new_object_rechecks_the_new_object_write_lock_and_rolls_back(service, engine):
+    standards = sa.Table("standards", sa.MetaData(), autoload_with=engine)
+
+    def create_archived_standard(connection):
+        connection.execute(
+            standards.insert().values(doc_id="STD-2026-ARCHIVED", name="只读标准", status="ARCHIVED")
+        )
+
+    with pytest.raises(FileServiceError) as error:
+        service.upload_new_object(
+            _pdf(), original_name="只读标准.pdf", object_type="STANDARD",
+            object_id="STD-2026-ARCHIVED", create_metadata=create_archived_standard,
+            actor_user_id=1, request_id="req-standard-read-only",
+        )
+
+    assert error.value.code == "OBJECT_READ_ONLY"
+    assert _rows(engine, "standards") == []
+    assert _rows(engine, "stored_files") == []
+    assert _rows(engine, "stored_file_versions") == []
+    assert _rows(engine, "object_files") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
+
+
+def test_upload_new_object_audit_failure_rolls_back_business_metadata_and_file(tmp_path, engine):
+    service = FileService(
+        FilesRepository(engine), Audit(fail=True), storage_root=tmp_path / "files",
+        max_bytes=1024, preview_max_bytes=512,
+    )
+    standards = sa.Table("standards", sa.MetaData(), autoload_with=engine)
+
+    def create_standard(connection):
+        connection.execute(
+            standards.insert().values(doc_id="STD-2026-AUDIT", name="审计失败标准", status="ACTIVE")
+        )
+
+    with pytest.raises(FileServiceError) as error:
+        service.upload_new_object(
+            _pdf(), original_name="审计失败标准.pdf", object_type="STANDARD",
+            object_id="STD-2026-AUDIT", create_metadata=create_standard,
+            actor_user_id=1, request_id="req-standard-audit-failure",
+        )
+
+    assert error.value.code == "FILE_OPERATION_FAILED"
+    assert _rows(engine, "standards") == []
+    assert _rows(engine, "stored_files") == []
+    assert _rows(engine, "stored_file_versions") == []
+    assert _rows(engine, "object_files") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
+
+
+def test_upload_new_object_final_move_failure_rolls_back_business_metadata_and_staging(
+    service, engine, monkeypatch
+):
+    standards = sa.Table("standards", sa.MetaData(), autoload_with=engine)
+
+    def create_standard(connection):
+        connection.execute(
+            standards.insert().values(doc_id="STD-2026-MOVE", name="移动失败标准", status="ACTIVE")
+        )
+
+    def fail_replace(*_args):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr("app.services.files.os.replace", fail_replace)
+    with pytest.raises(FileServiceError) as error:
+        service.upload_new_object(
+            _pdf(), original_name="移动失败标准.pdf", object_type="STANDARD",
+            object_id="STD-2026-MOVE", create_metadata=create_standard,
+            actor_user_id=1, request_id="req-standard-move-failure",
+        )
+
+    assert error.value.code == "FILE_OPERATION_FAILED"
+    assert _rows(engine, "standards") == []
+    assert _rows(engine, "stored_files") == []
+    assert _rows(engine, "stored_file_versions") == []
+    assert _rows(engine, "object_files") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
+
+
+def test_upload_new_object_commit_failure_removes_business_metadata_and_final_file(service, engine):
+    standards = sa.Table("standards", sa.MetaData(), autoload_with=engine)
+
+    def create_standard(connection):
+        connection.execute(
+            standards.insert().values(doc_id="STD-2026-COMMIT", name="提交失败标准", status="ACTIVE")
+        )
+
+    def fail_commit(connection):
+        if connection.in_transaction():
+            raise RuntimeError("commit unavailable")
+
+    sa.event.listen(engine, "commit", fail_commit)
+    try:
+        with pytest.raises(FileServiceError) as error:
+            service.upload_new_object(
+                _pdf(), original_name="提交失败标准.pdf", object_type="STANDARD",
+                object_id="STD-2026-COMMIT", create_metadata=create_standard,
+                actor_user_id=1, request_id="req-standard-commit-failure",
+            )
+    finally:
+        sa.event.remove(engine, "commit", fail_commit)
+
+    assert error.value.code == "FILE_OPERATION_FAILED"
+    assert _rows(engine, "standards") == []
+    assert _rows(engine, "stored_files") == []
+    assert _rows(engine, "stored_file_versions") == []
+    assert _rows(engine, "object_files") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
+
+
+@pytest.mark.parametrize(
+    ("object_type", "table_name", "id_column", "name_column", "object_id"),
+    [
+        ("STANDARD", "standards", "doc_id", "name", "STD-2026-READ-ONLY"),
+        ("TEMPLATE", "reference_template_items", "template_id", "display_name", "TPL-2026-READ-ONLY"),
+    ],
+)
+def test_archived_retained_resource_rejects_upload_version_and_archive_mutations(
+    service, engine, object_type, table_name, id_column, name_column, object_id
+):
+    resource_table = sa.Table(table_name, sa.MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        connection.execute(
+            resource_table.insert().values(**{id_column: object_id, name_column: "保留资源", "status": "ACTIVE"})
+        )
+    uploaded = service.upload(
+        _pdf(b"v1"), original_name="保留资源.pdf", object_type=object_type, object_id=object_id,
+        actor_user_id=1, request_id=f"req-{object_type}-active",
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            resource_table.update().where(resource_table.c[id_column] == object_id).values(status="ARCHIVED")
+        )
+
+    with pytest.raises(FileServiceError) as version_error:
+        service.add_version(
+            uploaded["fileId"], _pdf(b"v2"), original_name="保留资源.pdf",
+            object_type=object_type, object_id=object_id, expected_version=1,
+            actor_user_id=1, request_id=f"req-{object_type}-version",
+        )
+    with pytest.raises(FileServiceError) as archive_error:
+        service.archive(
+            uploaded["fileId"], object_type=object_type, object_id=object_id,
+            actor_user_id=1, request_id=f"req-{object_type}-archive",
+        )
+
+    assert version_error.value.code == "OBJECT_READ_ONLY"
+    assert archive_error.value.code == "OBJECT_READ_ONLY"
+    assert len(_rows(engine, "stored_file_versions")) == 1
 
 
 def test_same_original_name_never_overwrites(service):

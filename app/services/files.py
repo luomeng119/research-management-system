@@ -389,16 +389,18 @@ class FileService:
             "sizeBytes": staged.size_bytes,
         }
 
-    def upload(self, stream, *, original_name: str, object_type: str, object_id: str, actor_user_id: int, request_id: str) -> dict:
-        object_type = str(object_type or "").upper()
-        self._validate_object_write(object_type, str(object_id))
-        staged = self._stage(stream, original_name)
+    def _upload_staged(
+        self, staged: _StagedFile, *, object_type: str, object_id: str,
+        actor_user_id: int, request_id: str, create_metadata=None,
+    ) -> dict:
         relative_path, final_path = self._destination(staged.extension)
         file_id = uuid.uuid4()
         started = time.monotonic()
         moved = False
         try:
             with self.repository.engine.begin() as connection:
+                if create_metadata is not None:
+                    create_metadata(connection)
                 self._lock_object_write(connection, object_type, str(object_id))
                 self.repository.create_file(
                     connection,
@@ -449,6 +451,32 @@ class FileService:
             raise FileServiceError("FILE_OPERATION_FAILED", "文件操作失败", 500) from exc
         finally:
             staged.path.unlink(missing_ok=True)
+
+    def upload(self, stream, *, original_name: str, object_type: str, object_id: str, actor_user_id: int, request_id: str) -> dict:
+        object_type = str(object_type or "").upper()
+        self._validate_object_write(object_type, str(object_id))
+        staged = self._stage(stream, original_name)
+        return self._upload_staged(
+            staged, object_type=object_type, object_id=str(object_id),
+            actor_user_id=actor_user_id, request_id=request_id,
+        )
+
+    def upload_new_object(
+        self, stream, *, original_name: str, object_type: str, object_id: str,
+        create_metadata, actor_user_id: int, request_id: str,
+    ) -> dict:
+        """Create a business object and its first controlled file in one transaction.
+
+        ``create_metadata`` receives the active SQLAlchemy connection and must not
+        open or commit a transaction of its own.
+        """
+        object_type = str(object_type or "").upper()
+        staged = self._stage(stream, original_name)
+        return self._upload_staged(
+            staged, object_type=object_type, object_id=str(object_id),
+            actor_user_id=actor_user_id, request_id=request_id,
+            create_metadata=create_metadata,
+        )
 
     def add_version(self, file_id: str, stream, *, original_name: str, object_type: str, object_id: str, expected_version: int, actor_user_id: int, request_id: str) -> dict:
         object_type = str(object_type or "").upper()

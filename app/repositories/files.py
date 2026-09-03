@@ -12,7 +12,7 @@ OBJECT_TABLES = {
     "EXPERT": ("experts", "expert_id"),
     "EQUIPMENT": ("equipment", "equipment_id"),
     "STANDARD": ("standards", "doc_id"),
-    "TEMPLATE": ("doc_templates", "template_id"),
+    "TEMPLATE": ("reference_template_items", "template_id"),
     "GENERIC_TABLE": ("generic_tables", "table_id"),
     "EXPENSE": ("expense_reimbursement", "id"),
     "INVOICE": ("expense_invoice", "id"),
@@ -54,7 +54,7 @@ class FilesRepository:
         if object_type not in self._object_tables:
             table_name, key = definition
             try:
-                table = sa.Table(table_name, sa.MetaData(), autoload_with=self.engine)
+                table = sa.Table(table_name, sa.MetaData(), autoload_with=connection)
             except sa.exc.NoSuchTableError:
                 return False
             if key not in table.c:
@@ -89,14 +89,19 @@ class FilesRepository:
                 value = int(object_id)
             except (TypeError, ValueError):
                 return None
-        columns = [table.c.status] if object_type == "PROPOSAL" and "status" in table.c else [sa.literal("WRITABLE")]
+        has_write_status = object_type in {"PROPOSAL", "STANDARD", "TEMPLATE"} and "status" in table.c
+        columns = [table.c.status] if has_write_status else [sa.literal("WRITABLE")]
         statement = sa.select(*columns).select_from(table).where(table.c[key] == value).limit(1)
         if lock and connection.dialect.name == "postgresql":
             statement = statement.with_for_update(of=table)
         status = connection.execute(statement).scalar_one_or_none()
         if status is None:
             return None
-        return status not in {"ESTABLISHED", "REJECTED"}
+        if object_type == "PROPOSAL":
+            return status not in {"ESTABLISHED", "REJECTED"}
+        if object_type in {"STANDARD", "TEMPLATE"}:
+            return status != "ARCHIVED"
+        return True
 
     def create_file(
         self,
