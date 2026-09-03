@@ -11,3 +11,5 @@
 | T07 | 659beac922f265a55aeba55fe658e3fd424b9b47 | abe190b | task-7-report.md | task-7-acceptance-review.md: APPROVED | completed; local business system with optional online DeepSeek; proxy review is not human UAT |
 | T08 | 30efb28 | 825bbb0 | task-8-report.md | task-8-acceptance-review.md: APPROVED | completed; atomic establishment and legacy-compatible global project id |
 | T09 | 2e781f5 | 67973ef | task-9-report.md | task-9-report.md: APPROVED | completed; controlled lifecycle and read-only real-record research path |
+| T02 reference-library repair | 785e629 | b9e78a4 | task-2-reference-library-repair-report.md | independent re-review: Spec PASS; Quality PASS; Critical 0; Important 0 | completed; dedicated standard/template metadata schema and guarded migration |
+| T04 atomic first-upload repair | b9e78a4 | 620fef7 | task-4-new-object-upload-repair-report.md | fourth independent review: Spec PASS; Quality PASS; Critical 0; Important 0 | completed; restricted metadata insert seam and PostgreSQL lock-race proof |
