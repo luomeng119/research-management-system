@@ -76,7 +76,7 @@ def test_t04_identifier_runs_file_contract_and_cleans_cluster():
     result = _run_runner("rm_v1_t04_safety_success")
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "3 passed" in result.stdout
+    assert "T02 PostgreSQL contract completed" in result.stdout
     assert not _cluster_path(result).exists()
 
 
