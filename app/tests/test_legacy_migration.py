@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
+import stat
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from decimal import Decimal
@@ -12,6 +14,7 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
+import app.legacy_migration.binaries as legacy_binaries
 import app.legacy_migration.core as legacy_core
 from app.legacy_migration import (
     BatchConflict,
@@ -633,6 +636,16 @@ def test_postgresql_concurrent_same_batch_and_identity_sequence(tmp_path):
         finally:
             opened["stream"].close()
         with first_engine.begin() as connection:
+            connection.execute(sa.text(
+                "update stored_files set created_by=(select id from users order by id limit 1)"
+            ))
+        with pytest.raises(BatchConflict, match="target drift"):
+            verify_completed_batch(
+                first_engine, root, "concurrent-v1", storage_root=storage
+            )
+        with first_engine.begin() as connection:
+            connection.execute(sa.text("update stored_files set created_by=null"))
+        with first_engine.begin() as connection:
             assert connection.scalar(sa.text("select count(*) from legacy_migration_batches")) == 1
             assert connection.scalar(sa.text("select count(*) from projects")) == 1
             assert connection.scalar(sa.text("select count(*) from stored_files")) == 2
@@ -866,3 +879,114 @@ def test_binary_storage_root_boundaries_are_enforced(tmp_path):
         plan_legacy_binaries(
             engine, root, linked, max_bytes=1024, allow_test_sqlite=True,
         )
+
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(SourceSafetyError, match="symlink"):
+        plan_legacy_binaries(
+            engine, root, linked_parent / "nested-storage", max_bytes=1024,
+            allow_test_sqlite=True,
+        )
+
+
+def test_binary_storage_creation_is_private_under_permissive_umask(tmp_path):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    storage = tmp_path / "new-parent" / "storage"
+    previous = os.umask(0)
+    try:
+        migrate_legacy(
+            _target_engine(), root, "private-storage", storage_root=storage,
+            max_file_bytes=1024, allow_test_sqlite=True,
+        )
+    finally:
+        os.umask(previous)
+
+    for directory in (storage.parent, storage, *(
+        path for path in storage.rglob("*") if path.is_dir()
+    )):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+
+def test_storage_dirfd_stays_bound_when_path_ancestor_is_replaced(tmp_path):
+    storage = tmp_path / "storage"
+    (storage / "legacy" / "target").mkdir(parents=True, mode=0o700)
+    os.chmod(storage, 0o700)
+    os.chmod(storage / "legacy", 0o700)
+    os.chmod(storage / "legacy" / "target", 0o700)
+    descriptors = legacy_binaries._open_controlled_chain(
+        storage, Path("legacy/target"), create=False
+    )
+    original = tmp_path / "storage-original"
+    storage.rename(original)
+    (storage / "legacy" / "target").mkdir(parents=True, mode=0o700)
+    try:
+        proof_fd = os.open(
+            "proof", os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600, dir_fd=descriptors[-1],
+        )
+        os.close(proof_fd)
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+    assert (original / "legacy" / "target" / "proof").is_file()
+    assert not (storage / "legacy" / "target" / "proof").exists()
+
+
+@pytest.mark.parametrize("replacement", ("root", "database", "attachment"))
+def test_binary_migration_rejects_same_content_identity_replacement(
+    tmp_path, replacement
+):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o700)
+
+    def replace_same_content():
+        if replacement == "root":
+            clone = tmp_path / "legacy-clone"
+            shutil.copytree(root, clone, copy_function=shutil.copy2)
+            original = tmp_path / "legacy-original"
+            root.rename(original)
+            clone.rename(root)
+            return
+        target = (
+            root / "research.db"
+            if replacement == "database"
+            else root / "uploads" / "invoice-a.txt"
+        )
+        details = target.stat()
+        candidate = target.with_name(target.name + ".replacement")
+        candidate.write_bytes(target.read_bytes())
+        os.utime(candidate, ns=(details.st_atime_ns, details.st_mtime_ns))
+        os.replace(candidate, target)
+
+    with pytest.raises(SourceSafetyError, match="identity changed"):
+        migrate_legacy(
+            _target_engine(), root, f"identity-{replacement}",
+            storage_root=storage, max_file_bytes=1024,
+            allow_test_sqlite=True,
+            _before_final_source_check=replace_same_content,
+        )
+
+
+def test_binary_commit_failure_cleans_created_files(tmp_path):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o700)
+
+    def fail_commit(_connection):
+        raise RuntimeError("commit failed")
+
+    sa.event.listen(engine, "commit", fail_commit, once=True)
+    with pytest.raises(RuntimeError, match="commit failed"):
+        migrate_legacy(
+            engine, root, "commit-fail", storage_root=storage,
+            max_file_bytes=1024, allow_test_sqlite=True,
+        )
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text("select count(*) from legacy_migration_batches")) == 0
+    assert [path for path in storage.rglob("*") if path.is_file()] == []

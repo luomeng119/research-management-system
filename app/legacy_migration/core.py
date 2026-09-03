@@ -333,6 +333,89 @@ class SourceIdentity:
     sha256: str
 
 
+def _capture_source_custody(root: str | Path) -> dict[str, tuple[int, int, int, int, int]]:
+    root_path = Path(root).absolute()
+    directory_flags = (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    custody: dict[str, tuple[int, int, int, int, int]] = {}
+
+    def remember(relative: str, details: os.stat_result) -> None:
+        custody[relative] = (
+            details.st_dev, details.st_ino, stat.S_IFMT(details.st_mode),
+            details.st_size, details.st_mtime_ns,
+        )
+
+    descriptors = [os.open("/", directory_flags)]
+    try:
+        for part in root_path.parts[1:]:
+            descriptors.append(os.open(part, directory_flags, dir_fd=descriptors[-1]))
+        root_fd = descriptors[-1]
+        root_details = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_details.st_mode):
+            raise SourceSafetyError("legacy source root must be a real directory")
+        remember(".", root_details)
+
+        def walk(directory_fd: int, relative: Path) -> None:
+            for name in sorted(os.listdir(directory_fd)):
+                before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                child_relative = relative / name
+                logical = child_relative.as_posix()
+                if stat.S_ISLNK(before.st_mode):
+                    raise SourceSafetyError("symlink is forbidden in legacy source custody")
+                if stat.S_ISDIR(before.st_mode):
+                    child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+                    try:
+                        opened = os.fstat(child_fd)
+                        if not _same_stat(before, opened):
+                            raise SourceSafetyError(
+                                f"directory identity changed during custody check: {logical}"
+                            )
+                        remember(logical, opened)
+                        walk(child_fd, child_relative)
+                    finally:
+                        os.close(child_fd)
+                    continue
+                if not stat.S_ISREG(before.st_mode):
+                    raise SourceSafetyError(
+                        f"non-regular file is forbidden in legacy source custody: {logical}"
+                    )
+                file_fd = os.open(name, file_flags, dir_fd=directory_fd)
+                try:
+                    opened = os.fstat(file_fd)
+                    if not _same_stat(before, opened):
+                        raise SourceSafetyError(
+                            f"file identity changed during custody check: {logical}"
+                        )
+                    remember(logical, opened)
+                finally:
+                    os.close(file_fd)
+
+        walk(root_fd, Path())
+    except OSError as exc:
+        raise SourceSafetyError("legacy source custody path is unsafe") from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+    return custody
+
+
+def _assert_source_custody(
+    root: str | Path, expected: dict[str, tuple[int, int, int, int, int]]
+) -> None:
+    observed = _capture_source_custody(root)
+    if observed != expected:
+        raise SourceSafetyError("legacy source identity changed during migration")
+
+
 @dataclass(frozen=True)
 class LegacySource:
     name: str
@@ -1052,6 +1135,25 @@ def _take_migration_lock(connection: sa.Connection) -> None:
         connection.execute(sa.text("SELECT pg_advisory_xact_lock(75200501)"))
 
 
+@contextmanager
+def _migration_transaction_with_file_cleanup(
+    engine: Engine,
+    prepared: list[dict[str, Any]],
+    created_files: list[Path],
+) -> Iterable[sa.Connection]:
+    try:
+        with engine.begin() as connection:
+            yield connection
+    except Exception:
+        for item in prepared:
+            stage = item.get("stagePath")
+            if isinstance(stage, Path):
+                stage.unlink(missing_ok=True)
+        for path in reversed(created_files):
+            path.unlink(missing_ok=True)
+        raise
+
+
 def _decode_summary(value: Any) -> dict[str, Any]:
     return json.loads(value) if isinstance(value, str) else dict(value)
 
@@ -1138,6 +1240,7 @@ def _verify_completed_snapshot(
     original_root: str | Path,
     baseline_manifest_sha256: str,
     storage_root: str | Path | None = None,
+    original_custody: dict[str, tuple[int, int, int, int, int]] | None = None,
     allow_test_sqlite: bool = False,
 ) -> dict[str, Any]:
     if engine.dialect.name != "postgresql" and not allow_test_sqlite:
@@ -1163,6 +1266,8 @@ def _verify_completed_snapshot(
     _assert_sources_unchanged(sources)
     if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
         raise SourceSafetyError("legacy source or attachments changed during verification")
+    if original_custody is not None:
+        _assert_source_custody(original_root, original_custody)
     return report
 
 
@@ -1174,11 +1279,13 @@ def verify_completed_batch(
     storage_root: str | Path | None = None,
     allow_test_sqlite: bool = False,
 ) -> dict[str, Any]:
+    original_custody = _capture_source_custody(source_root)
     with _prepared_snapshot(source_root) as (snapshot_root, manifest):
         return _verify_completed_snapshot(
             engine, snapshot_root, batch_key, original_root=source_root,
             baseline_manifest_sha256=manifest["sha256"],
             storage_root=storage_root,
+            original_custody=original_custody,
             allow_test_sqlite=allow_test_sqlite,
         )
 
@@ -1196,6 +1303,7 @@ def _migrate_snapshot(
     fail_after_table: str | None = None,
     _before_final_source_check: Any = None,
     _fail_after_binary: int | None = None,
+    original_custody: dict[str, tuple[int, int, int, int, int]] | None = None,
 ) -> dict[str, Any]:
     if engine.dialect.name != "postgresql" and not allow_test_sqlite:
         raise SourceSafetyError("migration target must be PostgreSQL")
@@ -1223,7 +1331,11 @@ def _migrate_snapshot(
     batch_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"legacy-batch:{batch_key}:{manifest_sha}")
     issue_rows: list[dict[str, Any]] = []
     expected_rows: dict[str, list[dict[str, Any]]] = {}
-    with engine.begin() as connection:
+    prepared: list[dict[str, Any]] = []
+    created_binary_files: list[Path] = []
+    with _migration_transaction_with_file_cleanup(
+        engine, prepared, created_binary_files
+    ) as connection:
         _take_migration_lock(connection)
         batch_id = _uuid_value(connection, batch_uuid)
         batches = _reflect_table(connection, "legacy_migration_batches")
@@ -1244,6 +1356,8 @@ def _migrate_snapshot(
                 connection, existing_report, storage_root=storage_root
             )
             _assert_sources_unchanged(sources)
+            if original_custody is not None:
+                _assert_source_custody(original_root, original_custody)
             if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
                 raise SourceSafetyError("legacy source or attachments changed during batch reuse")
             return existing_report
@@ -1262,6 +1376,8 @@ def _migrate_snapshot(
                 connection, reusable_report, storage_root=storage_root
             )
             _assert_sources_unchanged(sources)
+            if original_custody is not None:
+                _assert_source_custody(original_root, original_custody)
             if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
                 raise SourceSafetyError("legacy source or attachments changed during batch reuse")
             return reusable_report
@@ -1439,8 +1555,6 @@ def _migrate_snapshot(
             physical_fingerprint,
             prepare_binary_files,
         )
-        prepared: list[dict[str, Any]] = []
-        created_binary_files: list[Path] = []
         try:
             _create_project_registry(connection, report, expected_rows)
             if binary_plan["summary"]["planned"]:
@@ -1473,6 +1587,8 @@ def _migrate_snapshot(
                 raise SourceSafetyError("legacy source changed during migration")
             if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
                 raise SourceSafetyError("legacy source or attachments changed during migration")
+            if original_custody is not None:
+                _assert_source_custody(original_root, original_custody)
             report["custody_verified"] = True
             report["source_hashes_before"] = report.pop("source_hashes")
             report["source_hashes_after"] = {
@@ -1485,9 +1601,9 @@ def _migrate_snapshot(
                 for item in prepared
             ]
             if prepared:
-                created_binary_files = finalize_binary_files(
+                created_binary_files.extend(finalize_binary_files(
                     Path(storage_root), prepared, fail_after=_fail_after_binary
-                )
+                ))
                 physical = physical_fingerprint(Path(storage_root), planned_items)
             else:
                 physical = {"files": [], "sha256": _sha_bytes(b'{"files":[]}')}
@@ -1550,6 +1666,7 @@ def migrate_legacy(
     _before_final_source_check: Any = None,
     _fail_after_binary: int | None = None,
 ) -> dict[str, Any]:
+    original_custody = _capture_source_custody(source_root)
     if storage_root is not None:
         from .binaries import _validate_storage_root
         _validate_storage_root(Path(source_root), Path(storage_root), create=False)
@@ -1563,4 +1680,5 @@ def migrate_legacy(
             fail_after_table=fail_after_table,
             _before_final_source_check=_before_final_source_check,
             _fail_after_binary=_fail_after_binary,
+            original_custody=original_custody,
         )

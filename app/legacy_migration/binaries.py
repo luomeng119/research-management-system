@@ -44,7 +44,18 @@ def _safe_values(table: sa.Table, **values: Any) -> dict[str, Any]:
 
 
 def _validate_storage_root(source_root: Path, storage_root: Path, *, create: bool) -> None:
+    storage_root = storage_root.absolute()
     source = source_root.resolve(strict=True)
+    existing_chain = []
+    cursor = storage_root
+    while True:
+        if cursor.exists() or cursor.is_symlink():
+            existing_chain.append(cursor)
+        if cursor == cursor.parent:
+            break
+        cursor = cursor.parent
+    if any(path.is_symlink() for path in existing_chain):
+        raise SourceSafetyError("storage directory chain must not contain symlinks")
     if storage_root.exists():
         if storage_root.is_symlink() or not storage_root.is_dir():
             raise SourceSafetyError("storage root must be a real directory")
@@ -69,7 +80,14 @@ def _validate_storage_root(source_root: Path, storage_root: Path, *, create: boo
     except ValueError:
         pass
     if create and not storage_root.exists():
-        storage_root.mkdir(mode=0o700, parents=True)
+        missing: list[Path] = []
+        cursor = storage_root
+        while not cursor.exists():
+            missing.append(cursor)
+            cursor = cursor.parent
+        for directory in reversed(missing):
+            directory.mkdir(mode=0o700)
+            os.chmod(directory, 0o700)
     if storage_root.exists():
         current = storage_root
         if current.is_symlink() or not current.is_dir():
@@ -78,18 +96,41 @@ def _validate_storage_root(source_root: Path, storage_root: Path, *, create: boo
             raise SourceSafetyError("storage root permissions are too broad")
 
 
+def _open_controlled_chain(root: Path, relative: Path, *, create: bool) -> list[int]:
+    absolute = root.absolute()
+    if os.name == "nt":
+        raise SourceSafetyError("legacy binary migration requires POSIX no-follow storage")
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    descriptors = [os.open("/", flags)]
+    root_parts = absolute.parts[1:]
+    try:
+        for index, part in enumerate((*root_parts, *relative.parts), 1):
+            parent = descriptors[-1]
+            try:
+                descriptor = os.open(part, flags, dir_fd=parent)
+            except FileNotFoundError:
+                if not create or index <= len(root_parts):
+                    raise
+                os.mkdir(part, 0o700, dir_fd=parent)
+                os.chmod(part, 0o700, dir_fd=parent, follow_symlinks=False)
+                descriptor = os.open(part, flags, dir_fd=parent)
+            details = os.fstat(descriptor)
+            if index >= len(root_parts) and stat.S_IMODE(details.st_mode) & 0o022:
+                os.close(descriptor)
+                raise SourceSafetyError("controlled storage directory permissions are too broad")
+            descriptors.append(descriptor)
+        return descriptors
+    except Exception:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        raise
+
+
 def _ensure_private_directory(root: Path, relative: Path) -> Path:
-    current = root
-    for part in relative.parts:
-        current = current / part
-        if current.exists():
-            if current.is_symlink() or not current.is_dir():
-                raise SourceSafetyError("controlled storage directory is unsafe")
-        else:
-            current.mkdir(mode=0o700)
-        if os.name != "nt" and stat.S_IMODE(current.stat().st_mode) & 0o022:
-            raise SourceSafetyError("controlled storage directory permissions are too broad")
-    return current
+    descriptors = _open_controlled_chain(root, relative, create=True)
+    for descriptor in reversed(descriptors):
+        os.close(descriptor)
+    return root / relative
 
 
 def _source_path(root: Path, raw: Any) -> tuple[str, Path]:
@@ -457,14 +498,22 @@ def apply_binary_metadata(
     for table_name, rows in inserted.items():
         if not rows:
             continue
-        expected_rows.setdefault(table_name, []).extend(dict(row) for row in rows)
-        target_columns = sorted({column for row in rows for column in row})
-        key_values = [[str(row["id"])] for row in rows]
+        table = tables[table_name]
+        ids = [row["id"] for row in rows]
+        captured_rows = [
+            dict(row) for row in connection.execute(
+                sa.select(table).where(table.c.id.in_(ids))
+            ).mappings()
+        ]
+        captured_rows.sort(key=lambda row: str(row["id"]))
+        expected_rows.setdefault(table_name, []).extend(captured_rows)
+        target_columns = sorted(table.c.keys())
+        key_values = [[str(row["id"])] for row in captured_rows]
         report["tables"][table_name] = {
             "source": len(rows), "converted": len(rows), "inserted": len(rows),
             "reused": 0, "rejected": 0,
             "normalized_sha256": _sha_bytes(_canonical_json(sorted(
-                _sha_bytes(_canonical_json(row).encode()) for row in rows
+                _sha_bytes(_canonical_json(row).encode()) for row in captured_rows
             )).encode()),
             "primary_keys_sha256": _sha_bytes(_canonical_json(key_values).encode()),
             "natural_keys_sha256": _sha_bytes(b"[]"),
@@ -487,18 +536,41 @@ def finalize_binary_files(
     try:
         for index, item in enumerate(prepared, 1):
             relative = Path(item["storagePath"])
-            parent = _ensure_private_directory(storage_root, relative.parent)
-            destination = parent / relative.name
-            if destination.is_symlink() or destination.exists():
-                if destination.is_symlink() or not destination.is_file():
-                    raise BatchConflict("legacy binary target conflict")
-                size, digest = _read_physical_identity(storage_root, relative)
-                if size != item["sizeBytes"] or digest != item["sha256"]:
-                    raise BatchConflict("legacy binary orphan content conflict")
-            else:
-                os.link(item["stagePath"], destination, follow_symlinks=False)
-                created.append(destination)
-            item["stagePath"].unlink(missing_ok=True)
+            parent_descriptors = _open_controlled_chain(
+                storage_root, relative.parent, create=True
+            )
+            staging_descriptors = _open_controlled_chain(
+                storage_root, Path(".staging"), create=False
+            )
+            parent_fd = parent_descriptors[-1]
+            staging_fd = staging_descriptors[-1]
+            destination = storage_root / relative
+            try:
+                existing = os.stat(
+                    relative.name, dir_fd=parent_fd, follow_symlinks=False
+                )
+            except FileNotFoundError:
+                existing = None
+            try:
+                if existing is not None:
+                    if not stat.S_ISREG(existing.st_mode):
+                        raise BatchConflict("legacy binary target conflict")
+                    size, digest = _read_physical_identity(storage_root, relative)
+                    if size != item["sizeBytes"] or digest != item["sha256"]:
+                        raise BatchConflict("legacy binary orphan content conflict")
+                else:
+                    os.link(
+                        item["stagePath"].name, relative.name,
+                        src_dir_fd=staging_fd, dst_dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                    created.append(destination)
+                os.unlink(item["stagePath"].name, dir_fd=staging_fd)
+            finally:
+                for descriptor in reversed(staging_descriptors):
+                    os.close(descriptor)
+                for descriptor in reversed(parent_descriptors):
+                    os.close(descriptor)
             if fail_after is not None and index >= fail_after:
                 raise RuntimeError("injected binary failure")
         return created
@@ -529,21 +601,12 @@ def _same_open_stat(left: os.stat_result, right: os.stat_result) -> bool:
 def _read_physical_identity(storage_root: Path, relative: Path) -> tuple[int, str]:
     import hashlib
 
-    directory_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
     file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    descriptors: list[int] = []
+    descriptors = _open_controlled_chain(
+        storage_root, relative.parent, create=False
+    )
     try:
-        current = os.open(storage_root, directory_flags)
-        descriptors.append(current)
-        for part in relative.parts[:-1]:
-            current = os.open(part, directory_flags, dir_fd=current)
-            descriptors.append(current)
-        file_fd = os.open(relative.parts[-1], file_flags, dir_fd=current)
+        file_fd = os.open(relative.name, file_flags, dir_fd=descriptors[-1])
         descriptors.append(file_fd)
         before = os.fstat(file_fd)
         if not stat.S_ISREG(before.st_mode):
