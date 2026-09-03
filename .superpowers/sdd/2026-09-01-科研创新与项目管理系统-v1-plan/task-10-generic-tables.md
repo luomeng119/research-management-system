@@ -55,3 +55,4 @@
 - `page_size=-1` 的“全部”仍受 5000 行上限约束；这是防止内存和数据库无界扫描的 V1 边界。
 - `.xls` 明确不支持，用户需转为 `.xlsx`。
 - 实现提交：`1b15afc feat: migrate generic tables to PostgreSQL`。
+- 导出表头/嵌套 JSON 及模板 JS 安全加固：`7d8e484 fix: harden generic table export values`；加固后专项 `11 passed, 1 skipped`（PostgreSQL 项仅在隔离 runner 中执行）。
