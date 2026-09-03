@@ -385,16 +385,18 @@ def prepare_binary_files(
         for item in planned:
             _, source = _source_path(source_root, item["sourceLogicalPath"])
             stage = staging / f"{item['fileId']}-{uuid.uuid4().hex}.part"
+            item["stagePath"] = stage
+            item["stageName"] = stage.name
+            item["stageDirFd"] = os.dup(staging_fd)
+            item["stageIdentity"] = None
+            prepared.append(item)
             source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             destination_fd = os.open(
                 stage.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
                 dir_fd=staging_fd,
             )
-            item["stagePath"] = stage
-            item["stageName"] = stage.name
-            item["stageDirFd"] = os.dup(staging_fd)
-            prepared.append(item)
             try:
+                item["stageIdentity"] = _cleanup_identity(os.fstat(destination_fd))
                 while chunk := os.read(source_fd, 1024 * 1024):
                     view = memoryview(chunk)
                     while view:
@@ -565,16 +567,25 @@ def finalize_binary_files(
                     if size != item["sizeBytes"] or digest != item["sha256"]:
                         raise BatchConflict("legacy binary orphan content conflict")
                 else:
+                    cleanup_entry = {
+                        "dirFd": os.dup(parent_fd),
+                        "name": relative.name,
+                        "path": destination,
+                        "identity": item["stageIdentity"],
+                    }
+                    created.append(cleanup_entry)
                     os.link(
                         item["stageName"], relative.name,
                         src_dir_fd=staging_fd, dst_dir_fd=parent_fd,
                         follow_symlinks=False,
                     )
-                    created.append({
-                        "dirFd": os.dup(parent_fd),
-                        "name": relative.name,
-                        "path": destination,
-                    })
+                    linked_identity = _cleanup_identity(os.stat(
+                        relative.name, dir_fd=parent_fd, follow_symlinks=False
+                    ))
+                    if linked_identity != cleanup_entry["identity"]:
+                        raise SourceSafetyError(
+                            "binary target identity changed while finalizing"
+                        )
                 os.unlink(item["stageName"], dir_fd=staging_fd)
             finally:
                 for descriptor in reversed(parent_descriptors):
@@ -593,9 +604,9 @@ def cleanup_prepared(prepared: list[dict[str, Any]]) -> None:
         descriptor = item.get("stageDirFd")
         if isinstance(descriptor, int):
             try:
-                os.unlink(item["stageName"], dir_fd=descriptor)
-            except FileNotFoundError:
-                pass
+                _unlink_registered(
+                    descriptor, item["stageName"], item.get("stageIdentity")
+                )
             finally:
                 os.close(descriptor)
                 item["stageDirFd"] = None
@@ -612,13 +623,38 @@ def cleanup_created_files(created: list[dict[str, Any]], *, remove: bool = True)
             continue
         try:
             if remove:
-                try:
-                    os.unlink(item["name"], dir_fd=descriptor)
-                except FileNotFoundError:
-                    pass
+                _unlink_registered(descriptor, item["name"], item.get("identity"))
         finally:
             os.close(descriptor)
             item["dirFd"] = None
+
+
+def _cleanup_identity(details: os.stat_result) -> tuple[int, int, int]:
+    return details.st_dev, details.st_ino, stat.S_IFMT(details.st_mode)
+
+
+def _unlink_registered(
+    directory_fd: int, name: str, expected: tuple[int, int, int] | None
+) -> None:
+    if expected is None:
+        return
+    try:
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        current = None
+    if current is not None and _cleanup_identity(current) == expected:
+        os.unlink(name, dir_fd=directory_fd)
+        return
+    for candidate in sorted(os.listdir(directory_fd)):
+        try:
+            details = os.stat(
+                candidate, dir_fd=directory_fd, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            continue
+        if _cleanup_identity(details) == expected:
+            os.unlink(candidate, dir_fd=directory_fd)
+            return
 
 
 def _same_open_stat(left: os.stat_result, right: os.stat_result) -> bool:

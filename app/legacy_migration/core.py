@@ -1160,11 +1160,26 @@ def _migration_transaction_with_file_cleanup(
     engine: Engine,
     prepared: list[dict[str, Any]],
     created_files: list[dict[str, Any]],
+    final_source_check: Any = None,
 ) -> Iterable[sa.Connection]:
+    connection = engine.connect()
+    transaction = connection.begin()
+    commit_check = None
     try:
-        with engine.begin() as connection:
-            yield connection
+        if final_source_check is not None:
+            def commit_check(_connection: sa.Connection) -> None:
+                final_source_check()
+
+            sa.event.listen(connection, "commit", commit_check)
+        yield connection
+        if final_source_check is not None:
+            final_source_check()
+        transaction.commit()
     except Exception:
+        if transaction.is_active:
+            transaction.rollback()
+        else:
+            connection.rollback()
         from .binaries import cleanup_created_files, cleanup_prepared
         cleanup_prepared(prepared)
         cleanup_created_files(created_files)
@@ -1173,6 +1188,12 @@ def _migration_transaction_with_file_cleanup(
         from .binaries import cleanup_created_files, cleanup_prepared
         cleanup_prepared(prepared)
         cleanup_created_files(created_files, remove=False)
+    finally:
+        if commit_check is not None and sa.event.contains(
+            connection, "commit", commit_check
+        ):
+            sa.event.remove(connection, "commit", commit_check)
+        connection.close()
 
 
 def _decode_summary(value: Any) -> dict[str, Any]:
@@ -1354,8 +1375,13 @@ def _migrate_snapshot(
     expected_rows: dict[str, list[dict[str, Any]]] = {}
     prepared: list[dict[str, Any]] = []
     created_binary_files: list[dict[str, Any]] = []
+    final_source_check = (
+        (lambda: _assert_source_custody(original_root, original_custody))
+        if original_custody is not None else None
+    )
     with _migration_transaction_with_file_cleanup(
-        engine, prepared, created_binary_files
+        engine, prepared, created_binary_files,
+        final_source_check=final_source_check,
     ) as connection:
         _take_migration_lock(connection)
         batch_id = _uuid_value(connection, batch_uuid)
@@ -1377,9 +1403,10 @@ def _migrate_snapshot(
                 connection, existing_report, storage_root=storage_root
             )
             _assert_sources_unchanged(sources)
-            if original_custody is not None:
-                _assert_source_custody(original_root, original_custody)
-            elif _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
+            if original_custody is None and (
+                _fresh_bound_manifest(original_root)["sha256"]
+                != baseline_manifest_sha256
+            ):
                 raise SourceSafetyError("legacy source or attachments changed during batch reuse")
             return existing_report
         reusable = connection.execute(
@@ -1397,9 +1424,10 @@ def _migrate_snapshot(
                 connection, reusable_report, storage_root=storage_root
             )
             _assert_sources_unchanged(sources)
-            if original_custody is not None:
-                _assert_source_custody(original_root, original_custody)
-            elif _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
+            if original_custody is None and (
+                _fresh_bound_manifest(original_root)["sha256"]
+                != baseline_manifest_sha256
+            ):
                 raise SourceSafetyError("legacy source or attachments changed during batch reuse")
             return reusable_report
         from .binaries import build_binary_plan, binary_issues
@@ -1607,9 +1635,10 @@ def _migrate_snapshot(
             after_manifest = build_manifest(source_root, _sources=sources)
             if after_manifest["sha256"] != manifest_sha:
                 raise SourceSafetyError("legacy source changed during migration")
-            if original_custody is not None:
-                _assert_source_custody(original_root, original_custody)
-            elif _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
+            if original_custody is None and (
+                _fresh_bound_manifest(original_root)["sha256"]
+                != baseline_manifest_sha256
+            ):
                 raise SourceSafetyError("legacy source or attachments changed during migration")
             report["custody_verified"] = True
             report["source_hashes_before"] = report.pop("source_hashes")
@@ -1621,7 +1650,9 @@ def _migrate_snapshot(
             planned_items = [
                 {
                     key: value for key, value in item.items()
-                    if key not in {"stagePath", "stageName", "stageDirFd"}
+                    if key not in {
+                        "stagePath", "stageName", "stageDirFd", "stageIdentity"
+                    }
                 }
                 for item in prepared
             ]

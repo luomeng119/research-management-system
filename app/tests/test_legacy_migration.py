@@ -1064,3 +1064,107 @@ def test_finalize_rollback_cleans_original_bound_directory_after_path_swap(
         ) == 0
     assert [path for path in original_storage.rglob("*") if path.is_file()] == []
     assert [path for path in storage.rglob("*") if path.is_file()] == []
+
+
+def test_commit_boundary_rechecks_after_final_custody_check_returns(
+    tmp_path, monkeypatch
+):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o700)
+    attachment = root / "uploads" / "invoice-a.txt"
+    original_assert = legacy_core._assert_source_custody
+    changed_after_check = False
+
+    def change_after_successful_check(current_root, expected):
+        nonlocal changed_after_check
+        result = original_assert(current_root, expected)
+        if not changed_after_check:
+            details = attachment.stat()
+            attachment.write_bytes(b"evil invoice")
+            os.utime(attachment, ns=(details.st_atime_ns, details.st_mtime_ns))
+            changed_after_check = True
+        return result
+
+    monkeypatch.setattr(
+        legacy_core, "_assert_source_custody", change_after_successful_check
+    )
+    with pytest.raises(SourceSafetyError, match="identity changed"):
+        migrate_legacy(
+            engine, root, "commit-custody-race", storage_root=storage,
+            max_file_bytes=1024, allow_test_sqlite=True,
+        )
+    assert changed_after_check is True
+    with engine.connect() as connection:
+        assert connection.scalar(
+            sa.text("select count(*) from legacy_migration_batches")
+        ) == 0
+    assert [path for path in storage.rglob("*") if path.is_file()] == []
+
+
+@pytest.mark.parametrize("failure_call", (1, 3))
+def test_cleanup_descriptor_registration_failure_leaves_no_files(
+    tmp_path, monkeypatch, failure_call
+):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o700)
+    original_dup = legacy_binaries.os.dup
+    calls = 0
+
+    def fail_selected_dup(descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == failure_call:
+            raise OSError("injected cleanup descriptor failure")
+        return original_dup(descriptor)
+
+    monkeypatch.setattr(legacy_binaries.os, "dup", fail_selected_dup)
+    with pytest.raises(OSError, match="cleanup descriptor failure"):
+        migrate_legacy(
+            engine, root, f"dup-failure-{failure_call}", storage_root=storage,
+            max_file_bytes=1024, allow_test_sqlite=True,
+        )
+    with engine.connect() as connection:
+        assert connection.scalar(
+            sa.text("select count(*) from legacy_migration_batches")
+        ) == 0
+    assert [path for path in storage.rglob("*") if path.is_file()] == []
+
+
+def test_cleanup_finds_renamed_inode_and_preserves_later_same_name(
+    tmp_path, monkeypatch
+):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o700)
+    original_fingerprint = legacy_binaries.physical_fingerprint
+    replacement = b"later object"
+    renamed_path = None
+
+    def replace_name_after_finalize(current_storage, items):
+        nonlocal renamed_path
+        original_path = current_storage / items[0]["storagePath"]
+        renamed_path = original_path.with_name(original_path.name + ".renamed")
+        original_path.rename(renamed_path)
+        original_path.write_bytes(replacement)
+        return original_fingerprint(current_storage, items)
+
+    monkeypatch.setattr(
+        legacy_binaries, "physical_fingerprint", replace_name_after_finalize
+    )
+    with pytest.raises(BatchConflict, match="integrity mismatch"):
+        migrate_legacy(
+            engine, root, "renamed-cleanup", storage_root=storage,
+            max_file_bytes=1024, allow_test_sqlite=True,
+        )
+    assert renamed_path is not None and not renamed_path.exists()
+    later_objects = [path for path in storage.rglob("*") if path.is_file()]
+    assert len(later_objects) == 1
+    assert later_objects[0].read_bytes() == replacement
