@@ -114,11 +114,13 @@ class GenericTablesRepository:
         with self.engine.connect() as reader:
             return self._rows(reader, statement)
 
-    def list_rows(self, version_id: str, keyword: str | None = None, *, limit: int = 5000, connection=None) -> list[dict]:
+    def list_rows(self, version_id: str, keyword: str | None = None, *, limit: int | None = None, offset: int = 0, connection=None) -> list[dict]:
         statement = sa.select(self.data).where(self.data.c.version_id == version_id)
         if keyword:
             statement = statement.where(sa.cast(self.data.c.row_data, sa.Text).ilike(f"%{keyword}%"))
-        statement = statement.order_by(self.data.c.row_index, self.data.c.id).limit(limit)
+        statement = statement.order_by(self.data.c.row_index, self.data.c.id).offset(offset)
+        if limit is not None:
+            statement = statement.limit(limit)
         if connection is not None:
             return self._rows(connection, statement)
         with self.engine.connect() as reader:
@@ -128,6 +130,15 @@ class GenericTablesRepository:
         return int(connection.execute(sa.select(sa.func.count()).select_from(self.data).where(
             self.data.c.version_id == version_id,
         )).scalar_one())
+
+    def count_matching_rows(self, version_id: str, keyword: str | None = None, connection=None) -> int:
+        statement = sa.select(sa.func.count()).select_from(self.data).where(self.data.c.version_id == version_id)
+        if keyword:
+            statement = statement.where(sa.cast(self.data.c.row_data, sa.Text).ilike(f"%{keyword}%"))
+        if connection is not None:
+            return int(connection.execute(statement).scalar_one())
+        with self.engine.connect() as reader:
+            return int(reader.execute(statement).scalar_one())
 
     def copy_columns(self, connection, source_id: str, target_id: str, created_at) -> None:
         names = ["version_id", "col_key", "col_name", "col_type", "col_index", "col_width", "col_align", "col_summary", "col_options", "created_at"]

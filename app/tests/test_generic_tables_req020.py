@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import sqlalchemy as sa
 from sqlalchemy.pool import StaticPool
@@ -60,3 +61,86 @@ def test_req020_locked_write_and_legacy_xls_are_rejected(tmp_path):
     )
     assert legacy.status_code == 400
     assert ".xlsx" in legacy.get_json()["error"]
+
+
+def test_list_import_invalid_upload_does_not_create_or_switch_version(tmp_path):
+    client = _client(tmp_path)
+    table_id = client.post("/api/generic-tables", json={"name": "科研台账"}).get_json()["table_id"]
+    before = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"]
+    source = before[0]["version_id"]
+    response = client.post(
+        f"/api/generic-tables/{table_id}/versions/import",
+        data={"source_version_id": source, "file": (io.BytesIO(b"not a zip"), "broken.xlsx")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 400
+    assert response.get_json()["code"] == "INVALID_XLSX"
+    after = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"]
+    assert after == before
+
+
+def test_legacy_two_step_import_cannot_create_empty_current(tmp_path):
+    client = _client(tmp_path)
+    table_id = client.post("/api/generic-tables", json={"name": "科研台账"}).get_json()["table_id"]
+    before = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"]
+    response = client.post(f"/api/generic-tables/{table_id}/versions", json={"method": "import", "source_version_id": before[0]["version_id"]})
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "ATOMIC_IMPORT_REQUIRED"
+    assert client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"] == before
+
+
+def test_list_import_switches_current_only_with_successful_xlsx(tmp_path):
+    client = _client(tmp_path)
+    table_id = client.post("/api/generic-tables", json={"name": "科研台账"}).get_json()["table_id"]
+    source = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"][0]["version_id"]
+    stream = io.BytesIO()
+    import openpyxl
+    workbook = openpyxl.Workbook(); workbook.active.append(["名称"]); workbook.active.append(["课题甲"]); workbook.save(stream); stream.seek(0)
+    response = client.post(
+        f"/api/generic-tables/{table_id}/versions/import",
+        data={"source_version_id": source, "file": (stream, "valid.xlsx")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    body = response.get_json()
+    versions = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"]
+    assert body["imported"] == 1
+    assert next(version for version in versions if version["is_current"])["version_id"] == body["version_id"]
+
+
+def test_noncurrent_unlocked_history_has_no_editable_javascript_state(tmp_path):
+    client = _client(tmp_path)
+    table_id = client.post("/api/generic-tables", json={"name": "科研台账"}).get_json()["table_id"]
+    source = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"][0]["version_id"]
+    saved = client.post(f"/api/generic-tables/{table_id}/versions", json={"method": "snapshot", "source_version_id": source}).get_json()
+    page = client.get(f"/tables/{table_id}/version/{source}/").get_data(as_text=True)
+    assert "const IS_CURRENT = false" in page
+    assert "const CAN_EDIT = IS_CURRENT && !IS_LOCKED" in page
+    assert saved["new_current_id"] != source
+
+
+def test_unexpected_snapshot_failure_does_not_leak_exception_text(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    table_id = client.post("/api/generic-tables", json={"name": "科研台账"}).get_json()["table_id"]
+    source = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"][0]["version_id"]
+    service = client.application.extensions["generic_tables_service"]
+    monkeypatch.setattr(service, "save_snapshot", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("secret-dsn")))
+    response = client.post(f"/api/generic-tables/{table_id}/versions", json={"method": "snapshot", "source_version_id": source})
+    assert response.status_code == 500
+    assert response.get_json()["code"] == "SNAPSHOT_FAILED"
+    assert "secret-dsn" not in response.get_data(as_text=True)
+
+
+def test_export_temp_file_is_removed_when_response_closes(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    table_id = client.post("/api/generic-tables", json={"name": "科研台账"}).get_json()["table_id"]
+    version = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"][0]["version_id"]
+    exported = tmp_path / "export.xlsx"
+    exported.write_bytes(b"xlsx-bytes")
+    service = client.application.extensions["generic_tables_service"]
+    monkeypatch.setattr(service, "export_to_excel", lambda _version_id: str(exported))
+    response = client.get(f"/api/generic-tables/versions/{version}/export", buffered=False)
+    assert response.status_code == 200 and exported.exists()
+    _ = response.get_data()
+    response.close()
+    assert not exported.exists()

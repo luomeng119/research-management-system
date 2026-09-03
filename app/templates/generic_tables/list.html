@@ -188,7 +188,7 @@
                 </div>
                 <div class="mb-3">
                     <label class="form-label">选择 Excel 文件</label>
-                    <input type="file" class="form-control" id="importFile" accept=".xlsx,.xls">
+                    <input type="file" class="form-control" id="importFile" accept=".xlsx">
                 </div>
             </div>
             <div class="modal-footer">
@@ -312,7 +312,9 @@ async function deleteVersion(versionId) {
 
 async function createSnapshot() {
     if (!currentTableId || !currentVersions.length) return;
-    const latestVid = currentVersions[0].version_id;
+    const current = currentVersions.find(version => version.is_current);
+    if (!current) { alert('当前版本不存在'); return; }
+    const latestVid = current.version_id;
     const r = await fetch(`/api/generic-tables/${currentTableId}/versions`, {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
@@ -330,22 +332,19 @@ function showImportModal() {
 
 async function doImport() {
     if (!currentTableId || !currentVersions.length) return;
-    const latestVid = currentVersions[0].version_id;
+    const current = currentVersions.find(version => version.is_current);
+    if (!current) { alert('当前版本不存在'); return; }
+    const latestVid = current.version_id;
     const note = document.getElementById('importNote').value.trim();
     const fileInput = document.getElementById('importFile');
     if (!fileInput.files.length) { alert('请选择文件'); return; }
+    if (!fileInput.files[0].name.toLowerCase().endsWith('.xlsx')) { alert('仅支持 .xlsx 文件'); return; }
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
-    // 先创建新版本
-    const vr = await fetch(`/api/generic-tables/${currentTableId}/versions`, {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({method:'import', source_version_id: latestVid, label: '导入版', note})
-    }).then(r=>r.json()).catch(()=>({error:'网络错误'}));
-    if (vr.error) { alert(vr.error); return; }
-    const newVid = vr.version_id;
-    // 上传文件
-    const uploadR = await fetch(`/api/generic-tables/versions/${newVid}/rows/import`, {
+    formData.append('source_version_id', latestVid);
+    formData.append('label', '导入版');
+    formData.append('note', note);
+    const uploadR = await fetch(`/api/generic-tables/${currentTableId}/versions/import`, {
         method: 'POST',
         body: formData
     }).then(r=>r.json()).catch(()=>({error:'网络错误'}));

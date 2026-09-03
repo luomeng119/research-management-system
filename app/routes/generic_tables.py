@@ -9,9 +9,10 @@ import tempfile
 import uuid
 import json
 from datetime import datetime
-from flask import Blueprint, after_this_request, render_template, request, jsonify, session, send_file
+from flask import Blueprint, render_template, request, jsonify, session, send_file
 from app.models_generic_tables import GenericTableModel
 from app.services.generic_tables import GenericTablesError, MAX_FILE_BYTES
+from werkzeug.wsgi import ClosingIterator
 
 bp = Blueprint('generic_tables', __name__, url_prefix='/tables')
 bp2 = Blueprint('generic_tables_api', __name__, url_prefix='/api/generic-tables')
@@ -87,8 +88,14 @@ def detail_page(table_id):
     if not version:
         return "当前版本不存在", 404
     columns = model.get_columns(current_vid)
-    rows = model.get_rows(current_vid)
-    stats = model.get_column_stats(current_vid) if version_id_helper_has_stats() else {}
+    page = max(1, request.args.get('page', 1, type=int))
+    rows, row_total = model.get_rows_page(current_vid, page=page, page_size=version.get('page_size', 20))
+    try:
+        stats = model.get_column_stats(current_vid) if version_id_helper_has_stats() else {}
+    except GenericTablesError as error:
+        if error.code != 'RESULT_TOO_LARGE':
+            raise
+        stats = {}
     # 构建列名映射
     cols_map = {col['col_key']: col['col_name'] for col in columns}
     # REQ-020: 过滤出历史快照（用于侧边栏）
@@ -97,7 +104,8 @@ def detail_page(table_id):
                            table=table, versions=versions,
                            current_version=version, columns=columns,
                            rows=rows, stats=stats, cols_map=cols_map,
-                           snapshots=snapshots, is_current=True)
+                           snapshots=snapshots, is_current=True,
+                           row_total=row_total, current_page=page)
 
 def version_id_helper_has_stats():
     """REQ-020: 占位函数，避免重复计算 stats"""
@@ -119,15 +127,22 @@ def version_readonly_page(table_id, version_id):
     is_current = (version_id == table.get('current_version_id'))
     versions = model.get_versions(table_id)
     columns = model.get_columns(version_id)
-    rows = model.get_rows(version_id)
-    stats = model.get_column_stats(version_id)
+    page = max(1, request.args.get('page', 1, type=int))
+    rows, row_total = model.get_rows_page(version_id, page=page, page_size=version.get('page_size', 20))
+    try:
+        stats = model.get_column_stats(version_id)
+    except GenericTablesError as error:
+        if error.code != 'RESULT_TOO_LARGE':
+            raise
+        stats = {}
     cols_map = {col['col_key']: col['col_name'] for col in columns}
     snapshots = [v for v in versions if v['version_id'] != version_id]
     return render_template('generic_tables/detail.html',
                            table=table, versions=versions,
                            current_version=version, columns=columns,
                            rows=rows, stats=stats, cols_map=cols_map,
-                           snapshots=snapshots, is_current=is_current)
+                           snapshots=snapshots, is_current=is_current,
+                           row_total=row_total, current_page=page)
 
 
 @bp.route('/<table_id>/compare')
@@ -204,6 +219,10 @@ def api_delete(table_id):
 def api_versions(table_id):
     model = GenericTableModel()
     versions = model.get_versions(table_id)
+    table = model.get_by_id(table_id)
+    current_id = table.get('current_version_id') if table else None
+    for version in versions:
+        version['is_current'] = version['version_id'] == current_id
     return jsonify({'versions': versions})
 
 @bp2.route('/<table_id>/versions', methods=['POST'])
@@ -212,7 +231,7 @@ def api_create_version(table_id):
     """
     REQ-020: 创建版本
     method='snapshot': 调 save_snapshot（自动建 snapshot + 新 working 副本 + 更新 current_version_id）
-    method='import':   保留兼容（仅创建空 working 版本，不建 snapshot，调用方不推荐使用）
+    method='import':   保留旧 URL 错误合约，引导到原子导入接口
     """
     data = request.get_json() or {}
     method = data.get('method', 'snapshot')
@@ -245,21 +264,14 @@ def api_create_version(table_id):
             })
         except GenericTablesError:
             raise
-        except Exception as e:
-            return jsonify({'error': f'保存快照失败：{str(e)[:200]}'}), 500
+        except Exception:
+            return jsonify({'error': '保存快照失败', 'code': 'SNAPSHOT_FAILED'}), 500
     elif method == 'import':
-        # 保留兼容：创建空 working 版本（不建 snapshot，调用方负责后续导入数据）
-        version_id = model.create_version(
-            table_id=table_id,
-            method='import',
-            source_version_id=data.get('source_version_id'),
-            creator=session.get('user', 'unknown'),
-            label=data.get('label', ''),
-            note=data.get('note', '')
-        )
-        # REQ-020: 顺手把 current_version_id 指向新版本
-        model.set_current_version(table_id, version_id)
-        return jsonify({'version_id': version_id})
+        # 保留旧 URL 和明确错误形状，但不再允许“先切版本、后上传”。
+        return jsonify({
+            'error': '请通过原子 Excel 导入接口创建导入版本',
+            'code': 'ATOMIC_IMPORT_REQUIRED',
+        }), 409
     elif method == 'create':
         # 保留兼容
         version_id = model.create_version(
@@ -295,8 +307,32 @@ def api_rollback(table_id):
         return jsonify({'new_current_id': new_current_id, 'version_id': new_current_id})
     except GenericTablesError:
         raise
-    except Exception as e:
-        return jsonify({'error': f'回滚失败：{str(e)[:200]}'}), 500
+    except Exception:
+        return jsonify({'error': '回滚失败', 'code': 'ROLLBACK_FAILED'}), 500
+
+
+@bp2.route('/<table_id>/versions/import', methods=['POST'])
+@require_login
+def api_import_new_version(table_id):
+    """列表页原子导入：文件解析成功后才创建并切换新 current。"""
+    file = request.files.get('file')
+    if not file or not allowed_file(file.filename):
+        return jsonify({'error': '仅支持 .xlsx 文件', 'code': 'INVALID_EXCEL_TYPE'}), 400
+    source_id = request.form.get('source_version_id', '')
+    if not source_id:
+        return jsonify({'error': '缺少源版本', 'code': 'SOURCE_VERSION_REQUIRED'}), 400
+    handle, filepath = tempfile.mkstemp(suffix='.xlsx')
+    os.close(handle)
+    try:
+        file.save(filepath)
+        model = GenericTableModel()
+        version_id, count = model.import_as_new_version(
+            table_id, source_id, filepath, session.get('user', 'unknown'),
+            label=request.form.get('label', '导入版'), note=request.form.get('note', ''),
+        )
+        return jsonify({'version_id': version_id, 'new_current_id': version_id, 'imported': count})
+    finally:
+        Path(filepath).unlink(missing_ok=True)
 
 @bp2.route('/versions/<version_id>', methods=['GET'])
 @require_login
@@ -419,9 +455,24 @@ def api_version_page_size(version_id):
 def api_rows(version_id):
     keyword = request.args.get('q', '')
     model = GenericTableModel()
-    rows = model.get_rows(version_id, keyword=keyword if keyword else None)
-    stats = model.get_column_stats(version_id)
-    return jsonify({'rows': rows, 'stats': stats, 'total': len(rows)})
+    version = model.get_version_by_id(version_id)
+    if not version:
+        return jsonify({'error': '版本不存在'}), 404
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+        page_size = int(request.args.get('page_size', version.get('page_size', 20)))
+    except (TypeError, ValueError):
+        return jsonify({'error': '分页参数无效'}), 400
+    rows, total = model.get_rows_page(version_id, keyword=keyword if keyword else None, page=page, page_size=page_size)
+    stats, stats_error = {}, None
+    try:
+        stats = model.get_column_stats(version_id)
+    except GenericTablesError as error:
+        if error.code != 'RESULT_TOO_LARGE':
+            raise
+        stats_error = {'code': error.code, 'message': error.message}
+    return jsonify({'rows': rows, 'stats': stats, 'stats_error': stats_error,
+                    'total': total, 'page': page, 'page_size': page_size})
 
 @bp2.route('/versions/<version_id>/rows', methods=['POST'])
 @require_login
@@ -488,11 +539,11 @@ def api_export(version_id):
     filepath = model.export_to_excel(version_id)
     table = model.get_by_id(version['table_id'])
     filename = f"{table['name'] if table else '导出'}_{version.get('version_label', version.get('version_number', ''))}.xlsx"
-    @after_this_request
-    def remove_export(response):
-        Path(filepath).unlink(missing_ok=True)
-        return response
-    return send_file(filepath, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response = send_file(filepath, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    # ClosingIterator closes send_file's file wrapper first, then unlinks. This
+    # ordering also works on Windows where an open file cannot be removed.
+    response.response = ClosingIterator(response.response, [lambda: Path(filepath).unlink(missing_ok=True)])
+    return response
 
 
 # 统计与对比

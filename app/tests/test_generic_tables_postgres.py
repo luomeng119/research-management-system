@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import re
+import zipfile
 
 import openpyxl
 import pytest
@@ -13,7 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.pool import StaticPool
 
 from app.repositories.generic_tables import GenericTablesRepository
-from app.services.generic_tables import GenericTablesError, GenericTablesService
+from app.services.generic_tables import MAX_ROWS, GenericTablesError, GenericTablesService
 
 
 def _schema(engine):
@@ -134,6 +135,19 @@ def test_snapshot_failure_rolls_back_all_versions(service, monkeypatch):
     assert service.get_by_id(table_id)["current_version_id"] == source
 
 
+def test_new_version_import_failure_rolls_back_current_and_version(service, tmp_path, monkeypatch):
+    table_id = service.create("甲表", "", "张老师")
+    source = service.get_by_id(table_id)["current_version_id"]
+    path = tmp_path / "valid.xlsx"
+    workbook = openpyxl.Workbook(); workbook.active.append(["名称"]); workbook.active.append(["甲"]); workbook.save(path)
+    before = service.get_versions(table_id)
+    monkeypatch.setattr(service, "_import_parsed", lambda *_args: (_ for _ in ()).throw(RuntimeError("injected")))
+    with pytest.raises(RuntimeError, match="injected"):
+        service.import_as_new_version(table_id, source, path, "张老师")
+    assert service.get_by_id(table_id)["current_version_id"] == source
+    assert service.get_versions(table_id) == before
+
+
 def test_json_validation_and_bounded_rows(service):
     table_id = service.create("甲表", "", "张老师")
     version = service.get_by_id(table_id)["current_version_id"]
@@ -181,6 +195,71 @@ def test_export_escapes_formula_headers_and_serializes_nested_json(service):
         assert sheet.cell(2, 1).value == '{"level": 1}'
     finally:
         out.unlink(missing_ok=True)
+
+
+def test_import_preserves_horizontal_header_and_vertical_data_merges(service, tmp_path):
+    table_id = service.create("甲表", "", "张老师")
+    version = service.get_by_id(table_id)["current_version_id"]
+    source = tmp_path / "merged.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet["A1"], sheet["C1"] = "主题", "内容"
+    sheet.merge_cells("A1:B1")
+    sheet["A2"], sheet["C2"], sheet["C3"] = "课题甲", "第一项", "第二项"
+    sheet.merge_cells("A2:A3")
+    workbook.save(source)
+    assert service.import_rows_from_excel(version, source, "张老师") == 2
+    columns = service.get_columns(version)
+    assert [column["col_name"] for column in columns] == ["主题", "内容"]
+    rows = service.get_rows(version)
+    assert [row["row_data"]["主题"] for row in rows] == ["课题甲", "课题甲"]
+
+
+def test_header_only_import_still_rejects_noncurrent_unlocked_version(service, tmp_path):
+    table_id = service.create("甲表", "", "张老师")
+    old_current = service.get_by_id(table_id)["current_version_id"]
+    service.save_snapshot(table_id, old_current, "快照", "", "张老师")
+    source = tmp_path / "header.xlsx"
+    workbook = openpyxl.Workbook(); workbook.active.append(["名称"]); workbook.save(source)
+    with pytest.raises(GenericTablesError, match="当前编辑版本"):
+        service.import_rows_from_excel(old_current, source, "张老师")
+
+
+def test_compare_detects_row_color_only_change(service):
+    table_id = service.create("甲表", "", "张老师")
+    first = service.get_by_id(table_id)["current_version_id"]
+    service.upsert_row(first, "r1", {"name": "甲"})
+    snapshot, current = service.save_snapshot(table_id, first, "快照", "", "张老师")
+    service.update_row_color(current, "r1", "red")
+    diff = service.compare_versions(snapshot, current)
+    assert diff["row_diff"][0]["status"] == "modified"
+    assert diff["row_diff"][0]["old_color"] == ""
+    assert diff["row_diff"][0]["new_color"] == "red"
+
+
+def test_xlsx_zip_bomb_is_rejected_before_openpyxl(service, tmp_path):
+    path = tmp_path / "bomb.xlsx"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("xl/worksheets/sheet1.xml", b"0" * 1_000_000)
+    table_id = service.create("甲表", "", "张老师")
+    version = service.get_by_id(table_id)["current_version_id"]
+    with pytest.raises(GenericTablesError, match="压缩比"):
+        service.import_rows_from_excel(version, path, "张老师")
+
+
+def test_oversized_read_is_explicit_not_truncated(service):
+    table_id = service.create("甲表", "", "张老师")
+    version = service.get_by_id(table_id)["current_version_id"]
+    now = datetime.now(timezone.utc)
+    with service.repository.engine.begin() as connection:
+        connection.execute(service.repository.data.insert(), [
+            {"version_id": version, "row_key": f"r{i}", "row_index": i, "row_data": {"i": i}, "row_color": "", "created_at": now, "updated_at": now}
+            for i in range(MAX_ROWS + 1)
+        ])
+    with pytest.raises(GenericTablesError, match="超过"):
+        service.get_rows(version)
+    page, total = service.get_rows_page(version, page=2, page_size=100)
+    assert len(page) == 100 and total == MAX_ROWS + 1
 
 
 def test_source_has_no_runtime_sqlite_or_schema_ddl():

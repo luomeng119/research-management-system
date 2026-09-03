@@ -286,7 +286,7 @@
 
     <!-- 搜索 + 分页下拉（REQ-016） -->
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
-        <select class="form-select form-select-sm page-size-select" id="pageSizeSelect">
+        <select class="form-select form-select-sm page-size-select" id="pageSizeSelect" {% if not is_current or current_version.is_locked %}disabled{% endif %}>
             <option value="10">每页 10</option>
             <option value="20">每页 20</option>
             <option value="50">每页 50</option>
@@ -331,7 +331,7 @@
         <thead>
             <tr>
                 <th style="width:30px;" data-col-key="_checkbox">
-                    <input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)">
+                    <input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)" {% if not is_current or current_version.is_locked %}disabled{% endif %}>
                     <span class="resize-handle" data-col-key="_checkbox"></span>
                 </th>
                 <th style="width:80px;" data-col-key="_color">配色<span class="resize-handle" data-col-key="_color"></span></th>
@@ -361,7 +361,7 @@
         <div class="card-body" style="padding:12px;">
             <h5 class="card-title mb-2" style="font-size:16px;">{{ current_version.version_label or ('v' + current_version.version_number|string) }}</h5>
             <p class="card-text small text-muted mb-2" style="font-size:12px;line-height:1.6;">
-                <span id="rowCountSidebar">{{ rows|length }}</span> 行 / {{ columns|length }} 列<br>
+                <span id="rowCountSidebar">{{ row_total | default(rows|length) }}</span> 行 / {{ columns|length }} 列<br>
                 创建于 {{ current_version.created_at[:16] if current_version.created_at else '?' }}<br>
                 创建人 {{ current_version.creator or '?' }}
             </p>
@@ -522,6 +522,8 @@
 const VERSION_ID = {{ (current_version.version_id if current_version else "") | tojson }};
 // REQ-019: 快照版本锁定标志（1=锁定行数据，0=可编辑）
 const IS_LOCKED = {{ 'true' if (current_version and current_version.is_locked) else 'false' }};
+const IS_CURRENT = {{ 'true' if is_current else 'false' }};
+const CAN_EDIT = IS_CURRENT && !IS_LOCKED;
 const COLUMNS = {{ columns | tojson }};
 const ROWS = {{ rows | tojson }};
 const STATS = {{ stats | tojson }};
@@ -529,7 +531,9 @@ let editColKey = null;
 let colModal, selectedRows = new Set();
 // REQ-016：PAGE_SIZE 来自后端 version.page_size（-1 表示全部）
 let PAGE_SIZE = {{ (current_version.page_size if current_version and current_version.page_size is not none else 20) | tojson }};
-let currentPage = 1;
+let currentPage = {{ current_page | default(1) | tojson }};
+let TOTAL_ROWS = {{ row_total | default(rows|length) | tojson }};
+let currentKeyword = '';
 
 document.addEventListener('DOMContentLoaded', () => {
     colModal = new bootstrap.Modal(document.getElementById('colModal'));
@@ -580,11 +584,11 @@ document.addEventListener('DOMContentLoaded', () => {
 function renderTable() {
     const tbody = document.getElementById('tableBody');
     if (!tbody) return;
-    const total = ROWS.length;
+    const total = TOTAL_ROWS;
     // REQ-016：-1 表示全部
     const effPageSize = PAGE_SIZE === -1 ? Math.max(total, 1) : PAGE_SIZE;
     const start = (currentPage - 1) * effPageSize;
-    const pageRows = ROWS.slice(start, start + effPageSize);
+    const pageRows = ROWS;
     tbody.replaceChildren();
     if (!pageRows.length) { renderPagination(); return; }
     pageRows.forEach((row, idx) => {
@@ -599,11 +603,12 @@ function renderTable() {
         const checkbox = selectCell.appendChild(document.createElement('input'));
         checkbox.type = 'checkbox';
         checkbox.checked = selectedRows.has(row.row_key);
+        checkbox.disabled = !CAN_EDIT;
         checkbox.addEventListener('change', () => toggleRow(row.row_key));
         const colorCell = tr.appendChild(document.createElement('td'));
         colorCell.className = 'color-cells';
         colorCell.dataset.colKey = '_color';
-        ['yellow', 'green', 'red'].forEach(color => {
+        (CAN_EDIT ? ['yellow', 'green', 'red'] : []).forEach(color => {
             const chip = colorCell.appendChild(document.createElement('span'));
             chip.className = `color-chip color-${color}` + (rowColor === color ? ' active' : '');
             chip.dataset.rowKey = row.row_key;
@@ -633,7 +638,7 @@ function renderTable() {
 function renderPagination() {
     const wrap = document.getElementById('paginationWrap');
     if (!wrap) return;
-    const total = ROWS.length;
+    const total = TOTAL_ROWS;
     // REQ-016：-1 表示全部，无分页器
     if (PAGE_SIZE === -1) {
         wrap.innerHTML = `<div style="font-size:12px;color:#888;margin-top:12px;padding:6px 0;">共 ${total} 条（全部显示）</div>`;
@@ -658,18 +663,17 @@ function renderPagination() {
     wrap.innerHTML = html;
 }
 
-function goToPage(n) {
-    const totalPages = Math.max(1, Math.ceil(ROWS.length / PAGE_SIZE));
+async function goToPage(n) {
+    const totalPages = Math.max(1, Math.ceil(TOTAL_ROWS / PAGE_SIZE));
     if (n < 1 || n > totalPages) return;
-    currentPage = n;
-    renderTable();
+    await loadRows(n, currentKeyword);
 }
 
 // ---------- 行内编辑 ----------
 function startEdit(td) {
     // REQ-019: 快照版本锁定时禁止单元格编辑
-    if (IS_LOCKED) {
-        alert('快照已锁定，无法编辑行数据。如需修改，请先新建快照。');
+    if (!CAN_EDIT) {
+        alert('历史版本只读，无法编辑行数据。');
         return;
     }
     if (td.querySelector('input')) return;
@@ -693,6 +697,7 @@ function startEdit(td) {
 }
 
 async function finishEdit(td, rowKey, colKey, newVal) {
+    if (!CAN_EDIT) return;
     const row = ROWS.find(r => r.row_key === rowKey);
     if (!row) return;
     row.row_data[colKey] = newVal;
@@ -710,8 +715,8 @@ async function finishEdit(td, rowKey, colKey, newVal) {
 // ---------- 添加行 ----------
 async function addRow() {
     // REQ-019: 快照版本锁定时禁止添加行
-    if (IS_LOCKED) {
-        alert('快照已锁定，无法添加行。如需修改，请先新建快照。');
+    if (!CAN_EDIT) {
+        alert('历史版本只读，无法添加行。');
         return;
     }
     const rowKey = 'GTR' + Math.random().toString(36).substr(2, 10);
@@ -728,23 +733,31 @@ async function addRow() {
 
 // ---------- 快速搜索 ----------
 async function doSearch(kw) {
-    const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/rows?q=${encodeURIComponent(kw)}`)
+    currentKeyword = kw;
+    await loadRows(1, kw);
+}
+
+async function loadRows(page, keyword) {
+    const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/rows?q=${encodeURIComponent(keyword)}&page=${page}&page_size=${PAGE_SIZE}`)
         .then(r=>r.json()).catch(()=>({rows:[], stats:{}}));
+    if (r.error) { alert(r.error); return; }
     ROWS.length = 0;
     ROWS.push(...r.rows);
     Object.assign(STATS, r.stats);
-    currentPage = 1;
+    TOTAL_ROWS = r.total;
+    currentPage = r.page;
     renderTable();
     updateStats();
 }
 
 // ---------- 统计栏 ----------
 function updateStats() {
-    document.getElementById('rowCount').textContent = ROWS.length;
+    document.getElementById('rowCount').textContent = TOTAL_ROWS;
 }
 
 // ---------- 选择行 ----------
 function toggleRow(rowKey) {
+    if (!CAN_EDIT) return;
     if (selectedRows.has(rowKey)) selectedRows.delete(rowKey);
     else selectedRows.add(rowKey);
     updateDeleteButton();
@@ -753,6 +766,7 @@ function toggleRow(rowKey) {
 }
 
 function toggleSelectAll(cb) {
+    if (!CAN_EDIT) return;
     if (cb.checked) {
         ROWS.forEach(r => selectedRows.add(r.row_key));
     } else {
@@ -770,8 +784,8 @@ function updateDeleteButton() {
 
 async function deleteSelected() {
     // REQ-019: 快照版本锁定时禁止删除行
-    if (IS_LOCKED) {
-        alert('快照已锁定，无法删除行。如需修改，请先新建快照。');
+    if (!CAN_EDIT) {
+        alert('历史版本只读，无法删除行。');
         return;
     }
     if (!confirm(`确定删除 ${selectedRows.size} 行？`)) return;
@@ -802,6 +816,7 @@ function toggleDrawer() {
 
 // ---------- 添加/编辑列 ----------
 function addColumn() {
+    if (!CAN_EDIT) return;
     editColKey = null;
     document.getElementById('colModalTitle').textContent = '添加列';
     document.getElementById('colName').value = '';
@@ -814,6 +829,7 @@ function addColumn() {
 }
 
 function editColumn(colKey) {
+    if (!CAN_EDIT) return;
     const col = COLUMNS.find(c => c.col_key === colKey);
     if (!col) return;
     editColKey = colKey;
@@ -828,6 +844,7 @@ function editColumn(colKey) {
 }
 
 async function saveColumn() {
+    if (!CAN_EDIT) return;
     const colName = document.getElementById('colName').value.trim();
     if (!colName) { alert('请输入列名称'); return; }
     const colType = document.getElementById('colType').value;
@@ -856,6 +873,7 @@ async function saveColumn() {
 }
 
 async function deleteColumn(colKey) {
+    if (!CAN_EDIT) return;
     if (!confirm('确定删除该列？该列数据将一并删除。')) return;
     const r = await fetch(`/api/generic-tables/versions/${VERSION_ID}/columns/${colKey}`, {method:'DELETE'})
         .then(r=>r.json()).catch(()=>({error:'网络错误'}));
@@ -865,6 +883,7 @@ async function deleteColumn(colKey) {
 
 // ---------- Excel 导入（REQ-020: 直接导入到 current，不再先建 snapshot） ----------
 async function importExcelNew(input) {
+    if (!CAN_EDIT) return;
     if (!input.files.length) return;
     const mode = ROWS.length > 0
         ? prompt('导入模式选择：\n  输入 1  → 替换（清空当前数据，导入新数据）\n  输入 2  → 追加（在现有数据基础上增加新行）\n\n直接确定 → 替换（默认）')
@@ -895,6 +914,7 @@ async function importExcelNew(input) {
 
 // ---------- 保存快照（REQ-020: 用新 save_snapshot 流程） ----------
 function openSaveSnapshotModal() {
+    if (!CAN_EDIT) return;
     const label = prompt('请输入快照名称（必填，最长 50 字）：');
     if (!label || !label.trim()) return;
     if (label.length > 50) { alert('名称过长（>50字）'); return; }
@@ -906,11 +926,13 @@ function openSaveSnapshotModal() {
 }
 
 function quickSaveSnapshot() {
+    if (!CAN_EDIT) return;
     // 顶部工具栏按钮 → 用默认 label
     openSaveSnapshotModal();
 }
 
 async function doSaveSnapshot(label, note) {
+    if (!CAN_EDIT) return;
     const TABLE_ID = '{{ table.table_id }}';
     try {
         const vr = await fetch(`/api/generic-tables/${TABLE_ID}/versions`, {
@@ -934,11 +956,13 @@ async function doSaveSnapshot(label, note) {
 
 // ---------- 回滚（REQ-020） ----------
 function openRollbackModal(vid, label, createdAt, creator) {
+    if (!CAN_EDIT) return;
     if (!confirm(`确认回滚到快照 ${label}？\n\n创建人：${creator}\n创建时间：${createdAt}\n\n回滚将基于该快照创建新的编辑版本，原数据不丢失。`)) return;
     doRollback(vid);
 }
 
 async function doRollback(sourceVid) {
+    if (!CAN_EDIT) return;
     const TABLE_ID = '{{ table.table_id }}';
     try {
         const r = await fetch(`/api/generic-tables/${TABLE_ID}/rollback`, {
@@ -991,6 +1015,7 @@ function initRowColorChips() {
     const tbody = document.getElementById('tableBody');
     if (!tbody) return;
     tbody.addEventListener('click', async function(e) {
+        if (!CAN_EDIT) return;
         const chip = e.target.closest('.color-chip');
         if (!chip || !chip.dataset.rowKey) return;
         e.stopPropagation();
@@ -1016,6 +1041,7 @@ function initRowColorChips() {
 
 // ---------- (2) 列管理拖拽排序 ----------
 function initColumnReorder() {
+    if (!CAN_EDIT) return;
     const list = document.getElementById('columnList');
     if (!list) return;
     let draggingEl = null;
@@ -1074,6 +1100,7 @@ function initColumnReorder() {
 
 // ---------- (3) 表头列宽拖拽 ----------
 function initColumnResize() {
+    if (!CAN_EDIT) return;
     const table = document.getElementById('dataTable');
     if (!table) return;
     let resizing = null;  // {colKey, th, startX, startW}
@@ -1151,6 +1178,7 @@ function initColumnResize() {
 
 // ---------- (4) 分页下拉 ----------
 async function onPageSizeChange() {
+    if (!CAN_EDIT) return;
     const sel = document.getElementById('pageSizeSelect');
     const newVal = parseInt(sel.value, 10);
     const oldVal = PAGE_SIZE;

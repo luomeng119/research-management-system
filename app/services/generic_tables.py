@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import tempfile
 import uuid
+import zipfile
 
 import openpyxl
 import sqlalchemy as sa
@@ -17,6 +18,9 @@ MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_CELL_CHARS = 20_000
 MAX_ROW_BYTES = 256_000
 MAX_JSON_DEPTH = 5
+MAX_XLSX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+MAX_XLSX_ENTRY_BYTES = 50 * 1024 * 1024
+MAX_XLSX_RATIO = 200
 
 
 class GenericTablesError(Exception):
@@ -70,7 +74,22 @@ class GenericTablesService:
         return [self._row(row) for row in self.repository.list_columns(version_id)]
 
     def get_rows(self, version_id, keyword=None):
-        return [self._row(row) for row in self.repository.list_rows(version_id, keyword, limit=MAX_ROWS)]
+        total = self.repository.count_matching_rows(version_id, keyword)
+        if total > MAX_ROWS:
+            raise GenericTablesError("RESULT_TOO_LARGE", f"结果超过 {MAX_ROWS} 行，请缩小搜索范围", 413)
+        return [self._row(row) for row in self.repository.list_rows(version_id, keyword)]
+
+    def get_rows_page(self, version_id, keyword=None, *, page=1, page_size=20):
+        page, page_size = max(1, int(page)), int(page_size)
+        total = self.repository.count_matching_rows(version_id, keyword)
+        if page_size == -1:
+            if total > MAX_ROWS:
+                raise GenericTablesError("RESULT_TOO_LARGE", f"结果超过 {MAX_ROWS} 行，请使用分页", 413)
+            page_size = max(total, 1)
+        if page_size not in {10, 20, 50, 100} and total:
+            raise GenericTablesError("INVALID_PAGE_SIZE", "分页数无效")
+        rows = self.repository.list_rows(version_id, keyword, limit=page_size, offset=(page - 1) * page_size)
+        return [self._row(row) for row in rows], total
 
     def _lock(self, connection, table_id):
         table = self.repository.lock_table(connection, table_id)
@@ -276,8 +295,10 @@ class GenericTablesService:
     def delete_column(self, version_id, col_key):
         with self.repository.engine.begin() as connection:
             self._lock_editable_version(connection, version_id)
+            if self.repository.count_rows(connection, version_id) > MAX_ROWS:
+                raise GenericTablesError("RESULT_TOO_LARGE", f"表格超过 {MAX_ROWS} 行，不能执行列删除", 413)
             connection.execute(self.repository.columns.delete().where(self.repository.columns.c.version_id == version_id, self.repository.columns.c.col_key == col_key))
-            for row in self.repository.list_rows(version_id, limit=MAX_ROWS, connection=connection):
+            for row in self.repository.list_rows(version_id, connection=connection):
                 data = dict(row["row_data"])
                 if col_key in data:
                     data.pop(col_key)
@@ -354,30 +375,58 @@ class GenericTablesService:
             return value.isoformat()
         return cls._validate_json(value)
 
-    def import_rows_from_excel(self, version_id, file_path, creator, mode="replace"):
+    @staticmethod
+    def _inspect_xlsx_archive(path: Path):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                total = 0
+                for info in archive.infolist():
+                    total += info.file_size
+                    if info.file_size > MAX_XLSX_ENTRY_BYTES or total > MAX_XLSX_UNCOMPRESSED_BYTES:
+                        raise GenericTablesError("XLSX_EXPANDED_TOO_LARGE", "Excel 解压后内容过大", 413)
+                    if info.file_size and info.file_size / max(info.compress_size, 1) > MAX_XLSX_RATIO:
+                        raise GenericTablesError("XLSX_COMPRESSION_RATIO", "Excel 压缩比异常", 413)
+        except GenericTablesError:
+            raise
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise GenericTablesError("INVALID_XLSX", "Excel 文件无效") from exc
+
+    def _parse_xlsx(self, file_path):
         path = Path(file_path)
         if path.suffix.lower() != ".xlsx":
             raise GenericTablesError("INVALID_EXCEL_TYPE", "仅支持 .xlsx 文件")
-        if mode not in {"replace", "append"}:
-            raise GenericTablesError("INVALID_IMPORT_MODE", "导入模式无效")
         if path.stat().st_size > MAX_FILE_BYTES:
-            raise GenericTablesError("FILE_TOO_LARGE", "导入文件过大")
-        # Keep formula text as data. It is escaped again on export so an
-        # uploaded formula never becomes executable spreadsheet content.
-        workbook = openpyxl.load_workbook(path, data_only=False, read_only=False)
+            raise GenericTablesError("FILE_TOO_LARGE", "导入文件过大", 413)
+        self._inspect_xlsx_archive(path)
+        try:
+            workbook = openpyxl.load_workbook(path, data_only=False, read_only=False)
+        except Exception as exc:
+            raise GenericTablesError("INVALID_XLSX", "Excel 文件无效") from exc
         try:
             sheet = workbook.active
             if sheet.max_row > MAX_ROWS + 1 or sheet.max_column > MAX_COLUMNS:
                 raise GenericTablesError("WORKBOOK_TOO_LARGE", "工作表超过 V1 上限")
-            raw = list(sheet.iter_rows(values_only=True))
+            fill = {}
+            header_skip = set()
+            for merged in sheet.merged_cells.ranges:
+                value = sheet.cell(merged.min_row, merged.min_col).value
+                for row_index in range(merged.min_row, merged.max_row + 1):
+                    for column_index in range(merged.min_col, merged.max_col + 1):
+                        fill[(row_index, column_index)] = value
+                if merged.min_row == 1 and merged.max_row == 1:
+                    header_skip.update(range(merged.min_col, merged.max_col))
+            raw = [
+                [fill.get((cell.row, cell.column), cell.value) for cell in cells]
+                for cells in sheet.iter_rows(min_row=1)
+            ]
         finally:
             workbook.close()
         if len(raw) < 2:
-            return 0
+            return [], [], []
         headers = [str(value or "").strip() for value in raw[0]]
         keys, seen = [], set()
-        for header in headers:
-            if not header:
+        for index, header in enumerate(headers):
+            if not header or index in header_skip:
                 keys.append(None)
                 continue
             key, suffix = self._name_to_key(header), 2
@@ -392,23 +441,49 @@ class GenericTablesService:
             row = {keys[index]: self._excel_value(value) if value is not None else "" for index, value in enumerate(values) if index < len(keys) and keys[index]}
             if row:
                 parsed.append(self._validated_row(row))
+        return headers, keys, parsed
+
+    def _import_parsed(self, connection, version_id, headers, keys, parsed, mode):
+        existing_count = self.repository.count_rows(connection, version_id)
+        if mode == "append" and existing_count + len(parsed) > MAX_ROWS:
+            raise GenericTablesError("TOO_MANY_ROWS", "导入后行数超过上限")
+        if mode == "replace":
+            connection.execute(self.repository.data.delete().where(self.repository.data.c.version_id == version_id))
+        for index, header in enumerate(headers):
+            if index < len(keys) and keys[index]:
+                self.upsert_column(version_id, keys[index], header, "text", col_index=index, _conn=connection)
+        maximum = connection.execute(sa.select(sa.func.max(self.repository.data.c.row_index)).where(self.repository.data.c.version_id == version_id)).scalar_one_or_none()
+        base_index = int(maximum if maximum is not None else -1) + 1
+        now = self._now()
+        if parsed:
+            connection.execute(self.repository.data.insert(), [dict(version_id=version_id, row_key=self._id("GTR"), row_index=base_index + index, row_data=row, row_color="", created_at=now, updated_at=now) for index, row in enumerate(parsed)])
+        connection.execute(self.repository.versions.update().where(self.repository.versions.c.version_id == version_id).values(row_count=self.repository.count_rows(connection, version_id)))
+
+    def import_rows_from_excel(self, version_id, file_path, creator, mode="replace"):
+        if mode not in {"replace", "append"}:
+            raise GenericTablesError("INVALID_IMPORT_MODE", "导入模式无效")
+        # Validate the target before parsing, including a header-only workbook.
         with self.repository.engine.begin() as connection:
             self._lock_editable_version(connection, version_id)
-            existing_count = self.repository.count_rows(connection, version_id)
-            if mode == "append" and existing_count + len(parsed) > MAX_ROWS:
-                raise GenericTablesError("TOO_MANY_ROWS", "导入后行数超过上限")
-            if mode == "replace":
-                connection.execute(self.repository.data.delete().where(self.repository.data.c.version_id == version_id))
-            for index, header in enumerate(headers):
-                if index < len(keys) and keys[index]:
-                    self.upsert_column(version_id, keys[index], header, "text", col_index=index, _conn=connection)
-            maximum = connection.execute(sa.select(sa.func.max(self.repository.data.c.row_index)).where(self.repository.data.c.version_id == version_id)).scalar_one_or_none()
-            base_index = int(maximum if maximum is not None else -1) + 1
-            now = self._now()
-            if parsed:
-                connection.execute(self.repository.data.insert(), [dict(version_id=version_id, row_key=self._id("GTR"), row_index=base_index + index, row_data=row, row_color="", created_at=now, updated_at=now) for index, row in enumerate(parsed)])
-            connection.execute(self.repository.versions.update().where(self.repository.versions.c.version_id == version_id).values(row_count=self.repository.count_rows(connection, version_id)))
+        headers, keys, parsed = self._parse_xlsx(file_path)
+        with self.repository.engine.begin() as connection:
+            self._lock_editable_version(connection, version_id)
+            self._import_parsed(connection, version_id, headers, keys, parsed, mode)
         return len(parsed)
+
+    def import_as_new_version(self, table_id, source_version_id, file_path, creator, label="导入版", note=""):
+        headers, keys, parsed = self._parse_xlsx(file_path)
+        with self.repository.engine.begin() as connection:
+            table = self._lock(connection, table_id)
+            source = self._version_for_table(connection, table_id, source_version_id)
+            if table["current_version_id"] != source_version_id or bool(source["is_locked"]):
+                raise GenericTablesError("VERSION_READ_ONLY", "导入源必须是当前编辑版本", 409)
+            version_id = self._create_version(connection, table_id, "import", source_version_id, creator, label, note)
+            # The switch and data replacement share this transaction; a later
+            # failure restores the original current pointer and removes vNext.
+            connection.execute(self.repository.tables.update().where(self.repository.tables.c.table_id == table_id).values(current_version_id=version_id, updated_at=self._now()))
+            self._import_parsed(connection, version_id, headers, keys, parsed, "replace")
+        return version_id, len(parsed)
 
     def get_column_stats(self, version_id):
         rows, columns = self.get_rows(version_id), self.get_columns(version_id)
@@ -450,8 +525,10 @@ class GenericTablesService:
         for key in sorted(rows_a.keys() | rows_b.keys()):
             old = rows_a.get(key, {}).get("row_data")
             new = rows_b.get(key, {}).get("row_data")
-            status = "added" if old is None else "deleted" if new is None else "unchanged" if old == new else "modified"
-            row_diff.append({"row_key": key, "status": status, "old": old, "new": new})
+            old_color = rows_a.get(key, {}).get("row_color", "")
+            new_color = rows_b.get(key, {}).get("row_color", "")
+            status = "added" if old is None else "deleted" if new is None else "unchanged" if old == new and old_color == new_color else "modified"
+            row_diff.append({"row_key": key, "status": status, "old": old, "new": new, "old_color": old_color, "new_color": new_color})
         return {"col_diff": col_diff, "row_diff": row_diff, "cols_a": list(cols_a), "cols_b": list(cols_b)}
 
     @staticmethod
