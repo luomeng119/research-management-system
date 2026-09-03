@@ -13,8 +13,8 @@
 ## TDD 与验证证据
 
 - RED：新增二进制迁移行为测试后，因 `plan_legacy_binaries` 尚未实现在 collection 阶段按预期失败。
-- 独立复核修复：补齐同内容 root/DB/附件身份替换阻断、commit 异常的外层文件清理、storage 全链 no-follow/dir-fd 操作，并将受控表默认生成的审计列纳入指纹。
-- focused + 受影响回归：`120 passed, 10 skipped`（legacy migration、FileService、reference library、legacy modules）。
+- 独立复核修复：补齐同内容 root/DB/附件身份替换阻断、commit 异常的外层文件清理、storage 全链 no-follow/dir-fd 操作，并将受控表默认生成的审计列纳入指纹。最终一致性复核在同一批 fd 绑定句柄上同时比对身份与 SHA-256，失败清理也通过原绑定目录 fd 完成。
+- focused + 受影响回归：`122 passed, 10 skipped`（legacy migration、FileService、reference library、legacy modules）。
 - 隔离 PostgreSQL head schema runner：同 batch 双连接并发、标准+模板物理迁移、`FileService.open_version_stream`、回滚、Alembic/ACL 和完整 DB contract 通过。
 - `compileall`、两个 CLI `--help` 和 `git diff --check` 通过。
 

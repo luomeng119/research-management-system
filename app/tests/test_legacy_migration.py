@@ -990,3 +990,77 @@ def test_binary_commit_failure_cleans_created_files(tmp_path):
     with engine.connect() as connection:
         assert connection.scalar(sa.text("select count(*) from legacy_migration_batches")) == 0
     assert [path for path in storage.rglob("*") if path.is_file()] == []
+
+
+def test_final_bound_custody_hash_rejects_same_stat_content_change(
+    tmp_path, monkeypatch
+):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o700)
+    attachment = root / "uploads" / "invoice-a.txt"
+    original_assert = legacy_core._assert_source_custody
+    changed = False
+
+    def change_at_final_custody(current_root, expected):
+        nonlocal changed
+        if not changed:
+            changed = True
+            details = attachment.stat()
+            attachment.write_bytes(b"evil invoice")
+            assert attachment.stat().st_size == details.st_size
+            os.utime(attachment, ns=(details.st_atime_ns, details.st_mtime_ns))
+        return original_assert(current_root, expected)
+
+    monkeypatch.setattr(
+        legacy_core, "_assert_source_custody", change_at_final_custody
+    )
+    with pytest.raises(SourceSafetyError, match="identity changed"):
+        migrate_legacy(
+            engine, root, "final-content-race", storage_root=storage,
+            max_file_bytes=1024, allow_test_sqlite=True,
+        )
+    assert changed is True
+    with engine.connect() as connection:
+        assert connection.scalar(
+            sa.text("select count(*) from legacy_migration_batches")
+        ) == 0
+    assert [path for path in storage.rglob("*") if path.is_file()] == []
+
+
+def test_finalize_rollback_cleans_original_bound_directory_after_path_swap(
+    tmp_path, monkeypatch
+):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o700)
+    original_storage = tmp_path / "storage-original"
+    original_link = legacy_binaries.os.link
+    swapped = False
+
+    def link_then_swap(*args, **kwargs):
+        nonlocal swapped
+        result = original_link(*args, **kwargs)
+        if not swapped:
+            swapped = True
+            storage.rename(original_storage)
+            storage.mkdir(mode=0o700)
+        return result
+
+    monkeypatch.setattr(legacy_binaries.os, "link", link_then_swap)
+    with pytest.raises(BatchConflict, match="physical file"):
+        migrate_legacy(
+            engine, root, "bound-cleanup", storage_root=storage,
+            max_file_bytes=1024, allow_test_sqlite=True,
+        )
+    assert swapped is True
+    with engine.connect() as connection:
+        assert connection.scalar(
+            sa.text("select count(*) from legacy_migration_batches")
+        ) == 0
+    assert [path for path in original_storage.rglob("*") if path.is_file()] == []
+    assert [path for path in storage.rglob("*") if path.is_file()] == []

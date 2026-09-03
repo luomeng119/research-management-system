@@ -376,6 +376,10 @@ def prepare_binary_files(
         return []
     _validate_storage_root(source_root, storage_root, create=True)
     staging = _ensure_private_directory(storage_root, Path(".staging"))
+    staging_descriptors = _open_controlled_chain(
+        storage_root, Path(".staging"), create=False
+    )
+    staging_fd = staging_descriptors[-1]
     prepared: list[dict[str, Any]] = []
     try:
         for item in planned:
@@ -383,9 +387,12 @@ def prepare_binary_files(
             stage = staging / f"{item['fileId']}-{uuid.uuid4().hex}.part"
             source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             destination_fd = os.open(
-                stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                stage.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+                dir_fd=staging_fd,
             )
             item["stagePath"] = stage
+            item["stageName"] = stage.name
+            item["stageDirFd"] = os.dup(staging_fd)
             prepared.append(item)
             try:
                 while chunk := os.read(source_fd, 1024 * 1024):
@@ -403,9 +410,11 @@ def prepare_binary_files(
                 raise SourceSafetyError("binary source identity changed while staging")
         return prepared
     except Exception:
-        for item in prepared:
-            item.get("stagePath", Path()).unlink(missing_ok=True)
+        cleanup_prepared(prepared)
         raise
+    finally:
+        for descriptor in reversed(staging_descriptors):
+            os.close(descriptor)
 
 
 def binary_issues(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -531,19 +540,16 @@ def finalize_binary_files(
     prepared: list[dict[str, Any]],
     *,
     fail_after: int | None = None,
-) -> list[Path]:
-    created: list[Path] = []
+) -> list[dict[str, Any]]:
+    created: list[dict[str, Any]] = []
     try:
         for index, item in enumerate(prepared, 1):
             relative = Path(item["storagePath"])
             parent_descriptors = _open_controlled_chain(
                 storage_root, relative.parent, create=True
             )
-            staging_descriptors = _open_controlled_chain(
-                storage_root, Path(".staging"), create=False
-            )
             parent_fd = parent_descriptors[-1]
-            staging_fd = staging_descriptors[-1]
+            staging_fd = item["stageDirFd"]
             destination = storage_root / relative
             try:
                 existing = os.stat(
@@ -560,33 +566,59 @@ def finalize_binary_files(
                         raise BatchConflict("legacy binary orphan content conflict")
                 else:
                     os.link(
-                        item["stagePath"].name, relative.name,
+                        item["stageName"], relative.name,
                         src_dir_fd=staging_fd, dst_dir_fd=parent_fd,
                         follow_symlinks=False,
                     )
-                    created.append(destination)
-                os.unlink(item["stagePath"].name, dir_fd=staging_fd)
+                    created.append({
+                        "dirFd": os.dup(parent_fd),
+                        "name": relative.name,
+                        "path": destination,
+                    })
+                os.unlink(item["stageName"], dir_fd=staging_fd)
             finally:
-                for descriptor in reversed(staging_descriptors):
-                    os.close(descriptor)
                 for descriptor in reversed(parent_descriptors):
                     os.close(descriptor)
             if fail_after is not None and index >= fail_after:
                 raise RuntimeError("injected binary failure")
         return created
     except Exception:
-        for path in reversed(created):
-            path.unlink(missing_ok=True)
-        for item in prepared:
-            item.get("stagePath", Path()).unlink(missing_ok=True)
+        cleanup_created_files(created)
+        cleanup_prepared(prepared)
         raise
 
 
 def cleanup_prepared(prepared: list[dict[str, Any]]) -> None:
     for item in prepared:
+        descriptor = item.get("stageDirFd")
+        if isinstance(descriptor, int):
+            try:
+                os.unlink(item["stageName"], dir_fd=descriptor)
+            except FileNotFoundError:
+                pass
+            finally:
+                os.close(descriptor)
+                item["stageDirFd"] = None
+            continue
         stage = item.get("stagePath")
         if isinstance(stage, Path):
             stage.unlink(missing_ok=True)
+
+
+def cleanup_created_files(created: list[dict[str, Any]], *, remove: bool = True) -> None:
+    for item in reversed(created):
+        descriptor = item.get("dirFd")
+        if not isinstance(descriptor, int):
+            continue
+        try:
+            if remove:
+                try:
+                    os.unlink(item["name"], dir_fd=descriptor)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(descriptor)
+            item["dirFd"] = None
 
 
 def _same_open_stat(left: os.stat_result, right: os.stat_result) -> bool:

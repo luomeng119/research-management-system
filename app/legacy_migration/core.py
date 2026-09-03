@@ -333,7 +333,10 @@ class SourceIdentity:
     sha256: str
 
 
-def _capture_source_custody(root: str | Path) -> dict[str, tuple[int, int, int, int, int]]:
+SourceCustody = dict[str, tuple[int, int, int, int, int, str | None]]
+
+
+def _capture_source_custody(root: str | Path) -> SourceCustody:
     root_path = Path(root).absolute()
     directory_flags = (
         os.O_RDONLY
@@ -346,12 +349,14 @@ def _capture_source_custody(root: str | Path) -> dict[str, tuple[int, int, int, 
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_CLOEXEC", 0)
     )
-    custody: dict[str, tuple[int, int, int, int, int]] = {}
+    custody: SourceCustody = {}
 
-    def remember(relative: str, details: os.stat_result) -> None:
+    def remember(
+        relative: str, details: os.stat_result, digest: str | None = None
+    ) -> None:
         custody[relative] = (
             details.st_dev, details.st_ino, stat.S_IFMT(details.st_mode),
-            details.st_size, details.st_mtime_ns,
+            details.st_size, details.st_mtime_ns, digest,
         )
 
     descriptors = [os.open("/", directory_flags)]
@@ -395,7 +400,15 @@ def _capture_source_custody(root: str | Path) -> dict[str, tuple[int, int, int, 
                         raise SourceSafetyError(
                             f"file identity changed during custody check: {logical}"
                         )
-                    remember(logical, opened)
+                    digest = hashlib.sha256()
+                    while chunk := os.read(file_fd, 1024 * 1024):
+                        digest.update(chunk)
+                    after = os.fstat(file_fd)
+                    if not _same_stat(opened, after):
+                        raise SourceSafetyError(
+                            f"file identity changed during custody check: {logical}"
+                        )
+                    remember(logical, after, digest.hexdigest())
                 finally:
                     os.close(file_fd)
 
@@ -409,9 +422,16 @@ def _capture_source_custody(root: str | Path) -> dict[str, tuple[int, int, int, 
 
 
 def _assert_source_custody(
-    root: str | Path, expected: dict[str, tuple[int, int, int, int, int]]
+    root: str | Path, expected: SourceCustody
 ) -> None:
     observed = _capture_source_custody(root)
+    for logical in observed:
+        sidecars = (("-wal", "WAL"), ("-shm", "SHM"), ("-journal", "journal"))
+        for suffix, label in sidecars:
+            if logical.endswith(suffix):
+                raise SourceSafetyError(
+                    f"active {label} state appeared during migration: {logical}"
+                )
     if observed != expected:
         raise SourceSafetyError("legacy source identity changed during migration")
 
@@ -1139,19 +1159,20 @@ def _take_migration_lock(connection: sa.Connection) -> None:
 def _migration_transaction_with_file_cleanup(
     engine: Engine,
     prepared: list[dict[str, Any]],
-    created_files: list[Path],
+    created_files: list[dict[str, Any]],
 ) -> Iterable[sa.Connection]:
     try:
         with engine.begin() as connection:
             yield connection
     except Exception:
-        for item in prepared:
-            stage = item.get("stagePath")
-            if isinstance(stage, Path):
-                stage.unlink(missing_ok=True)
-        for path in reversed(created_files):
-            path.unlink(missing_ok=True)
+        from .binaries import cleanup_created_files, cleanup_prepared
+        cleanup_prepared(prepared)
+        cleanup_created_files(created_files)
         raise
+    else:
+        from .binaries import cleanup_created_files, cleanup_prepared
+        cleanup_prepared(prepared)
+        cleanup_created_files(created_files, remove=False)
 
 
 def _decode_summary(value: Any) -> dict[str, Any]:
@@ -1240,7 +1261,7 @@ def _verify_completed_snapshot(
     original_root: str | Path,
     baseline_manifest_sha256: str,
     storage_root: str | Path | None = None,
-    original_custody: dict[str, tuple[int, int, int, int, int]] | None = None,
+    original_custody: SourceCustody | None = None,
     allow_test_sqlite: bool = False,
 ) -> dict[str, Any]:
     if engine.dialect.name != "postgresql" and not allow_test_sqlite:
@@ -1264,10 +1285,10 @@ def _verify_completed_snapshot(
         report = _decode_summary(existing["summary"])
         _validate_report_and_target(connection, report, storage_root=storage_root)
     _assert_sources_unchanged(sources)
-    if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
-        raise SourceSafetyError("legacy source or attachments changed during verification")
     if original_custody is not None:
         _assert_source_custody(original_root, original_custody)
+    elif _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
+        raise SourceSafetyError("legacy source or attachments changed during verification")
     return report
 
 
@@ -1303,7 +1324,7 @@ def _migrate_snapshot(
     fail_after_table: str | None = None,
     _before_final_source_check: Any = None,
     _fail_after_binary: int | None = None,
-    original_custody: dict[str, tuple[int, int, int, int, int]] | None = None,
+    original_custody: SourceCustody | None = None,
 ) -> dict[str, Any]:
     if engine.dialect.name != "postgresql" and not allow_test_sqlite:
         raise SourceSafetyError("migration target must be PostgreSQL")
@@ -1332,7 +1353,7 @@ def _migrate_snapshot(
     issue_rows: list[dict[str, Any]] = []
     expected_rows: dict[str, list[dict[str, Any]]] = {}
     prepared: list[dict[str, Any]] = []
-    created_binary_files: list[Path] = []
+    created_binary_files: list[dict[str, Any]] = []
     with _migration_transaction_with_file_cleanup(
         engine, prepared, created_binary_files
     ) as connection:
@@ -1358,7 +1379,7 @@ def _migrate_snapshot(
             _assert_sources_unchanged(sources)
             if original_custody is not None:
                 _assert_source_custody(original_root, original_custody)
-            if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
+            elif _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
                 raise SourceSafetyError("legacy source or attachments changed during batch reuse")
             return existing_report
         reusable = connection.execute(
@@ -1378,7 +1399,7 @@ def _migrate_snapshot(
             _assert_sources_unchanged(sources)
             if original_custody is not None:
                 _assert_source_custody(original_root, original_custody)
-            if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
+            elif _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
                 raise SourceSafetyError("legacy source or attachments changed during batch reuse")
             return reusable_report
         from .binaries import build_binary_plan, binary_issues
@@ -1550,6 +1571,7 @@ def _migrate_snapshot(
 
         from .binaries import (
             apply_binary_metadata,
+            cleanup_created_files,
             cleanup_prepared,
             finalize_binary_files,
             physical_fingerprint,
@@ -1585,10 +1607,10 @@ def _migrate_snapshot(
             after_manifest = build_manifest(source_root, _sources=sources)
             if after_manifest["sha256"] != manifest_sha:
                 raise SourceSafetyError("legacy source changed during migration")
-            if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
-                raise SourceSafetyError("legacy source or attachments changed during migration")
             if original_custody is not None:
                 _assert_source_custody(original_root, original_custody)
+            elif _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
+                raise SourceSafetyError("legacy source or attachments changed during migration")
             report["custody_verified"] = True
             report["source_hashes_before"] = report.pop("source_hashes")
             report["source_hashes_after"] = {
@@ -1597,7 +1619,10 @@ def _migrate_snapshot(
             report["attachment_manifest_sha256_before"] = _sha_bytes(_canonical_json(manifest["attachments"]).encode())
             report["attachment_manifest_sha256_after"] = _sha_bytes(_canonical_json(after_manifest["attachments"]).encode())
             planned_items = [
-                {key: value for key, value in item.items() if key != "stagePath"}
+                {
+                    key: value for key, value in item.items()
+                    if key not in {"stagePath", "stageName", "stageDirFd"}
+                }
                 for item in prepared
             ]
             if prepared:
@@ -1648,8 +1673,7 @@ def _migrate_snapshot(
             )
         except Exception:
             cleanup_prepared(prepared)
-            for path in reversed(created_binary_files):
-                path.unlink(missing_ok=True)
+            cleanup_created_files(created_binary_files)
             raise
     return report
 
