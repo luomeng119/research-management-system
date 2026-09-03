@@ -9,13 +9,13 @@
 - `file_id/version_id/link_id` 为绑定 manifest、源表/键、对象和 SHA-256 的 UUIDv5；物理路径为 `legacy/<manifest-prefix>/<file-id>/v1.<ext>`，不跨对象按内容去重。
 - 文件先复制到私有 `.staging` 并复核，再在既有 PostgreSQL advisory-lock 事务内写受控元数据和确定性最终路径；普通失败回滚 DB 并清理本次 staging/最终文件，同 hash 强杀孤儿可复用，异 hash 硬失败。
 - 报告和 target fingerprint 覆盖 `reference_template_items`、三张受控文件表及物理文件清单；已提交文件缺失/篡改时 verify 和重跑都返回 `BatchConflict`。
-- 通用表格 current 必须指向本表已迁入版本；全部版本已锁定时，确定性复制最新版本中成功迁入的列和行为新的未锁定 working 版本，原历史不变；所有版本 `row_count` 按目标表实际行数重算并纳入对账指纹。
+- 通用表格 current 必须指向本表已迁入版本；存在未锁版本时始终选择 `(version_number desc, version_id desc)` 的最新项，不保留过时 current，也不额外生成 working。仅当全部版本已锁定时，确定性复制最新版本中成功迁入的列和行为新的未锁定 working 版本，原历史不变；所有版本 `row_count` 按目标表实际行数重算并纳入对账指纹。
 
 ## TDD 与验证证据
 
 - RED：新增二进制迁移行为测试后，因 `plan_legacy_binaries` 尚未实现在 collection 阶段按预期失败。通用表格补充 RED 证实旧流程会把已锁定 `GTV-001` 直接设为 current，且在坏 JSON 行被拒绝后仍保留了虚假 `row_count=2`。
 - 独立复核修复：补齐同内容 root/DB/附件身份替换阻断、commit 异常的外层文件清理、storage 全链 no-follow/dir-fd 操作，并将受控表默认生成的审计列纳入指纹。最终一致性复核在同一批 fd 绑定句柄上同时比对身份与 SHA-256，并在事务体末尾和 SQLAlchemy commit 事件边界各复核一次。失败清理按原绑定目录 fd 与 dev/inode/type 精确删除；本次文件被改名时在绑定目录内按 inode 找回，不删除后来占用原名的对象。
-- focused + 受影响回归：`127 passed, 10 skipped`（legacy migration、FileService、reference library、legacy modules）。
+- focused + 受影响回归：`128 passed, 10 skipped`（legacy migration、FileService、reference library、legacy modules）。
 - 隔离 PostgreSQL head schema runner：同 batch 双连接并发、标准+模板物理迁移、`FileService.open_version_stream`、回滚、Alembic/ACL 和完整 DB contract 通过。
 - `compileall`、两个 CLI `--help` 和 `git diff --check` 通过。
 

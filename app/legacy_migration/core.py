@@ -1241,9 +1241,7 @@ def _repair_generic_table_state(
         if not table_versions:
             raise StructuralMigrationError("generic table has no version")
         unlocked = [row for row in table_versions if not bool(row["is_locked"])]
-        if not bool(requested["is_locked"]):
-            current_version_id = requested_version_id
-        elif unlocked:
+        if unlocked:
             current_version_id = str(unlocked[0]["version_id"])
         else:
             source = table_versions[0]

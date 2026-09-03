@@ -68,6 +68,27 @@ def _make_sources(tmp_path: Path) -> Path:
     return root
 
 
+def _add_stale_unlocked_generic_table(root: Path) -> None:
+    with sqlite3.connect(root / "generic_tables.db") as db:
+        db.execute(
+            "insert into generic_tables values "
+            "(31,'GT-002','Stale current table','hashed',"
+            "'2026-09-01 10:00:00','2026-09-01 10:00:00','GTV-002-1')"
+        )
+        db.executemany(
+            "insert into generic_table_versions values "
+            "(?,?,?,?,?,?,?,?,?,?)",
+            [
+                (32, "GTV-002-1", "GT-002", 1, "manual", 0, 20, "hashed",
+                 "2026-09-01 10:00:00", "0"),
+                (33, "GTV-002-2", "GT-002", 2, "manual", 0, 20, "hashed",
+                 "2026-09-01 10:00:00", "0"),
+                (34, "GTV-002-3", "GT-002", 3, "manual", 0, 20, "hashed",
+                 "2026-09-01 10:00:00", "0"),
+            ],
+        )
+
+
 def _target_engine() -> sa.Engine:
     engine = sa.create_engine("sqlite+pysqlite:///:memory:")
     metadata = sa.MetaData()
@@ -383,6 +404,28 @@ def test_generic_current_version_cannot_reference_another_table(tmp_path):
             assert connection.scalar(sa.text(f"select count(*) from {table}")) == 0
 
 
+def test_generic_current_uses_latest_existing_unlocked_version(tmp_path):
+    root = _make_sources(tmp_path)
+    _add_stale_unlocked_generic_table(root)
+    engine = _target_engine()
+    report = migrate_legacy(
+        engine, root, "latest-unlocked", allow_test_sqlite=True
+    )
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text(
+            "select current_version_id from generic_tables where table_id='GT-002'"
+        )) == "GTV-002-3"
+        assert connection.scalar(sa.text(
+            "select count(*) from generic_table_versions "
+            "where table_id='GT-002'"
+        )) == 3
+        assert connection.scalar(sa.text(
+            "select count(*) from generic_table_versions "
+            "where table_id='GT-002' and version_id like 'GTV-MIG-%'"
+        )) == 0
+    assert report["tables"]["generic_table_versions"]["inserted"] == 5
+
+
 def test_migration_rejects_project_ids_reused_across_categories(tmp_path):
     root = _make_sources(tmp_path)
     with sqlite3.connect(root / "research.db") as db:
@@ -664,6 +707,7 @@ def test_bound_snapshot_rejects_replaced_source_root_ancestor(tmp_path, monkeypa
 )
 def test_postgresql_concurrent_same_batch_and_identity_sequence(tmp_path):
     root = _make_sources(tmp_path)
+    _add_stale_unlocked_generic_table(root)
     _add_legacy_binary_references(root)
     storage = tmp_path / "controlled-files"
     storage.mkdir(mode=0o700)
@@ -711,6 +755,18 @@ def test_postgresql_concurrent_same_batch_and_identity_sequence(tmp_path):
                 "select count(*) from generic_table_data "
                 "where version_id=:version_id"
             ), {"version_id": current[0]}) == 1
+            assert connection.scalar(sa.text(
+                "select current_version_id from generic_tables "
+                "where table_id='GT-002'"
+            )) == "GTV-002-3"
+            assert connection.scalar(sa.text(
+                "select count(*) from generic_table_versions "
+                "where table_id='GT-002'"
+            )) == 3
+            assert connection.scalar(sa.text(
+                "select count(*) from generic_table_versions "
+                "where table_id='GT-002' and version_id like 'GTV-MIG-%'"
+            )) == 0
         with first_engine.begin() as connection:
             connection.execute(sa.text(
                 "update stored_files set created_by=(select id from users order by id limit 1)"
