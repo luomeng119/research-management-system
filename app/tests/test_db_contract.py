@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 import pytest
 import sqlalchemy as sa
+from alembic import command
+from alembic.config import Config
 from sqlalchemy.exc import DBAPIError
 
 
@@ -419,6 +421,138 @@ def test_schema_contains_confirmed_core_and_legacy_tables(migration_engine):
     inspector = sa.inspect(migration_engine)
     actual = set(inspector.get_table_names())
     assert CORE_TABLES | LEGACY_TABLES <= actual
+
+
+def _run_database_migration(revision: str, *, upgrade: bool) -> None:
+    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+    if upgrade:
+        command.upgrade(config, revision)
+    else:
+        command.downgrade(config, revision)
+
+
+def _database_revision(engine) -> str:
+    with engine.connect() as connection:
+        return connection.scalar(sa.text("SELECT version_num FROM alembic_version"))
+
+
+def test_reference_library_upgrade_rejects_populated_duplicate_standard_doc_ids(
+    migration_engine,
+):
+    marker = str(uuid.uuid4())
+    _run_database_migration("0005_expert_import_batches", upgrade=False)
+    try:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO standards (doc_id, name) VALUES "
+                    "(:doc_id, 'duplicate standard one'), "
+                    "(:doc_id, 'duplicate standard two')"
+                ),
+                {"doc_id": f"DUPLICATE-{marker}"},
+            )
+
+        with pytest.raises(RuntimeError, match="duplicate non-null standards.doc_id"):
+            _run_database_migration(HEAD_REVISION, upgrade=True)
+        assert _database_revision(migration_engine) == "0005_expert_import_batches"
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM standards WHERE doc_id = :doc_id"),
+                {"doc_id": f"DUPLICATE-{marker}"},
+            )
+        _run_database_migration(HEAD_REVISION, upgrade=True)
+
+
+def test_reference_library_downgrade_rejects_archived_standards(migration_engine):
+    marker = str(uuid.uuid4())
+    with migration_engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO standards (doc_id, name, status) "
+                "VALUES (:doc_id, 'archived downgrade probe', 'ARCHIVED')"
+            ),
+            {"doc_id": f"ARCHIVED-{marker}"},
+        )
+    try:
+        with pytest.raises(RuntimeError, match="archived standards"):
+            _run_database_migration("0005_expert_import_batches", upgrade=False)
+        assert _database_revision(migration_engine) == HEAD_REVISION
+    finally:
+        if _database_revision(migration_engine) != HEAD_REVISION:
+            _run_database_migration(HEAD_REVISION, upgrade=True)
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM standards WHERE doc_id = :doc_id"),
+                {"doc_id": f"ARCHIVED-{marker}"},
+            )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("rename", "archive", "reparent", "version", "created_by", "updated_by"),
+)
+def test_reference_library_downgrade_rejects_non_pristine_seed_folders(
+    migration_engine, mutation,
+):
+    marker = str(uuid.uuid4())
+    with migration_engine.begin() as connection:
+        seed_id = connection.scalar(
+            sa.text(
+                "SELECT id FROM reference_template_folders WHERE name = '财务模板'"
+            )
+        )
+        other_seed_id = connection.scalar(
+            sa.text(
+                "SELECT id FROM reference_template_folders WHERE name = '会务模板'"
+            )
+        )
+        user_id = None
+        if mutation in {"created_by", "updated_by"}:
+            user_id = connection.scalar(
+                sa.text(
+                    "INSERT INTO users (username, password, role) "
+                    "VALUES (:username, 'test-password', 'test-role') RETURNING id"
+                ),
+                {"username": f"reference-seed-{mutation}-{marker}"},
+            )
+        values = {
+            "rename": "name = '已改名模板'",
+            "archive": "status = 'ARCHIVED'",
+            "reparent": "parent_id = :other_seed_id",
+            "version": "version = 2",
+            "created_by": "created_by = :user_id",
+            "updated_by": "updated_by = :user_id",
+        }
+        connection.execute(
+            sa.text(
+                "UPDATE reference_template_folders SET "
+                f"{values[mutation]} WHERE id = :seed_id"
+            ),
+            {"seed_id": seed_id, "other_seed_id": other_seed_id, "user_id": user_id},
+        )
+    try:
+        with pytest.raises(RuntimeError, match="reference-template seed folders"):
+            _run_database_migration("0005_expert_import_batches", upgrade=False)
+        assert _database_revision(migration_engine) == HEAD_REVISION
+    finally:
+        if _database_revision(migration_engine) != HEAD_REVISION:
+            _run_database_migration(HEAD_REVISION, upgrade=True)
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "UPDATE reference_template_folders SET "
+                    "name = '财务模板', status = 'ACTIVE', parent_id = NULL, "
+                    "version = 1, created_by = NULL, updated_by = NULL "
+                    "WHERE name = '财务模板' OR id = :seed_id"
+                ),
+                {"seed_id": seed_id},
+            )
+            if user_id is not None:
+                connection.execute(
+                    sa.text("DELETE FROM users WHERE id = :user_id"),
+                    {"user_id": user_id},
+                )
 
 
 def test_reference_library_schema_separates_file_metadata_from_argumentation_schemas(

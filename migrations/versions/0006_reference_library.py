@@ -46,6 +46,20 @@ def _audit_columns() -> list[sa.Column]:
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    duplicate_doc_id_count = bind.scalar(
+        sa.text(
+            "SELECT count(*) FROM ("
+            "SELECT doc_id FROM standards WHERE doc_id IS NOT NULL "
+            "GROUP BY doc_id HAVING count(*) > 1"
+            ") duplicate_doc_ids"
+        )
+    )
+    if duplicate_doc_id_count:
+        raise RuntimeError(
+            "duplicate non-null standards.doc_id values prevent reference-library upgrade"
+        )
+
     op.add_column(
         "standards",
         sa.Column("status", sa.Text(), nullable=False, server_default="ACTIVE"),
@@ -147,6 +161,14 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
+    archived_standard_count = bind.scalar(
+        sa.text("SELECT count(*) FROM standards WHERE status <> 'ACTIVE'")
+    )
+    if archived_standard_count:
+        raise RuntimeError(
+            "archived standards prevent reference-library downgrade"
+        )
+
     item_count = bind.scalar(sa.text("SELECT count(*) FROM reference_template_items"))
     user_folder_count = bind.scalar(
         sa.text(
@@ -159,6 +181,21 @@ def downgrade() -> None:
         raise RuntimeError(
             "reference library contains user records; export or remove them before downgrade"
         )
+    for name in DEFAULT_TEMPLATE_FOLDERS:
+        pristine_seed_count = bind.scalar(
+            sa.text(
+                "SELECT count(*) FROM reference_template_folders "
+                "WHERE id = :id AND parent_id IS NULL AND name = :name "
+                "AND status = 'ACTIVE' AND created_by IS NULL "
+                "AND updated_by IS NULL AND version = 1"
+            ),
+            {"id": _folder_id(name), "name": name},
+        )
+        if pristine_seed_count != 1:
+            raise RuntimeError(
+                "reference-template seed folders are not pristine; "
+                "restore them before downgrade"
+            )
 
     op.drop_index(
         "ix_reference_template_items_folder_status",
