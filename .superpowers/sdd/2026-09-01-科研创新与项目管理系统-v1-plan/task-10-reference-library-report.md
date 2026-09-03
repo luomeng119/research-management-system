@@ -31,6 +31,11 @@
   `file_operation_completed / FILE / UPLOAD` 安全归属到 STANDARD 或 TEMPLATE，
   在 module/operator/file/operation 过滤后才截取 100 条。新增回归含标准/模板隔离和
   101 条后仍可找到更早上传事件。
+- 日志终修：现有页面的 `operation_type=上传文件` 已明确映射至审计码 `UPLOAD`，
+  同时仍接受审计码输入。module、operator、file name、operation 和 `object_files`
+  归属均在 SQL 中筛选并 `LIMIT 100`；SQL spy 与 101 条无关审计后的匹配上传回归
+  证明不会全表载入后再切片。真实 `/templates/logs/templates?operation_type=上传文件`
+  返回对应模板记录。
 - 影响面回归：
   `pytest app/tests/test_file_service.py app/tests/test_auth_audit.py
   app/tests/test_baseline_security.py app/tests/test_legacy_modules.py -q`
@@ -82,3 +87,6 @@
 - 历史日志页 URL 仍可进入，但不会读取旧 `OperationLogModel`；新文件行为由现有审计服务
   记录，并按旧 operator/file_name/date/operation 参数从 PostgreSQL `audit_events`
   （加 users 与库元数据名称）查询。若需将历史日志迁移至新审计查询，应另行确认范围。
+- 编码分隔符拦截依赖当前部署栈将原始 request target 暴露为 `RAW_URI` 或 `REQUEST_URI`。
+  已由当前 Flask/Werkzeug 与目标 WSGI 栈验证，属于移植到不提供原始 URI 的替代服务器时
+  需复验的非阻断风险；本批不为未知代理扩展协议或替换全局 WSGI 组件。

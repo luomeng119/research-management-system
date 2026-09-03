@@ -436,11 +436,40 @@ def test_reference_logs_include_file_uploads_and_filter_before_the_limit(referen
                 request_id=f"req-noise-{index}", duration_ms=0, properties={"operation": "ARCHIVE"},
             )
 
-    standard_logs = service.list_logs("standards", operator="operator", file_name="审计标准", operation="UPLOAD")
-    template_logs = service.list_logs("templates", operator="operator", file_name="审计模板", operation="UPLOAD")
+    audit_statements = []
+
+    def capture_audit_sql(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if "audit_events" in statement:
+            audit_statements.append(statement)
+
+    sa.event.listen(reference_engine, "before_cursor_execute", capture_audit_sql)
+    try:
+        standard_logs = service.list_logs("standards", operator="operator", file_name="审计标准", operation="UPLOAD")
+        template_logs = service.list_logs("templates", operator="operator", file_name="审计模板", operation="UPLOAD")
+        assert service.list_logs("standards", operation="ARCHIVE") == []
+    finally:
+        sa.event.remove(reference_engine, "before_cursor_execute", capture_audit_sql)
     assert [entry["file_name"] for entry in standard_logs] == ["审计标准"]
     assert [entry["file_name"] for entry in template_logs] == ["审计模板.pdf"]
-    assert service.list_logs("standards", operation="ARCHIVE") == []
+    assert all("LIMIT" in statement.upper() for statement in audit_statements)
+    assert service.list_logs("templates", operation="上传文件")[0]["file_name"] == "审计模板.pdf"
+
+    from app.routes.templates import bp as templates_bp
+    app = Flask(__name__, template_folder=str(ROOT / "app/templates"))
+    app.config.update(TESTING=True, SECRET_KEY="log-route-test")
+    app.jinja_env.globals["csrf_token"] = lambda: "test-csrf"
+    app.extensions["reference_library_service"] = service
+    app.add_url_rule("/login", endpoint="auth.login", view_func=lambda: "")
+    app.add_url_rule("/logout", endpoint="auth.logout", view_func=lambda: "")
+    app.add_url_rule("/change-password", endpoint="users.change_password", view_func=lambda: "")
+    app.add_url_rule("/users", endpoint="users.index", view_func=lambda: "")
+    app.register_blueprint(templates_bp)
+    client = app.test_client()
+    with client.session_transaction() as active_session:
+        active_session.update(user_id=7, user="operator")
+    page = client.get("/templates/logs/templates?operation_type=上传文件")
+    assert page.status_code == 200, page.get_json()
+    assert "审计模板.pdf" in page.get_data(as_text=True)
 
 
 def test_standards_page_keeps_stored_name_as_dom_data_not_inline_script(reference_routes, reference_service):

@@ -11,6 +11,17 @@ from app.services.files import FileServiceError
 
 
 RETAINED_TEMPLATE_CATEGORIES = ("财务模板", "会务模板", "公文模板", "方案模板", "其他模板")
+UI_OPERATION_CODES = {
+    "上传文件": "UPLOAD",
+    "删除文件": "ARCHIVE",
+    "归档文件": "ARCHIVE",
+    "创建文件夹": "CREATE_FOLDER",
+    "新建文件夹": "CREATE_FOLDER",
+    "重命名": "RENAME",
+    "重命名文件夹": "RENAME_FOLDER",
+    "归档文件夹": "ARCHIVE_FOLDER",
+}
+AUDIT_OPERATION_CODES = frozenset(UI_OPERATION_CODES.values())
 
 
 class ReferenceLibraryError(Exception):
@@ -94,73 +105,100 @@ class ReferenceLibraryService:
             })
         return result
 
+    @staticmethod
+    def _audit_operation_code(operation: str | None) -> str | None:
+        value = (operation or "").strip()
+        if not value:
+            return None
+        if value in UI_OPERATION_CODES:
+            return UI_OPERATION_CODES[value]
+        upper = value.upper()
+        return upper if upper in AUDIT_OPERATION_CODES else value
+
     def list_logs(self, module_name: str, *, operator: str | None = None, file_name: str | None = None, start_date: str | None = None, end_date: str | None = None, operation: str | None = None) -> list[dict]:
         repository = getattr(self.audit_service, "repository", None)
         table = getattr(repository, "table", None)
         if table is None:
             return []
+        object_type = {"standards": "STANDARD", "templates": "TEMPLATE"}.get(module_name)
+        if object_type is None:
+            return []
+        operation_code = self._audit_operation_code(operation)
         try:
             with self.repository.engine.connect() as connection:
                 metadata = sa.MetaData()
                 links = sa.Table("object_files", metadata, autoload_with=connection)
+                standards = sa.Table("standards", metadata, autoload_with=connection)
+                items = sa.Table("reference_template_items", metadata, autoload_with=connection)
+                folders = sa.Table("reference_template_folders", metadata, autoload_with=connection)
                 try:
                     users = sa.Table("users", metadata, autoload_with=connection)
                 except sa.exc.NoSuchTableError:
                     users = None
+                file_event = sa.and_(
+                    table.c.action == "file_operation_completed",
+                    table.c.object_type == "FILE",
+                )
                 from_clause = table.outerjoin(
                     links,
                     sa.and_(
-                        table.c.action == "file_operation_completed",
-                        table.c.object_type == "FILE",
+                        file_event,
                         sa.cast(links.c.file_id, sa.Text) == table.c.object_id,
                     ),
                 )
+                effective_type = sa.case((file_event, links.c.object_type), else_=table.c.object_type)
+                effective_id = sa.case((file_event, links.c.object_id), else_=table.c.object_id)
+                from_clause = from_clause.outerjoin(
+                    standards,
+                    sa.and_(effective_type == "STANDARD", standards.c.doc_id == effective_id),
+                ).outerjoin(
+                    items,
+                    sa.and_(effective_type == "TEMPLATE", items.c.template_id == effective_id),
+                ).outerjoin(
+                    folders,
+                    sa.and_(effective_type == "TEMPLATE", sa.cast(folders.c.id, sa.Text) == effective_id),
+                )
+                visible_name = sa.case(
+                    (effective_type == "STANDARD", standards.c.name),
+                    (effective_type == "TEMPLATE", sa.func.coalesce(items.c.display_name, folders.c.name)),
+                    else_=sa.literal(""),
+                ).label("file_name")
+                operator_name = sa.cast(table.c.actor_user_id, sa.Text)
                 columns = [
-                    table,
-                    links.c.object_type.label("linked_object_type"),
-                    links.c.object_id.label("linked_object_id"),
+                    table.c.created_at,
+                    table.c.action,
+                    table.c.metadata,
+                    visible_name,
                 ]
                 if users is not None:
-                    columns.append(users.c.username.label("operator_name"))
                     from_clause = from_clause.outerjoin(users, users.c.id == table.c.actor_user_id)
+                    operator_name = sa.func.coalesce(users.c.username, operator_name)
+                columns.append(operator_name.label("operator_name"))
                 statement = sa.select(*columns).select_from(from_clause).where(
-                    table.c.action.in_(("reference_library_operation", "file_operation_completed"))
+                    table.c.action.in_(("reference_library_operation", "file_operation_completed")),
+                    effective_type == object_type,
                 )
                 if start_date:
                     statement = statement.where(table.c.created_at >= datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc))
                 if end_date:
                     statement = statement.where(table.c.created_at < datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) + timedelta(days=1))
-                rows = list(connection.execute(statement.order_by(table.c.created_at.desc())).mappings())
+                if operator:
+                    statement = statement.where(sa.func.lower(operator_name).like(f"%{operator.casefold()}%"))
+                if file_name:
+                    statement = statement.where(sa.func.lower(visible_name).like(f"%{file_name.casefold()}%"))
+                if operation_code:
+                    statement = statement.where(sa.func.upper(table.c.metadata["operation"].as_string()) == operation_code)
+                rows = list(connection.execute(statement.order_by(table.c.created_at.desc()).limit(100)).mappings())
         except Exception as exc:
             raise ReferenceLibraryError("REFERENCE_LIBRARY_OPERATION_FAILED", "日志查询失败", 500) from exc
-        names = {str(row["doc_id"]): row["name"] for row in self.repository.list_standards(active_only=False)}
-        names.update({str(row["template_id"]): row["display_name"] for row in self.repository.all_items()})
-        names.update({str(row["id"]): row["name"] for row in self.repository.all_folders()})
-        logs = []
-        for row in rows:
-            object_type = row["object_type"]
-            object_id = row.get("object_id")
-            if row["action"] == "file_operation_completed":
-                object_type = row.get("linked_object_type")
-                object_id = row.get("linked_object_id")
-                if object_type not in {"STANDARD", "TEMPLATE"}:
-                    continue
-            if module_name == "standards" and object_type != "STANDARD":
-                continue
-            if module_name == "templates" and object_type != "TEMPLATE":
-                continue
-            metadata = row.get("metadata") or {}
-            operation_name = metadata.get("operation", row["action"])
-            visible_name = names.get(str(object_id), str(object_id or ""))
-            visible_operator = str(row.get("operator_name") or row.get("actor_user_id") or "")
-            if operator and operator.casefold() not in visible_operator.casefold():
-                continue
-            if file_name and file_name.casefold() not in visible_name.casefold():
-                continue
-            if operation and operation.casefold() not in operation_name.casefold():
-                continue
-            logs.append({"timestamp": row["created_at"], "operator": visible_operator, "operation_type": operation_name, "file_name": visible_name, "detail": ""})
-        return logs[:100]
+        return [
+            {
+                "timestamp": row["created_at"], "operator": str(row["operator_name"] or ""),
+                "operation_type": (row["metadata"] or {}).get("operation", row["action"]),
+                "file_name": str(row["file_name"] or ""), "detail": "",
+            }
+            for row in rows
+        ]
 
     def upload_standard(self, stream, original_name: str, name: str, category: str, actor_user_id: int, request_id: str) -> dict:
         service = self._require_file_service()
