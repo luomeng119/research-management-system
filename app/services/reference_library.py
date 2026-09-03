@@ -102,19 +102,35 @@ class ReferenceLibraryService:
         try:
             with self.repository.engine.connect() as connection:
                 metadata = sa.MetaData()
+                links = sa.Table("object_files", metadata, autoload_with=connection)
                 try:
                     users = sa.Table("users", metadata, autoload_with=connection)
                 except sa.exc.NoSuchTableError:
                     users = None
-                columns = [table]
-                statement = sa.select(*columns).where(table.c.action == "reference_library_operation")
+                from_clause = table.outerjoin(
+                    links,
+                    sa.and_(
+                        table.c.action == "file_operation_completed",
+                        table.c.object_type == "FILE",
+                        sa.cast(links.c.file_id, sa.Text) == table.c.object_id,
+                    ),
+                )
+                columns = [
+                    table,
+                    links.c.object_type.label("linked_object_type"),
+                    links.c.object_id.label("linked_object_id"),
+                ]
                 if users is not None:
-                    statement = statement.add_columns(users.c.username.label("operator_name")).outerjoin(users, users.c.id == table.c.actor_user_id)
+                    columns.append(users.c.username.label("operator_name"))
+                    from_clause = from_clause.outerjoin(users, users.c.id == table.c.actor_user_id)
+                statement = sa.select(*columns).select_from(from_clause).where(
+                    table.c.action.in_(("reference_library_operation", "file_operation_completed"))
+                )
                 if start_date:
                     statement = statement.where(table.c.created_at >= datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc))
                 if end_date:
                     statement = statement.where(table.c.created_at < datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) + timedelta(days=1))
-                rows = list(connection.execute(statement.order_by(table.c.created_at.desc()).limit(100)).mappings())
+                rows = list(connection.execute(statement.order_by(table.c.created_at.desc())).mappings())
         except Exception as exc:
             raise ReferenceLibraryError("REFERENCE_LIBRARY_OPERATION_FAILED", "日志查询失败", 500) from exc
         names = {str(row["doc_id"]): row["name"] for row in self.repository.list_standards(active_only=False)}
@@ -123,13 +139,19 @@ class ReferenceLibraryService:
         logs = []
         for row in rows:
             object_type = row["object_type"]
+            object_id = row.get("object_id")
+            if row["action"] == "file_operation_completed":
+                object_type = row.get("linked_object_type")
+                object_id = row.get("linked_object_id")
+                if object_type not in {"STANDARD", "TEMPLATE"}:
+                    continue
             if module_name == "standards" and object_type != "STANDARD":
                 continue
             if module_name == "templates" and object_type != "TEMPLATE":
                 continue
             metadata = row.get("metadata") or {}
             operation_name = metadata.get("operation", row["action"])
-            visible_name = names.get(str(row.get("object_id")), str(row.get("object_id") or ""))
+            visible_name = names.get(str(object_id), str(object_id or ""))
             visible_operator = str(row.get("operator_name") or row.get("actor_user_id") or "")
             if operator and operator.casefold() not in visible_operator.casefold():
                 continue
@@ -138,7 +160,7 @@ class ReferenceLibraryService:
             if operation and operation.casefold() not in operation_name.casefold():
                 continue
             logs.append({"timestamp": row["created_at"], "operator": visible_operator, "operation_type": operation_name, "file_name": visible_name, "detail": ""})
-        return logs
+        return logs[:100]
 
     def upload_standard(self, stream, original_name: str, name: str, category: str, actor_user_id: int, request_id: str) -> dict:
         service = self._require_file_service()

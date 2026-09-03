@@ -2,14 +2,43 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import re
 
-from flask import Blueprint, current_app, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, Response, current_app, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from app.services.reference_library import ReferenceLibraryError
 
 
 bp = Blueprint("templates", __name__, url_prefix="/templates")
+_ENCODED_SEPARATOR = re.compile(r"%(?:25)*(?:2f|5c)", flags=re.IGNORECASE)
+
+
+class _EncodedTemplateDownloadGuard:
+    """Reject encoded separators before Werkzeug can normalize the route."""
+
+    def __init__(self, application):
+        self.application = application
+
+    def __call__(self, environ, start_response):
+        raw_uri = environ.get("RAW_URI") or environ.get("REQUEST_URI") or ""
+        raw_path = raw_uri.split("?", 1)[0]
+        if raw_path.startswith("/templates/download/") and _ENCODED_SEPARATOR.search(raw_path):
+            response = Response(
+                json.dumps({"success": False, "message": "模板路径无效", "code": "INVALID_TEMPLATE_PATH"}, ensure_ascii=False),
+                status=400,
+                content_type="application/json; charset=utf-8",
+            )
+            return response(environ, start_response)
+        return self.application(environ, start_response)
+
+
+@bp.record_once
+def _install_encoded_download_guard(state):
+    if state.app.extensions.get("reference_library_encoded_download_guard"):
+        return
+    state.app.wsgi_app = _EncodedTemplateDownloadGuard(state.app.wsgi_app)
+    state.app.extensions["reference_library_encoded_download_guard"] = True
 
 
 def _service():
@@ -37,7 +66,7 @@ def _unexpected_error(_error_value):
 
 def _raw_path_is_safe() -> bool:
     raw_uri = request.environ.get("RAW_URI", request.full_path)
-    return re.search(r"%(?:25)*(?:2f|5c)", raw_uri, flags=re.IGNORECASE) is None
+    return _ENCODED_SEPARATOR.search(raw_uri) is None
 
 
 def _dated_name(original_name: str) -> str:

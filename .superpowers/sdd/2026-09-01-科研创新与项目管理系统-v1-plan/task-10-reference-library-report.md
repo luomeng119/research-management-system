@@ -23,10 +23,22 @@
   `pytest app/tests/test_reference_library.py -q` 为 `15 passed`。首轮 RED 是
   缺失树节点 file/version 引用、归档后 direct TEMPLATE 写仍可通过、以及 audit
   异常仍提交文件夹；三项均已转绿。
+- 终审修复 RED → GREEN：真实 client 使用 `follow_redirects=True` 曾证明
+  `%2f/%2F/%5c/%252f` 会先被路由层归一化并下载同名模板；现由模板 blueprint
+  注册的 WSGI raw-URI guard 在路由匹配前返回 `INVALID_TEMPLATE_PATH`。TXT、DOCX、
+  XLSX 的 `/preview/file` JSON 响应补齐 `success: true`，与共享预览面板的成功契约
+  一致；PDF 继续返回受控流。审计日志现在通过 `object_files` 将
+  `file_operation_completed / FILE / UPLOAD` 安全归属到 STANDARD 或 TEMPLATE，
+  在 module/operator/file/operation 过滤后才截取 100 条。新增回归含标准/模板隔离和
+  101 条后仍可找到更早上传事件。
 - 影响面回归：
   `pytest app/tests/test_file_service.py app/tests/test_auth_audit.py
   app/tests/test_baseline_security.py app/tests/test_legacy_modules.py -q`
   为 `111 passed, 9 skipped`；`compileall` 与 diff check 通过。
+- 最终受影响面回归：
+  `pytest app/tests/test_reference_library.py app/tests/test_file_service.py
+  app/tests/test_auth_audit.py app/tests/test_baseline_security.py
+  app/tests/test_legacy_modules.py -q` 为 `129 passed, 9 skipped`。
 - 隔离 PostgreSQL：
   `scripts/test_postgres.sh postgresql://contract_t02` 通过；新增 T10 runtime
   contract 得到 `1 passed, 27 deselected`，并随后通过 legacy、db-contract 与 file
@@ -48,7 +60,8 @@
   财务、会务、公文、方案、其他五个顶级文件分类；“会务模板”仅为文件分类。
 - `/templates/download/<path:filepath>` 将路径解析为规范化 logical key，拒绝绝对路径、
   dot/`..`、多次解码、编码分隔符、重复匹配、inactive item/ancestor；仅将
-  `FileService.open_version_stream` 的受控流发送给客户端。
+  `FileService.open_version_stream` 的受控流发送给客户端。对于 WSGI 可见的
+  RAW_URI/REQUEST_URI，编码 `/` 或 `\\` 在 Werkzeug redirect/route normalization 前被拒绝。
 - 删除 `/templates/debug_tree` 和 `/templates/test_tree` 的生产注册；不再创建、遍历、
   重命名或删除业务目录，不再 raw `send_file` 业务 OS 路径。
 - 模板页面保留单文件/文件夹上传、创建子目录、下载、预览、重命名、归档及安全

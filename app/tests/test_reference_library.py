@@ -84,6 +84,11 @@ def _schema(engine):
         sa.Column("result", sa.Text), sa.Column("request_id", sa.Text), sa.Column("metadata", sa.JSON),
         sa.Column("created_at", sa.DateTime(timezone=True)),
     )
+    sa.Table(
+        "users", metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("username", sa.Text, nullable=False),
+    )
     metadata.create_all(engine)
     return metadata
 
@@ -366,6 +371,23 @@ def test_template_routes_preserve_nested_multipart_filename_and_reject_encoded_s
     assert reference_routes.get("/templates/download/%252fetc%252fpasswd").status_code == 400
 
 
+def test_template_download_rejects_real_encoded_separators_before_router_redirect(reference_routes, reference_service, reference_engine):
+    """A percent-encoded leading separator must not normalize into a valid logical URL."""
+    _seed_folder(reference_engine, "encoded-etc", "etc")
+    reference_service.upload_template(
+        _pdf(b"reachable-only-after-redirect"), original_name="passwd.pdf",
+        folder_path="etc", display_name="passwd.pdf", actor_user_id=7,
+        request_id="req-encoded-separator",
+    )
+    for separator in ("%2f", "%2F", "%5c", "%252f"):
+        response = reference_routes.get(
+            f"/templates/download/{separator}etc{separator}passwd.pdf",
+            follow_redirects=True,
+        )
+        assert response.status_code == 400
+        assert response.get_json()["code"] == "INVALID_TEMPLATE_PATH"
+
+
 def test_real_audit_service_accepts_reference_taxonomy_and_logs_operation(reference_engine, tmp_path):
     """A non-whitelisted event/object type previously made every real archive audit fail."""
     from app.repositories.audit import AuditRepository
@@ -384,6 +406,41 @@ def test_real_audit_service_accepts_reference_taxonomy_and_logs_operation(refere
     service.create_folder("审计目录", "其他模板", actor_user_id=7, request_id="req-audit")
     logs = service.list_logs("templates", operation="CREATE_FOLDER")
     assert logs[0]["operation_type"] == "CREATE_FOLDER"
+
+
+def test_reference_logs_include_file_uploads_and_filter_before_the_limit(reference_engine, tmp_path):
+    """File upload events must be safely attributed to their reference object before filtering."""
+    from app.repositories.audit import AuditRepository
+    from app.repositories.files import FilesRepository
+    from app.repositories.reference_library import ReferenceLibraryRepository
+    from app.services.audit import AuditService
+    from app.services.files import FileService
+    from app.services.reference_library import ReferenceLibraryService
+
+    users = sa.Table("users", sa.MetaData(), autoload_with=reference_engine)
+    with reference_engine.begin() as connection:
+        connection.execute(users.insert().values(id=7, username="operator"))
+    _seed_folder(reference_engine, "log-template", "其他模板")
+    audit = AuditService(AuditRepository(reference_engine), app_version="test")
+    service = ReferenceLibraryService(
+        ReferenceLibraryRepository(reference_engine), audit,
+        FileService(FilesRepository(reference_engine), audit, storage_root=tmp_path / "log-files", max_bytes=1024 * 1024, preview_max_bytes=1024),
+    )
+    standard = service.upload_standard(_pdf(b"audit-standard"), "audit-standard.pdf", "审计标准", "国家标准", 7, "req-log-standard")
+    template = service.upload_template(_pdf(b"audit-template"), "audit-template.pdf", "其他模板", "审计模板.pdf", actor_user_id=7, request_id="req-log-template")
+    with reference_engine.begin() as connection:
+        for index in range(101):
+            audit.record(
+                connection, event_name="reference_library_operation", user_id=7,
+                object_type="TEMPLATE", object_id=template["templateId"], result="SUCCESS",
+                request_id=f"req-noise-{index}", duration_ms=0, properties={"operation": "ARCHIVE"},
+            )
+
+    standard_logs = service.list_logs("standards", operator="operator", file_name="审计标准", operation="UPLOAD")
+    template_logs = service.list_logs("templates", operator="operator", file_name="审计模板", operation="UPLOAD")
+    assert [entry["file_name"] for entry in standard_logs] == ["审计标准"]
+    assert [entry["file_name"] for entry in template_logs] == ["审计模板.pdf"]
+    assert service.list_logs("standards", operation="ARCHIVE") == []
 
 
 def test_standards_page_keeps_stored_name_as_dom_data_not_inline_script(reference_routes, reference_service):
@@ -420,5 +477,47 @@ def test_controlled_preview_adapter_accepts_standard_and_template_references(ref
         active_session.update(user_id=7, user="operator", name="operator", role="BUSINESS_USER", account_version=1)
     for object_type, object_id, file_data in (("STANDARD", standard["docId"], standard["file"]), ("TEMPLATE", template["templateId"], template["file"])):
         response = client.get("/preview/file", query_string={"fileId": file_data["fileId"], "versionNo": file_data["versionNo"], "objectType": object_type, "objectId": object_id}, follow_redirects=True)
-        assert response.status_code == 200
+        assert response.status_code == 200, (object_type, response.get_json())
         assert response.data.startswith(b"%PDF-")
+
+
+def test_controlled_preview_json_contract_supports_text_word_and_excel(reference_service, reference_engine):
+    """The shared panel's success gate needs an explicit success flag for JSON previews."""
+    from docx import Document
+    import openpyxl
+    from app.routes.preview import bp as preview_bp
+    from app.web.files import bp as files_bp
+
+    _seed_folder(reference_engine, "typed-preview", "其他模板")
+    reference_service.file_service.preview_max_bytes = 1024 * 1024
+    word = Document(); word.add_paragraph("Word preview")
+    word_bytes = BytesIO(); word.save(word_bytes); word_bytes.seek(0)
+    workbook = openpyxl.Workbook(); workbook.active.append(["Excel preview"])
+    excel_bytes = BytesIO(); workbook.save(excel_bytes); excel_bytes.seek(0)
+    uploaded = [
+        ("text", reference_service.upload_template(BytesIO(b"text preview"), "preview.txt", "其他模板", "preview.txt", actor_user_id=7, request_id="req-preview-text")),
+        ("word", reference_service.upload_template(word_bytes, "preview.docx", "其他模板", "preview.docx", actor_user_id=7, request_id="req-preview-word")),
+        ("excel", reference_service.upload_template(excel_bytes, "preview.xlsx", "其他模板", "preview.xlsx", actor_user_id=7, request_id="req-preview-excel")),
+    ]
+    app = Flask(__name__)
+    app.config.update(TESTING=True, SECRET_KEY="typed-preview-test", SECURITY_AUTH_ENABLED=False)
+    app.extensions["file_service"] = reference_service.file_service
+    app.add_url_rule("/login", endpoint="auth.login", view_func=lambda: "")
+    app.register_blueprint(files_bp)
+    app.register_blueprint(preview_bp)
+    @app.before_request
+    def set_request_id():
+        request.request_id = "req-typed-preview"
+    client = app.test_client()
+    with client.session_transaction() as active_session:
+        active_session.update(user_id=7, user="operator", name="operator", role="BUSINESS_USER", account_version=1)
+    for expected_type, result in uploaded:
+        response = client.get("/preview/file", query_string={
+            "fileId": result["file"]["fileId"], "versionNo": result["file"]["versionNo"],
+            "objectType": "TEMPLATE", "objectId": result["templateId"],
+        }, follow_redirects=True)
+        assert response.status_code == 200, (expected_type, response.get_json())
+        assert response.get_json()["success"] is True
+        assert response.get_json()["type"] == expected_type
+    panel = (ROOT / "app/templates/components/preview_panel.html").read_text(encoding="utf-8")
+    assert "if (data.success) renderPreviewContent(data)" in panel

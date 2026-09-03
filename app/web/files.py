@@ -220,7 +220,7 @@ def preview_file(file_id: str, version_no: int):
                 return _preview_unavailable(file_id, version_no, opened)
             content = opened["stream"].read(TEXT_PREVIEW_MAX_BYTES + 1).decode("utf-8")
             opened["stream"].close()
-            response = jsonify({"type": "text", "filename": opened["originalName"], "content": content})
+            response = jsonify({"success": True, "type": "text", "filename": opened["originalName"], "content": content})
             _record_event("PREVIEW", result="SUCCESS", file_id=file_id, opened=opened)
             return response
         if extension == ".docx":
@@ -242,7 +242,7 @@ def preview_file(file_id: str, version_no: int):
                         table_rows.append([_take_text(cell.text, budget) for cell in islice(row.cells, 50)])
                     tables.append(table_rows)
                 opened["stream"].close()
-                response = jsonify({"type": "word", "filename": opened["originalName"], "paragraphs": paragraphs, "tables": tables})
+                response = jsonify({"success": True, "type": "word", "filename": opened["originalName"], "paragraphs": paragraphs, "tables": tables})
                 _record_event("PREVIEW", result="SUCCESS", file_id=file_id, opened=opened)
                 return response
             except Exception:
@@ -261,7 +261,7 @@ def preview_file(file_id: str, version_no: int):
                     sheets.append({"name": sheet.title, "rows": rows})
                 workbook.close()
                 opened["stream"].close()
-                response = jsonify({"type": "excel", "filename": opened["originalName"], "sheets": sheets})
+                response = jsonify({"success": True, "type": "excel", "filename": opened["originalName"], "sheets": sheets})
                 _record_event("PREVIEW", result="SUCCESS", file_id=file_id, opened=opened)
                 return response
             except Exception:
