@@ -1155,6 +1155,161 @@ def _take_migration_lock(connection: sa.Connection) -> None:
         connection.execute(sa.text("SELECT pg_advisory_xact_lock(75200501)"))
 
 
+def _refresh_expected_table_report(
+    table_name: str,
+    report: dict[str, Any],
+    expected_rows: dict[str, list[dict[str, Any]]],
+) -> None:
+    stats = report["tables"].get(table_name)
+    if stats is None:
+        return
+    rows = expected_rows.get(table_name, [])
+    key_fields = stats["migration_key_fields"]
+    stats["normalized_sha256"] = _sha_bytes(_canonical_json(sorted(
+        _normalized_hash(row) for row in rows
+    )).encode())
+    stats["primary_keys_sha256"] = _sha_bytes(_canonical_json(sorted(
+        (row["id"] for row in rows if row.get("id") is not None), key=str
+    )).encode())
+    natural = NATURAL_KEYS.get(table_name)
+    natural_values = (
+        [[row.get(field) for field in natural] for row in rows]
+        if natural else []
+    )
+    stats["natural_keys_sha256"] = _sha_bytes(_canonical_json(sorted(
+        natural_values, key=_canonical_json
+    )).encode())
+    stats["migration_key_values"] = sorted([
+        [str(row.get(field)) if isinstance(row.get(field), uuid.UUID) else row.get(field)
+         for field in key_fields]
+        for row in rows
+    ], key=_canonical_json)
+    stats["target_columns"] = sorted({
+        *stats["target_columns"], *(key for row in rows for key in row)
+    })
+
+
+def _repair_generic_table_state(
+    connection: sa.Connection,
+    deferred_current: dict[str, str],
+    report: dict[str, Any],
+    expected_rows: dict[str, list[dict[str, Any]]],
+    manifest_sha256: str,
+) -> None:
+    if not deferred_current:
+        return
+    tables = {
+        name: _reflect_table(connection, name)
+        for name in (
+            "generic_tables", "generic_table_versions",
+            "generic_table_columns", "generic_table_data",
+        )
+    }
+    if any(table is None for table in tables.values()):
+        raise StructuralMigrationError("target generic table schema is incomplete")
+    generic_tables = tables["generic_tables"]
+    versions = tables["generic_table_versions"]
+    columns = tables["generic_table_columns"]
+    data = tables["generic_table_data"]
+    generated_counts = {name: 0 for name in tables}
+
+    def next_id(table: sa.Table) -> int:
+        return int(connection.scalar(sa.select(sa.func.max(table.c.id))) or 0) + 1
+
+    def insert_generated(table_name: str, values: dict[str, Any]) -> None:
+        table = tables[table_name]
+        safe = {key: value for key, value in values.items() if key in table.c}
+        connection.execute(table.insert().values(**safe))
+        expected_rows.setdefault(table_name, []).append(safe.copy())
+        generated_counts[table_name] += 1
+
+    for table_id, requested_version_id in sorted(deferred_current.items()):
+        requested = connection.execute(
+            sa.select(versions).where(versions.c.version_id == requested_version_id)
+        ).mappings().first()
+        if requested is None:
+            raise StructuralMigrationError("orphan current_version_id in generic_tables")
+        if str(requested["table_id"]) != table_id:
+            raise StructuralMigrationError(
+                "cross-table current_version_id in generic_tables"
+            )
+        table_versions = connection.execute(
+            sa.select(versions).where(versions.c.table_id == table_id).order_by(
+                versions.c.version_number.desc(), versions.c.version_id.desc()
+            )
+        ).mappings().all()
+        if not table_versions:
+            raise StructuralMigrationError("generic table has no version")
+        unlocked = [row for row in table_versions if not bool(row["is_locked"])]
+        if not bool(requested["is_locked"]):
+            current_version_id = requested_version_id
+        elif unlocked:
+            current_version_id = str(unlocked[0]["version_id"])
+        else:
+            source = table_versions[0]
+            version_number = int(source["version_number"]) + 1
+            seed = (
+                f"legacy-generic-working:{manifest_sha256}:{table_id}:"
+                f"{source['version_id']}:{version_number}"
+            )
+            current_version_id = "GTV-MIG-" + uuid.uuid5(
+                uuid.NAMESPACE_URL, seed
+            ).hex.upper()
+            version_values = dict(source)
+            version_values.update({
+                "id": next_id(versions),
+                "version_id": current_version_id,
+                "version_number": version_number,
+                "version_label": f"v{version_number}_migration-working",
+                "create_method": "import",
+                "source_version_id": source["version_id"],
+                "row_count": 0,
+                "is_locked": False,
+            })
+            insert_generated("generic_table_versions", version_values)
+            for source_column in connection.execute(
+                sa.select(columns).where(
+                    columns.c.version_id == source["version_id"]
+                ).order_by(columns.c.col_index, columns.c.id)
+            ).mappings():
+                values = dict(source_column)
+                values.update({"id": next_id(columns), "version_id": current_version_id})
+                insert_generated("generic_table_columns", values)
+            for source_row in connection.execute(
+                sa.select(data).where(
+                    data.c.version_id == source["version_id"]
+                ).order_by(data.c.row_index, data.c.id)
+            ).mappings():
+                values = dict(source_row)
+                values.update({"id": next_id(data), "version_id": current_version_id})
+                insert_generated("generic_table_data", values)
+        connection.execute(generic_tables.update().where(
+            generic_tables.c.table_id == table_id
+        ).values(current_version_id=current_version_id))
+        for expected in expected_rows.get("generic_tables", []):
+            if str(expected.get("table_id")) == table_id:
+                expected["current_version_id"] = current_version_id
+
+    counts = dict(connection.execute(
+        sa.select(data.c.version_id, sa.func.count().label("count"))
+        .group_by(data.c.version_id)
+    ).all())
+    for version in connection.execute(sa.select(versions)).mappings():
+        actual = int(counts.get(version["version_id"], 0))
+        connection.execute(versions.update().where(
+            versions.c.id == version["id"]
+        ).values(row_count=actual))
+        for expected in expected_rows.get("generic_table_versions", []):
+            if expected.get("id") == version["id"]:
+                expected["row_count"] = actual
+
+    for table_name, generated in generated_counts.items():
+        if generated and table_name in report["tables"]:
+            report["tables"][table_name]["inserted"] += generated
+            report["counts"]["inserted"] += generated
+        _refresh_expected_table_report(table_name, report, expected_rows)
+
+
 @contextmanager
 def _migration_transaction_with_file_cleanup(
     engine: Engine,
@@ -1494,8 +1649,15 @@ def _migrate_snapshot(
                     )
                 try:
                     converted = _convert_row(table_name, row, target)
-                    if table_name == "generic_tables" and converted.get("current_version_id"):
-                        deferred_generic_current[str(converted.get("table_id"))] = str(converted.pop("current_version_id"))
+                    if table_name == "generic_tables":
+                        current_version_id = converted.pop("current_version_id", None)
+                        if not current_version_id:
+                            raise StructuralMigrationError(
+                                "generic table has no current_version_id"
+                            )
+                        deferred_generic_current[str(converted.get("table_id"))] = str(
+                            current_version_id
+                        )
                     for field in JSON_FIELDS & converted.keys():
                         report["json_fields"]["checked"] += 1
                         if converted[field] is not None and not isinstance(converted[field], (dict, list, int, float, bool, str)):
@@ -1577,25 +1739,9 @@ def _migrate_snapshot(
             if fail_after_table == table_name:
                 raise RuntimeError("injected migration failure")
 
-        if deferred_generic_current:
-            generic_tables = _reflect_table(connection, "generic_tables")
-            versions = _reflect_table(connection, "generic_table_versions")
-            if generic_tables is not None and versions is not None and "current_version_id" in generic_tables.c:
-                for table_id, version_id in sorted(deferred_generic_current.items()):
-                    exists = connection.scalar(sa.select(sa.literal(True)).where(versions.c.version_id == version_id).limit(1))
-                    if exists is True:
-                        connection.execute(generic_tables.update().where(generic_tables.c.table_id == table_id).values(current_version_id=version_id))
-                        for expected in expected_rows.get("generic_tables", []):
-                            if str(expected.get("table_id")) == table_id:
-                                expected["current_version_id"] = version_id
-                        report["tables"]["generic_tables"]["target_columns"] = sorted({
-                            *report["tables"]["generic_tables"]["target_columns"],
-                            "current_version_id",
-                        })
-                    else:
-                        raise StructuralMigrationError(
-                            "orphan current_version_id in generic_tables"
-                        )
+        _repair_generic_table_state(
+            connection, deferred_generic_current, report, expected_rows, manifest_sha
+        )
 
         from .binaries import (
             apply_binary_metadata,

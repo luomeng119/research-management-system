@@ -281,7 +281,7 @@ def test_migration_is_transactional_idempotent_and_reports_issues(tmp_path):
     second = migrate_legacy(engine, root, "fixture-v1", allow_test_sqlite=True)
     assert first == second
     assert first["status"] == "completed_with_issues"
-    assert first["counts"]["inserted"] == 18
+    assert first["counts"]["inserted"] == 21
     assert first["counts"]["rejected"] == 4
     assert first["counts"]["issues"] >= 2
     assert len(first["report_sha256"]) == 64
@@ -300,9 +300,29 @@ def test_migration_is_transactional_idempotent_and_reports_issues(tmp_path):
         assert connection.scalar(sa.text("select count(*) from expense_invoice")) == 1
         assert connection.scalar(sa.text("select count(*) from expense_payment")) == 1
         assert connection.scalar(sa.text("select count(*) from expense_invoice_item")) == 1
-        assert connection.scalar(sa.text("select count(*) from generic_table_versions")) == 1
-        assert connection.scalar(sa.text("select count(*) from generic_table_columns")) == 1
-        assert connection.scalar(sa.text("select count(*) from generic_table_data")) == 1
+        assert connection.scalar(sa.text("select count(*) from generic_table_versions")) == 2
+        assert connection.scalar(sa.text("select count(*) from generic_table_columns")) == 2
+        assert connection.scalar(sa.text("select count(*) from generic_table_data")) == 2
+        current_version_id = connection.scalar(sa.text(
+            "select current_version_id from generic_tables where table_id='GT-001'"
+        ))
+        assert current_version_id.startswith("GTV-MIG-")
+        versions = connection.execute(sa.text(
+            "select version_id,version_number,row_count,is_locked "
+            "from generic_table_versions order by version_number"
+        )).all()
+        assert versions == [
+            ("GTV-001", 1, 1, True),
+            (current_version_id, 2, 1, False),
+        ]
+        copied_row = connection.scalar(sa.text(
+            "select row_data from generic_table_data "
+            "where version_id=:version_id"
+        ), {"version_id": current_version_id})
+        assert json.loads(copied_row) == {"name": "valid"}
+        version_report = first["tables"]["generic_table_versions"]
+        assert "version_id" in version_report["target_columns"]
+        assert len(version_report["migration_key_values"]) == 2
         users = connection.execute(sa.text("select username,status,must_change_password,password from users order by username")).all()
         assert users[0][0:3] == ("hashed", "active", 1)
         assert users[1][0:3] == ("plain", "disabled", 1)
@@ -330,6 +350,36 @@ def test_batch_manifest_change_and_mid_import_failure_roll_back(tmp_path):
         )
     with engine2.connect() as connection:
         for table in ("users", "projects", "generic_tables", "expense_reimbursement", "legacy_migration_batches"):
+            assert connection.scalar(sa.text(f"select count(*) from {table}")) == 0
+
+
+def test_generic_current_version_cannot_reference_another_table(tmp_path):
+    root = _make_sources(tmp_path)
+    with sqlite3.connect(root / "generic_tables.db") as db:
+        db.execute(
+            "insert into generic_tables values "
+            "(31,'GT-002','Other table','hashed',"
+            "'2026-09-01 10:00:00','2026-09-01 10:00:00','GTV-002')"
+        )
+        db.execute(
+            "insert into generic_table_versions values "
+            "(32,'GTV-002','GT-002',1,'manual',0,20,'hashed',"
+            "'2026-09-01 10:00:00','0')"
+        )
+        db.execute(
+            "update generic_tables set current_version_id='GTV-002' "
+            "where table_id='GT-001'"
+        )
+    engine = _target_engine()
+    with pytest.raises(StructuralMigrationError, match="cross-table"):
+        migrate_legacy(
+            engine, root, "cross-table-current", allow_test_sqlite=True
+        )
+    with engine.connect() as connection:
+        for table in (
+            "generic_tables", "generic_table_versions", "generic_table_columns",
+            "generic_table_data", "legacy_migration_batches",
+        ):
             assert connection.scalar(sa.text(f"select count(*) from {table}")) == 0
 
 
@@ -644,6 +694,23 @@ def test_postgresql_concurrent_same_batch_and_identity_sequence(tmp_path):
             assert opened["stream"].read() == b"same invoice"
         finally:
             opened["stream"].close()
+        with first_engine.connect() as connection:
+            current = connection.execute(sa.text(
+                "select v.version_id,v.version_number,v.row_count,v.is_locked "
+                "from generic_tables t join generic_table_versions v "
+                "on v.version_id=t.current_version_id where t.table_id='GT-001'"
+            )).one()
+            assert current[0].startswith("GTV-MIG-")
+            assert current[1:] == (2, 1, False)
+            assert connection.execute(sa.text(
+                "select version_number,row_count,is_locked "
+                "from generic_table_versions where table_id='GT-001' "
+                "order by version_number"
+            )).all() == [(1, 1, True), (2, 1, False)]
+            assert connection.scalar(sa.text(
+                "select count(*) from generic_table_data "
+                "where version_id=:version_id"
+            ), {"version_id": current[0]}) == 1
         with first_engine.begin() as connection:
             connection.execute(sa.text(
                 "update stored_files set created_by=(select id from users order by id limit 1)"
@@ -1044,6 +1111,11 @@ def test_binary_commit_failure_cleans_created_files(tmp_path, monkeypatch):
     _assert_file_descriptors_closed(captured_descriptors)
     with engine.connect() as connection:
         assert connection.scalar(sa.text("select count(*) from legacy_migration_batches")) == 0
+        for table in (
+            "generic_tables", "generic_table_versions", "generic_table_columns",
+            "generic_table_data",
+        ):
+            assert connection.scalar(sa.text(f"select count(*) from {table}")) == 0
     assert [path for path in storage.rglob("*") if path.is_file()] == []
 
 
