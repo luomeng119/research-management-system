@@ -605,6 +605,8 @@ def _schema_and_rows(source: LegacySource) -> tuple[str, list[dict[str, Any]], l
                 for field in PATH_FIELDS & row.keys():
                     if table == "llm_models":
                         continue
+                    if table == "expense_reimbursement" and field == "documents":
+                        continue
                     references.extend(
                         {"path": value, "source": f"{source.name}:{table}.{field}"}
                         for value in _path_values(
@@ -876,8 +878,11 @@ def _convert_row(table: str, row: dict[str, Any], target: sa.Table) -> dict[str,
     for field, value in row.items():
         if field not in target.c:
             continue
-        if field == "file_path" and table in {"llm_models", "standards", "doc_templates"}:
-            if table in {"standards", "doc_templates"}:
+        if field == "file_path" and table in {
+            "llm_models", "standards", "doc_templates",
+            "expense_invoice", "expense_payment",
+        }:
+            if table != "llm_models":
                 converted[field] = None
             continue
         try:
@@ -1587,9 +1592,6 @@ def _migrate_snapshot(
         binary_plan = build_binary_plan(
             connection, Path(source_root), manifest, max_bytes=max_file_bytes
         )
-        if binary_plan["summary"]["planned"] and storage_root is None:
-            raise SourceSafetyError("controlled storage root is required for legacy binaries")
-        issue_rows.extend(binary_issues(binary_plan))
         rejected_standard_ids = {
             item["objectId"]
             for item in binary_plan["items"]
@@ -1740,6 +1742,14 @@ def _migrate_snapshot(
         _repair_generic_table_state(
             connection, deferred_generic_current, report, expected_rows, manifest_sha
         )
+
+        from .binaries import validate_binary_object_targets
+        validate_binary_object_targets(connection, binary_plan)
+        issue_rows.extend(binary_issues(binary_plan))
+        if binary_plan["summary"]["planned"] and storage_root is None:
+            raise SourceSafetyError(
+                "controlled storage root is required for legacy binaries"
+            )
 
         from .binaries import (
             apply_binary_metadata,

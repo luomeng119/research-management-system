@@ -31,7 +31,9 @@ from .core import (
 
 
 DEFAULT_MAX_BYTES = 100 * 1024 * 1024
-_BINARY_TABLES = ("standards", "doc_templates")
+_BINARY_TABLES = (
+    "standards", "doc_templates", "expense_invoice", "expense_payment"
+)
 _TEMPLATE_FOLDERS = {"财务模板", "会务模板", "公文模板", "方案模板", "其他模板"}
 
 
@@ -170,7 +172,14 @@ def _folder_matches(connection: sa.Connection) -> dict[str, list[str]]:
 
 
 def _empty_item(table: str, row: dict[str, Any], raw: Any) -> dict[str, Any]:
-    key_name = "doc_id" if table == "standards" else "template_id"
+    key_name = {
+        "standards": "doc_id", "doc_templates": "template_id",
+        "expense_invoice": "id", "expense_payment": "id",
+    }[table]
+    object_type = {
+        "standards": "STANDARD", "doc_templates": "TEMPLATE",
+        "expense_invoice": "INVOICE", "expense_payment": "PAYMENT",
+    }[table]
     return {
         "sourceTable": table,
         "sourceKey": str(row.get(key_name) or row.get("id") or "") or None,
@@ -179,7 +188,7 @@ def _empty_item(table: str, row: dict[str, Any], raw: Any) -> dict[str, Any]:
         "exists": False,
         "sizeBytes": None,
         "sha256": None,
-        "objectType": "STANDARD" if table == "standards" else "TEMPLATE",
+        "objectType": object_type,
         "objectId": str(row.get(key_name) or "") or None,
         "fileId": None,
         "versionId": None,
@@ -258,11 +267,13 @@ def build_binary_plan(
 ) -> dict[str, Any]:
     sources = discover_sources(source_root)
     research = next(source for source in sources if source.name == "research.db")
+    expense = next(source for source in sources if source.name == "expense.db")
     folders = _folder_matches(connection)
     items: list[dict[str, Any]] = []
     validated = 0
     for table_name in _BINARY_TABLES:
-        for row in _table_rows(research, table_name):
+        source = expense if table_name.startswith("expense_") else research
+        for row in _table_rows(source, table_name):
             raw = row.get("file_path")
             if raw in (None, ""):
                 continue
@@ -344,6 +355,53 @@ def build_binary_plan(
         },
     }
     return {**payload, "sha256": _sha_bytes(_canonical_json(payload).encode())}
+
+
+def validate_binary_object_targets(
+    connection: sa.Connection, plan: dict[str, Any]
+) -> None:
+    target_tables = {
+        "INVOICE": "expense_invoice", "PAYMENT": "expense_payment"
+    }
+    for item in plan["items"]:
+        table_name = target_tables.get(item["objectType"])
+        if table_name is None or item["issueCode"] is not None:
+            continue
+        table = _reflect_table(connection, table_name)
+        if table is None:
+            raise StructuralMigrationError(f"target table is missing: {table_name}")
+        try:
+            object_id = int(item["objectId"])
+        except (TypeError, ValueError):
+            item["issueCode"] = "OBJECT_NOT_MIGRATED"
+            continue
+        exists = connection.scalar(
+            sa.select(sa.literal(True)).where(table.c.id == object_id).limit(1)
+        )
+        if exists is not True:
+            item["issueCode"] = "OBJECT_NOT_MIGRATED"
+    payload = {
+        "sourceManifestSha256": plan["sourceManifestSha256"],
+        "items": plan["items"],
+        "summary": {
+            "referenced": len(plan["items"]),
+            "eligible": sum(
+                item.get("sha256") is not None for item in plan["items"]
+            ),
+            "planned": sum(
+                item["issueCode"] is None for item in plan["items"]
+            ),
+            "issues": sum(
+                item["issueCode"] is not None for item in plan["items"]
+            ),
+            "totalBytes": sum(
+                item["sizeBytes"] for item in plan["items"]
+                if item["issueCode"] is None
+            ),
+        },
+    }
+    plan.update(payload)
+    plan["sha256"] = _sha_bytes(_canonical_json(payload).encode())
 
 
 def plan_legacy_binaries(
@@ -450,6 +508,7 @@ def apply_binary_metadata(
         for name in (
             "reference_template_items", "stored_files", "stored_file_versions",
             "object_files", "standards", "doc_templates",
+            "expense_invoice", "expense_payment",
         )
     }
     if any(tables[name] is None for name in (
@@ -499,11 +558,17 @@ def apply_binary_metadata(
         inserted["stored_file_versions"].append(version_values)
         inserted["object_files"].append(link_values)
         legacy_table = tables[item["sourceTable"]]
-        key_name = "doc_id" if item["sourceTable"] == "standards" else "template_id"
+        key_name = {
+            "standards": "doc_id", "doc_templates": "template_id",
+            "expense_invoice": "id", "expense_payment": "id",
+        }[item["sourceTable"]]
+        key_value: Any = item["objectId"]
+        if item["sourceTable"].startswith("expense_"):
+            key_value = int(key_value)
         if legacy_table is not None and "file_path" in legacy_table.c:
             connection.execute(
                 legacy_table.update().where(
-                    legacy_table.c[key_name] == item["objectId"]
+                    legacy_table.c[key_name] == key_value
                 ).values(file_path=None)
             )
     for table_name, rows in inserted.items():
