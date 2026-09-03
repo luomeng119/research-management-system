@@ -65,6 +65,15 @@ class ExpensesRepository:
             statement = statement.where(sa.or_(self.reimbursements.c.reimbursement_no.ilike(pattern), self.reimbursements.c.title.ilike(pattern)))
         return self.rows(connection, statement.order_by(self.reimbursements.c.created_at.desc(), self.reimbursements.c.id.desc()).limit(limit).offset(offset))
 
+    def count_reimbursements(self, connection, *, status=None, keyword=None):
+        statement = sa.select(sa.func.count()).select_from(self.reimbursements)
+        if status:
+            statement = statement.where(self.reimbursements.c.status == status)
+        if keyword:
+            pattern = f"%{keyword}%"
+            statement = statement.where(sa.or_(self.reimbursements.c.reimbursement_no.ilike(pattern), self.reimbursements.c.title.ilike(pattern)))
+        return int(connection.scalar(statement) or 0)
+
     def latest_number(self, connection, prefix: str, table, column) -> str | None:
         return connection.scalar(sa.select(column).where(column.like(f"{prefix}%")).order_by(column.desc()).limit(1))
 
@@ -92,7 +101,11 @@ class ExpensesRepository:
             statement = statement.where(self.invoices.c.reimbursement_id == reimbursement_id)
         if status:
             statement = statement.where(self.invoices.c.status == status)
-        statement = statement.order_by(self.invoices.c.created_at.desc(), self.invoices.c.id.desc()).limit(limit).offset(offset)
+        statement = statement.order_by(self.invoices.c.id) if lock else statement.order_by(
+            self.invoices.c.created_at.desc(), self.invoices.c.id.desc()
+        )
+        if limit is not None:
+            statement = statement.limit(limit).offset(offset)
         if lock and connection.dialect.name == "postgresql":
             statement = statement.with_for_update(of=self.invoices)
         rows = self.rows(connection, statement)
@@ -105,6 +118,14 @@ class ExpensesRepository:
             for row in rows:
                 row["items"] = by_invoice[row["id"]]
         return rows
+
+    def count_invoices(self, connection, *, reimbursement_id=None, status=None):
+        statement = sa.select(sa.func.count()).select_from(self.invoices)
+        if reimbursement_id is not None:
+            statement = statement.where(self.invoices.c.reimbursement_id == reimbursement_id)
+        if status:
+            statement = statement.where(self.invoices.c.status == status)
+        return int(connection.scalar(statement) or 0)
 
     def find_duplicate_invoice(self, connection, amount, date, invoice_no):
         return self.one(connection, sa.select(self.invoices.c.id, self.invoices.c.invoice_no).where(
@@ -140,10 +161,38 @@ class ExpensesRepository:
             statement = statement.where(self.payments.c.reimbursement_id == reimbursement_id)
         if status:
             statement = statement.where(self.payments.c.status == status)
-        statement = statement.order_by(self.payments.c.created_at.desc(), self.payments.c.id.desc()).limit(limit).offset(offset)
+        statement = statement.order_by(self.payments.c.id) if lock else statement.order_by(
+            self.payments.c.created_at.desc(), self.payments.c.id.desc()
+        )
+        if limit is not None:
+            statement = statement.limit(limit).offset(offset)
         if lock and connection.dialect.name == "postgresql":
             statement = statement.with_for_update(of=self.payments)
         return self.rows(connection, statement)
+
+    def count_payments(self, connection, *, reimbursement_id=None, status=None):
+        statement = sa.select(sa.func.count()).select_from(self.payments)
+        if reimbursement_id is not None:
+            statement = statement.where(self.payments.c.reimbursement_id == reimbursement_id)
+        if status:
+            statement = statement.where(self.payments.c.status == status)
+        return int(connection.scalar(statement) or 0)
+
+    def lock_and_aggregate_children(self, connection, rid: int):
+        for table in (self.invoices, self.payments):
+            statement = sa.select(table.c.id).where(table.c.reimbursement_id == rid).order_by(table.c.id)
+            if connection.dialect.name == "postgresql":
+                statement = statement.with_for_update(of=table)
+            list(connection.scalars(statement))
+        invoice = connection.execute(sa.select(
+            sa.func.count().label("count"),
+            sa.func.coalesce(sa.func.sum(self.invoices.c.amount), 0).label("total"),
+        ).where(self.invoices.c.reimbursement_id == rid)).mappings().one()
+        payment = connection.execute(sa.select(
+            sa.func.count().label("count"),
+            sa.func.coalesce(sa.func.sum(self.payments.c.amount), 0).label("total"),
+        ).where(self.payments.c.reimbursement_id == rid)).mappings().one()
+        return dict(invoice), dict(payment)
 
     def find_duplicate_payment(self, connection, amount, pay_date):
         return self.one(connection, sa.select(self.payments.c.id, self.payments.c.payment_no).where(
@@ -187,7 +236,7 @@ class ExpensesRepository:
         ).where(
             self.file_links.c.object_type == object_type,
             self.file_links.c.object_id == str(object_id),
-        )
+        ).order_by(self.files.c.id)
         if connection.dialect.name == "postgresql":
             statement = statement.with_for_update(of=self.files)
         file_ids = list(connection.scalars(statement))

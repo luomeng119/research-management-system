@@ -251,7 +251,7 @@ function renderDocsList(docs) {
                 <a href="/expense/documents/api/reimbursements/${selectedRid}/documents/${encodeURIComponent(doc.id)}/download" class="btn btn-outline-success btn-sm py-0">
                     <i class="bi bi-download"></i> 下载
                 </a>
-                <button class="btn btn-outline-danger btn-sm py-0" onclick="deleteDoc(decodeURIComponent('${encodeURIComponent(doc.id)}'))">
+                <button class="btn btn-outline-danger btn-sm py-0 js-delete-doc" data-doc-id="${escapeHtml(String(doc.id || ''))}">
                     <i class="bi bi-trash"></i>
                 </button>
             </div>
@@ -663,13 +663,19 @@ function deleteDoc(docId) {
     });
 }
 
+document.getElementById('docsList').addEventListener('click', function(event) {
+    const button = event.target.closest('.js-delete-doc');
+    if (!button) return;
+    deleteDoc(button.dataset.docId);
+});
+
 // 汇总打印
 document.getElementById('btnMergePrint').addEventListener('click', function() {
     if (!currentDocs.length) { alert('没有可打印的单据'); return; }
     let html = '';
     currentDocs.forEach((doc, i) => {
         html += `<div class="form-check">
-            <input class="form-check-input" type="checkbox" id="printDoc${i}" value="${doc.id}" checked>
+            <input class="form-check-input" type="checkbox" id="printDoc${i}" value="${escapeHtml(String(doc.id || ''))}" checked>
             <label class="form-check-label" for="printDoc${i}">${escapeHtml(doc.doc_type)} (${escapeHtml(doc.filled_at || '')})</label>
         </div>`;
     });

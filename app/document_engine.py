@@ -7,6 +7,7 @@ import os
 import re
 import io
 import json
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from datetime import datetime
 from docx import Document
@@ -17,8 +18,9 @@ def _cn_number(amount):
     if amount is None:
         return ""
     try:
-        cents = int(round(float(amount) * 100))
-    except:
+        value = Decimal(str(amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        cents = int(value * 100)
+    except (InvalidOperation, TypeError, ValueError):
         return ""
     if cents == 0:
         return "零元整"
@@ -90,17 +92,17 @@ def _cn_number(amount):
 
 
 def _parse_amount(val):
-    """解析金额字符串为 float"""
-    if isinstance(val, (int, float)):
-        return float(val)
+    """解析金额字符串为 Decimal。"""
+    if isinstance(val, Decimal):
+        return val
     if not val:
-        return 0.0
+        return Decimal('0')
     # 去掉￥ ¥ ，空格
     val = re.sub(r'[￥¥,\s]', '', str(val))
     try:
-        return float(val)
-    except ValueError:
-        return 0.0
+        return Decimal(val)
+    except (InvalidOperation, ValueError):
+        return Decimal('0')
 
 
 class DocumentFiller:

@@ -51,3 +51,14 @@
 - 安全/兼容：保留契约中页面和 API URL，缺页面转到 records；响应屏蔽 OCR 全文、绝对路径和完整证件号，内部异常不回显；修复报销页面中用户值进入动态 HTML/内联事件的相关 XSS sink。
 - GREEN：本地财务专项 `11 passed, 12 skipped`（PostgreSQL 用例未注入时跳过）；隔离 PostgreSQL runner 为 `1 + 11 + 2 + 1 + 23 + 54 = 92 passed`，其中财务专项 `23 passed`；受影响回归 `150 passed, 53 skipped`；最终全量 `360 passed, 60 skipped`；`compileall`、`bash -n scripts/test_postgres.sh`、`git diff --check` 均通过。
 - 残余边界：交付包财务四表为空，本批证据为真实 PostgreSQL 空库+合成业务数据，不代表已验收真实历史财务数据迁移；DOCX 结构与内容完整性已自动验证，最终版式仍需人工视觉验收。独立 Spec/Quality 复核未由本实现者代替。
+
+### 2026-09-03 独立复核修复批次
+
+- RED：新增定向用例首轮为 `5 failed, 11 passed, 15 skipped`，分别证实 records 页 `type=auto` 被拒绝且指定报销项上传 URL 缺失、501 条确认可被截断、双文档状态/文件不原子、合并伪降级、动态内联事件 XSS sink 和金额 float 问题。
+- 修复：上传先经 FileService 大小/扩展名/魔数/压缩包策略受控暂存，`auto` 按文件名与 OCR 结构安全分流；OCR 不可用时仍保留手工流程，上传已提交而自动匹配失败时返回成功与可恢复告警。
+- 修复：确认在同一父行锁边界锁定并聚合全部发票/支付，明细、自动填充和文档也使用全集；列表显式提供 `limit/offset/total/next_offset`，不再静默丢失第 501 条。
+- 修复：结算单与审批单必须两份真实 DOCX 都通过校验与暂存，然后在一个 PostgreSQL 事务内写入两组 file/version/link、审计和终态；第二份移动或任意元数据写入失败均回滚数据库并清理本批文件。独立只改状态的旁路已删除，前端使用两个带 fileId 的真实下载 URL。
+- 修复：财务写入统一锁顺序为父报销单→invoice ID 升序→payment ID 升序→stored_file ID 升序，并在加锁后复核 owner/状态/关系；终态报销单及其子记录禁止通用附件写，删除草稿报销单会归档并解除受控文件链接。
+- 修复：合并中任一选定 DOCX/附件不可解析时明确失败，不再以占位文字冒充成功；文档金额自读取到中文大写始终使用 `Decimal`；历史单据 ID 改为转义 `data-*` + 统一事件监听，不再拼接内联 JavaScript。
+- GREEN：本地财务专项 `16 passed, 23 skipped`；隔离 PostgreSQL runner `108 passed`，其中财务专项 `39 passed`；legacy/FileService/migration/财务受影响回归 `156 passed, 65 skipped`；全量 `365 passed, 71 skipped`；`compileall`、`bash -n scripts/test_postgres.sh`、`git diff --check` 通过。
+- 残余边界：真实历史财务数据仍为空，所以本批只证明当前 schema 与合成大集合/并发/故障注入下的正确性；DOCX 最终打印版式仍需人工视觉验收。

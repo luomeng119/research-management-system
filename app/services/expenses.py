@@ -185,6 +185,13 @@ class ExpenseService:
         with self.repository.engine.connect() as connection:
             return [self.public_row(row) for row in self.repository.list_reimbursements(connection, status=status, keyword=self._text(keyword, maximum=100) if keyword else None, limit=limit, offset=int(offset))]
 
+    def page_reimbursements(self, status=None, keyword=None, *, limit=200, offset=0):
+        rows = self.list_reimbursements(status, keyword, limit=limit, offset=offset)
+        clean_keyword = self._text(keyword, maximum=100) if keyword else None
+        with self.repository.engine.connect() as connection:
+            total = self.repository.count_reimbursements(connection, status=status, keyword=clean_keyword)
+        return rows, total, int(offset) + len(rows) if int(offset) + len(rows) < total else None
+
     def get_reimbursement(self, rid):
         with self.repository.engine.connect() as connection:
             return self.public_row(self.repository.get_reimbursement(connection, int(rid)))
@@ -306,21 +313,42 @@ class ExpenseService:
             rows = self.repository.list_invoices(connection, reimbursement_id=int(reimbursement_id) if reimbursement_id is not None else None, status=status, limit=int(limit), offset=int(offset))
             return self._with_files(connection, rows, "INVOICE")
 
+    def page_invoices(self, reimbursement_id=None, status=None, *, limit=100, offset=0):
+        rows = self.list_invoices(reimbursement_id, status, limit=limit, offset=offset)
+        with self.repository.engine.connect() as connection:
+            total = self.repository.count_invoices(connection, reimbursement_id=int(reimbursement_id) if reimbursement_id is not None else None, status=status)
+        return rows, total, int(offset) + len(rows) if int(offset) + len(rows) < total else None
+
+    def list_all_invoices(self, reimbursement_id):
+        with self.repository.engine.connect() as connection:
+            rows = self.repository.list_invoices(connection, reimbursement_id=int(reimbursement_id), limit=None)
+            return self._with_files(connection, rows, "INVOICE")
+
     def get_invoice(self, iid):
         with self.repository.engine.connect() as connection:
             row = self.repository.get_invoice(connection, int(iid))
             return self._with_files(connection, [row], "INVOICE")[0] if row else None
+
+    def _lock_invoice_parent_first(self, connection, iid):
+        probe = self.repository.get_invoice(connection, int(iid))
+        if not probe:
+            raise ExpenseError("NOT_FOUND", "发票不存在", 404)
+        expected_rid = probe.get("reimbursement_id")
+        reimbursement = None
+        if expected_rid is not None:
+            reimbursement = self.repository.get_reimbursement(connection, int(expected_rid), lock=True)
+        current = self.repository.get_invoice(connection, int(iid), lock=True)
+        if not current or current.get("reimbursement_id") != expected_rid:
+            raise ExpenseError("CONCURRENT_CHANGE", "发票状态已变更，请重试", 409)
+        return current, reimbursement
 
     def update_invoice(self, iid, **fields):
         if set(fields) & {"status", "reimbursement_id", "matched_payment_ids", "file_path", "ocr_text"}:
             raise ExpenseValidationError("PROTECTED_FIELD", "匹配状态和附件只能通过专用操作修改")
         values = self._invoice_values(fields, include_defaults=False)
         with self.repository.engine.begin() as connection:
-            current = self.repository.get_invoice(connection, int(iid), lock=True)
-            if not current:
-                raise ExpenseError("NOT_FOUND", "发票不存在", 404)
-            if current.get("reimbursement_id") is not None:
-                reimbursement = self.repository.get_reimbursement(connection, int(current["reimbursement_id"]), lock=True)
+            current, reimbursement = self._lock_invoice_parent_first(connection, iid)
+            if reimbursement is not None:
                 self._require_draft(reimbursement)
             self.repository.update_invoice(connection, int(iid), values)
             if current.get("reimbursement_id") and "amount" in values:
@@ -381,10 +409,34 @@ class ExpenseService:
             rows = self.repository.list_payments(connection, reimbursement_id=int(reimbursement_id) if reimbursement_id is not None else None, status=status, limit=int(limit), offset=int(offset))
             return self._with_files(connection, rows, "PAYMENT")
 
+    def page_payments(self, reimbursement_id=None, status=None, *, limit=100, offset=0):
+        rows = self.list_payments(reimbursement_id, status, limit=limit, offset=offset)
+        with self.repository.engine.connect() as connection:
+            total = self.repository.count_payments(connection, reimbursement_id=int(reimbursement_id) if reimbursement_id is not None else None, status=status)
+        return rows, total, int(offset) + len(rows) if int(offset) + len(rows) < total else None
+
+    def list_all_payments(self, reimbursement_id):
+        with self.repository.engine.connect() as connection:
+            rows = self.repository.list_payments(connection, reimbursement_id=int(reimbursement_id), limit=None)
+            return self._with_files(connection, rows, "PAYMENT")
+
     def get_payment(self, pid):
         with self.repository.engine.connect() as connection:
             row = self.repository.get_payment(connection, int(pid))
             return self._with_files(connection, [row], "PAYMENT")[0] if row else None
+
+    def _lock_payment_parent_first(self, connection, pid):
+        probe = self.repository.get_payment(connection, int(pid))
+        if not probe:
+            raise ExpenseError("NOT_FOUND", "支付记录不存在", 404)
+        expected_rid = probe.get("reimbursement_id")
+        reimbursement = None
+        if expected_rid is not None:
+            reimbursement = self.repository.get_reimbursement(connection, int(expected_rid), lock=True)
+        current = self.repository.get_payment(connection, int(pid), lock=True)
+        if not current or current.get("reimbursement_id") != expected_rid:
+            raise ExpenseError("CONCURRENT_CHANGE", "支付记录状态已变更，请重试", 409)
+        return current, reimbursement
 
     def update_payment(self, pid, **fields):
         if set(fields) & {"status", "reimbursement_id", "matched_invoice_ids", "file_path", "ocr_text"}:
@@ -398,11 +450,8 @@ class ExpenseService:
             elif key == "pay_date": values[key] = self._date(value, field="支付日期")
             else: values[key] = self._text(value, maximum=200)
         with self.repository.engine.begin() as connection:
-            current = self.repository.get_payment(connection, int(pid), lock=True)
-            if not current:
-                raise ExpenseError("NOT_FOUND", "支付记录不存在", 404)
-            if current.get("reimbursement_id") is not None:
-                reimbursement = self.repository.get_reimbursement(connection, int(current["reimbursement_id"]), lock=True)
+            current, reimbursement = self._lock_payment_parent_first(connection, pid)
+            if reimbursement is not None:
                 self._require_draft(reimbursement)
             self.repository.update_payment(connection, int(pid), values)
             self._audit(connection, operation="UPDATE", object_type="PAYMENT", object_id=pid)
@@ -427,10 +476,13 @@ class ExpenseService:
             if not reimbursement:
                 raise ExpenseError("NOT_FOUND", "报销项不存在", 404)
             self._require_draft(reimbursement)
+            invoice_probe = self.repository.get_invoice(connection, int(iid))
             invoice = self.repository.get_invoice(connection, int(iid), lock=True)
             if not invoice or invoice.get("reimbursement_id") != int(rid):
                 raise ExpenseError("CROSS_REIMBURSEMENT", "发票不属于该报销项", 409)
-            for pid in invoice.get("matched_payment_ids") or []:
+            if invoice_probe and invoice_probe.get("matched_payment_ids") != invoice.get("matched_payment_ids"):
+                raise ExpenseError("CONCURRENT_CHANGE", "匹配关系已变更，请重试", 409)
+            for pid in sorted(int(value) for value in (invoice.get("matched_payment_ids") or [])):
                 payment = self.repository.get_payment(connection, int(pid), lock=True)
                 if not payment or payment.get("reimbursement_id") != int(rid):
                     raise ExpenseError("MATCH_INCONSISTENT", "匹配关系不一致，请重新整理", 409)
@@ -462,11 +514,15 @@ class ExpenseService:
             if not reimbursement:
                 raise ExpenseError("NOT_FOUND", "报销项不存在", 404)
             self._require_draft(reimbursement)
+            payment_probe = self.repository.get_payment(connection, int(pid))
+            invoice_ids = sorted(int(value) for value in ((payment_probe or {}).get("matched_invoice_ids") or []))
+            invoices = [self.repository.get_invoice(connection, iid, lock=True) for iid in invoice_ids]
             payment = self.repository.get_payment(connection, int(pid), lock=True)
             if not payment or payment.get("reimbursement_id") != int(rid):
                 raise ExpenseError("CROSS_REIMBURSEMENT", "支付记录不属于该报销项", 409)
-            for iid in payment.get("matched_invoice_ids") or []:
-                invoice = self.repository.get_invoice(connection, int(iid), lock=True)
+            if payment.get("matched_invoice_ids") != ((payment_probe or {}).get("matched_invoice_ids") or []):
+                raise ExpenseError("CONCURRENT_CHANGE", "匹配关系已变更，请重试", 409)
+            for iid, invoice in zip(invoice_ids, invoices):
                 if not invoice or invoice.get("reimbursement_id") != int(rid):
                     raise ExpenseError("MATCH_INCONSISTENT", "匹配关系不一致，请重新整理", 409)
                 remaining = [value for value in (invoice.get("matched_payment_ids") or []) if int(value) != int(pid)]
@@ -526,8 +582,8 @@ class ExpenseService:
     def auto_match(self, *, approver=""):
         with self.repository.engine.begin() as connection:
             self.repository.advisory_lock(connection, "expense-auto-match")
-            invoices = self.repository.list_invoices(connection, status="未匹配", limit=self.MAX_MATCH_CANDIDATES + 1, lock=True)
-            payments = self.repository.list_payments(connection, status="未匹配", limit=self.MAX_MATCH_CANDIDATES + 1, lock=True)
+            invoices = self.repository.list_invoices(connection, status="未匹配", limit=self.MAX_MATCH_CANDIDATES + 1)
+            payments = self.repository.list_payments(connection, status="未匹配", limit=self.MAX_MATCH_CANDIDATES + 1)
             if len(invoices) > self.MAX_MATCH_CANDIDATES or len(payments) > self.MAX_MATCH_CANDIDATES:
                 raise ExpenseError("MATCH_LIMIT", "候选记录较多，请使用手工匹配", 409)
             unused = {row["id"]: row for row in invoices if row.get("reimbursement_id") is None and row["amount"] > 0}
@@ -540,6 +596,14 @@ class ExpenseService:
                     continue
                 travel = any(unused[iid].get("invoice_type") in {"火车票", "航空行程单", "出租车发票", "网约车"} for iid in ids)
                 rid, _ = self._create_reimbursement(connection, title=f"{self._now().strftime('%Y年%m月')}报销", approver=approver, reimbursement_type="出差报销" if travel else "采购报销")
+                locked_invoices = [self.repository.get_invoice(connection, iid, lock=True) for iid in sorted(ids)]
+                locked_payment = self.repository.get_payment(connection, int(payment["id"]), lock=True)
+                if any(not row or row.get("status") != "未匹配" or row.get("reimbursement_id") is not None for row in locked_invoices):
+                    raise ExpenseError("CONCURRENT_CHANGE", "发票状态已变更，请重试", 409)
+                if not locked_payment or locked_payment.get("status") != "未匹配" or locked_payment.get("reimbursement_id") is not None:
+                    raise ExpenseError("CONCURRENT_CHANGE", "支付记录状态已变更，请重试", 409)
+                if sum(row["amount"] for row in locked_invoices) != locked_payment["amount"]:
+                    raise ExpenseError("CONCURRENT_CHANGE", "金额已变更，请重试", 409)
                 for iid in ids:
                     self.repository.update_invoice(connection, iid, {"reimbursement_id": rid, "status": "已匹配", "matched_payment_ids": [payment["id"]]})
                     unused.pop(iid, None)
@@ -555,29 +619,46 @@ class ExpenseService:
             if not reimbursement:
                 raise ExpenseError("NOT_FOUND", "报销项不存在", 404)
             self._require_draft(reimbursement)
-            invoices = self.repository.list_invoices(connection, reimbursement_id=int(rid), limit=1, lock=True)
-            payments = self.repository.list_payments(connection, reimbursement_id=int(rid), limit=1, lock=True)
-            if not invoices:
+            invoice_totals, payment_totals = self.repository.lock_and_aggregate_children(connection, int(rid))
+            if not invoice_totals["count"]:
                 raise ExpenseValidationError("NO_INVOICE", "报销项没有发票")
-            if not payments:
+            if not payment_totals["count"]:
                 raise ExpenseValidationError("NO_PAYMENT", "报销项没有支付记录")
-            all_invoices = self.repository.list_invoices(connection, reimbursement_id=int(rid), limit=self.MAX_PAGE_SIZE, lock=True)
-            all_payments = self.repository.list_payments(connection, reimbursement_id=int(rid), limit=self.MAX_PAGE_SIZE, lock=True)
-            if sum(row["amount"] for row in all_invoices) != sum(row["amount"] for row in all_payments):
+            if invoice_totals["total"] != payment_totals["total"]:
                 raise ExpenseValidationError("AMOUNT_MISMATCH", "发票与支付金额必须相等")
             self.repository.recalculate_total(connection, int(rid))
             self.repository.update_reimbursement(connection, int(rid), {"status": "已确认", "confirmed_at": self._now(), "updated_at": self._now()})
             self._audit(connection, operation="CONFIRM", object_type="EXPENSE", object_id=rid)
 
-    def mark_documents_generated(self, rid):
-        with self.repository.engine.begin() as connection:
+    def persist_generated_documents(self, rid, documents, *, actor_user_id, request_id):
+        if self.file_service is None:
+            raise ExpenseError("FILE_SERVICE_UNAVAILABLE", "附件服务不可用", 503)
+        documents = list(documents or [])
+        if len(documents) != 2:
+            raise ExpenseValidationError("INCOMPLETE_DOCUMENT_SET", "必须完整生成结算单和审批单")
+        items = []
+        for original_name, source in documents:
+            name = self._text(original_name, field="文件名", maximum=200)
+            if not name.lower().endswith(".docx") or not hasattr(source, "read"):
+                raise ExpenseValidationError("INVALID_DOCUMENT", "生成文档无效")
+            source.seek(0)
+            items.append((source, name))
+
+        def finalize(connection):
             row = self.repository.get_reimbursement(connection, int(rid), lock=True)
-            if not row:
-                raise ExpenseError("NOT_FOUND", "报销项不存在", 404)
-            if row["status"] not in {"已确认", "已生成文档"}:
+            if not row or row["status"] not in {"已确认", "已生成文档"}:
                 raise ExpenseError("INVALID_STATUS", "请先确认报销项", 409)
             self.repository.update_reimbursement(connection, int(rid), {"status": "已生成文档", "updated_at": self._now()})
-            self._audit(connection, operation="GENERATE_DOCUMENTS", object_type="EXPENSE", object_id=rid)
+            self._audit(
+                connection, operation="GENERATE_DOCUMENTS", object_type="EXPENSE",
+                object_id=rid, actor_user_id=actor_user_id, request_id=request_id,
+                object_count=len(items),
+            )
+
+        return self.file_service.upload_expense_documents_atomic(
+            items, object_id=str(rid), actor_user_id=int(actor_user_id),
+            request_id=str(request_id), finalize_metadata=finalize,
+        )
 
     def delete_reimbursement(self, rid):
         with self.repository.engine.begin() as connection:
@@ -592,22 +673,29 @@ class ExpenseService:
                 self.repository.update_invoice(connection, invoice["id"], {"reimbursement_id": None, "status": "未匹配", "matched_payment_ids": []})
             for payment in payments:
                 self.repository.update_payment(connection, payment["id"], {"reimbursement_id": None, "status": "未匹配", "matched_invoice_ids": []})
+            archived = self.repository.archive_and_unlink_files(
+                connection, object_type="EXPENSE", object_id=int(rid)
+            )
             self.repository.delete_reimbursement(connection, int(rid))
-            self._audit(connection, operation="DELETE", object_type="EXPENSE", object_id=rid)
+            self._audit(connection, operation="DELETE", object_type="EXPENSE", object_id=rid, object_count=1 + archived)
 
     def delete_invoice(self, iid):
         with self.repository.engine.begin() as connection:
-            row = self.repository.get_invoice(connection, int(iid), lock=True)
-            if not row:
+            probe = self.repository.get_invoice(connection, int(iid))
+            if not probe:
                 raise ExpenseError("NOT_FOUND", "发票不存在", 404)
-            rid = row.get("reimbursement_id")
+            rid = probe.get("reimbursement_id")
             if rid:
                 self._require_draft(self.repository.get_reimbursement(connection, int(rid), lock=True))
+            row = self.repository.get_invoice(connection, int(iid), lock=True)
+            if not row or row.get("reimbursement_id") != rid or row.get("matched_payment_ids") != probe.get("matched_payment_ids"):
+                raise ExpenseError("CONCURRENT_CHANGE", "发票状态已变更，请重试", 409)
+            payment_ids = sorted(int(value) for value in (row.get("matched_payment_ids") or []))
+            payments = [self.repository.get_payment(connection, pid, lock=True) for pid in payment_ids]
             archived = self.repository.archive_and_unlink_files(
                 connection, object_type="INVOICE", object_id=int(iid)
             )
-            for pid in row.get("matched_payment_ids") or []:
-                payment = self.repository.get_payment(connection, int(pid), lock=True)
+            for pid, payment in zip(payment_ids, payments):
                 if payment:
                     remaining = [value for value in (payment.get("matched_invoice_ids") or []) if int(value) != int(iid)]
                     values = {"matched_invoice_ids": remaining}
@@ -621,17 +709,21 @@ class ExpenseService:
 
     def delete_payment(self, pid):
         with self.repository.engine.begin() as connection:
-            row = self.repository.get_payment(connection, int(pid), lock=True)
-            if not row:
+            probe = self.repository.get_payment(connection, int(pid))
+            if not probe:
                 raise ExpenseError("NOT_FOUND", "支付记录不存在", 404)
-            rid = row.get("reimbursement_id")
+            rid = probe.get("reimbursement_id")
             if rid:
                 self._require_draft(self.repository.get_reimbursement(connection, int(rid), lock=True))
+            invoice_ids = sorted(int(value) for value in (probe.get("matched_invoice_ids") or []))
+            invoices = [self.repository.get_invoice(connection, iid, lock=True) for iid in invoice_ids]
+            row = self.repository.get_payment(connection, int(pid), lock=True)
+            if not row or row.get("reimbursement_id") != rid or row.get("matched_invoice_ids") != probe.get("matched_invoice_ids"):
+                raise ExpenseError("CONCURRENT_CHANGE", "支付记录状态已变更，请重试", 409)
             archived = self.repository.archive_and_unlink_files(
                 connection, object_type="PAYMENT", object_id=int(pid)
             )
-            for iid in row.get("matched_invoice_ids") or []:
-                invoice = self.repository.get_invoice(connection, int(iid), lock=True)
+            for iid, invoice in zip(invoice_ids, invoices):
                 if invoice:
                     remaining = [value for value in (invoice.get("matched_payment_ids") or []) if int(value) != int(pid)]
                     values = {"matched_payment_ids": remaining}

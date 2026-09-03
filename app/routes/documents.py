@@ -193,6 +193,7 @@ import os
 import io
 import json
 import uuid as _uuid
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from flask import Blueprint, current_app, render_template, request, jsonify, session, send_file, redirect, url_for
 from werkzeug.exceptions import HTTPException
@@ -432,8 +433,8 @@ def api_auto_fill(rid):
         return jsonify({'success': False, 'error': '模板不存在'}), 404
 
     # 获取当前报销项的发票和支付记录
-    invoices = get_invoices(reimbursement_id=rid)
-    payments = get_payments(reimbursement_id=rid)
+    invoices = get_invoices(reimbursement_id=rid, all_rows=True)
+    payments = get_payments(reimbursement_id=rid, all_rows=True)
 
     # 构建 session context
     session_user = {'name': session.get('name', ''), 'dept': session.get('dept', ''), 'title': session.get('title', '')}
@@ -495,7 +496,7 @@ def api_auto_fill(rid):
                 cnt = len(matched)
 
                 if attr == 'amount_sum':
-                    total = sum(float(i.get('amount', 0) or 0) for i in matched)
+                    total = sum((Decimal(str(i.get('amount', 0) or 0)) for i in matched), Decimal('0'))
                     suggestions[fid] = {
                         'value': f'{total:.2f}',
                         'source': f'invoice:{inv_type}.amount ({cnt}条)',
@@ -673,7 +674,7 @@ def api_auto_fill(rid):
                 pay_type, attr = parts[1].split('.')
                 matched = [p for p in payments if pay_type in p.get('type', '')]
                 if attr == 'amount_sum':
-                    total = sum(float(p.get('amount', 0) or 0) for p in matched)
+                    total = sum((Decimal(str(p.get('amount', 0) or 0)) for p in matched), Decimal('0'))
                     cnt = len(matched)
                     suggestions[fid] = {
                         'value': f'{total:.2f}',
@@ -709,13 +710,13 @@ def api_auto_fill(rid):
         }
 
     # 计算 amount_to_cn（基于当前 suggestions 中的申报金额）
-    total_amount = 0.0
+    total_amount = Decimal('0')
     for fid, sug in suggestions.items():
         lbl = fields_dict.get(fid, {}).get('label', '')
         if '申报金额' in lbl and '核准' not in lbl:
             try:
-                total_amount += float(sug.get('value') or 0)
-            except (ValueError, TypeError):
+                total_amount += Decimal(str(sug.get('value') or 0))
+            except (InvalidOperation, ValueError, TypeError):
                 pass
     if total_amount > 0:
         suggestions['T0[12,2]'] = {
@@ -762,8 +763,8 @@ def api_download_document(rid, doc_id):
     field_values = doc.get('fields', {})
 
     # 构建 context
-    invoices = get_invoices(reimbursement_id=rid)
-    payments = get_payments(reimbursement_id=rid)
+    invoices = get_invoices(reimbursement_id=rid, all_rows=True)
+    payments = get_payments(reimbursement_id=rid, all_rows=True)
     session_user = {'name': session.get('name', ''), 'dept': session.get('dept', ''), 'title': session.get('title', '')}
     context = {
         'session': {
@@ -831,8 +832,8 @@ def api_merge_print(rid):
         return jsonify({'success': False, 'error': '没有可打印的单据'}), 400
 
     # 构建 context
-    invoices = get_invoices(reimbursement_id=rid)
-    payments = get_payments(reimbursement_id=rid)
+    invoices = get_invoices(reimbursement_id=rid, all_rows=True)
+    payments = get_payments(reimbursement_id=rid, all_rows=True)
     session_user = {'name': session.get('name', ''), 'dept': session.get('dept', ''), 'title': session.get('title', '')}
     context = {
         'session': {
@@ -873,7 +874,10 @@ def api_merge_print(rid):
         )
 
     # 多个单据必须全部进入输出，不能降级为第一份。
-    buf = io.BytesIO(_merge_docx_and_images(docx_bytes_list, [], []))
+    try:
+        buf = io.BytesIO(_merge_docx_and_images(docx_bytes_list, [], []))
+    except Exception as exc:
+        return _safe_error(exc, "单据合并失败")
     return send_file(
         buf,
         mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -904,8 +908,8 @@ def api_merge_print_full(rid):
         return jsonify({'success': False, 'error': '没有可打印的单据'}), 400
 
     # 获取所有发票和支付记录
-    invoices = get_invoices(reimbursement_id=rid)
-    payments = get_payments(reimbursement_id=rid)
+    invoices = get_invoices(reimbursement_id=rid, all_rows=True)
+    payments = get_payments(reimbursement_id=rid, all_rows=True)
 
     session_user = {
         'name': session.get('name', ''),
@@ -941,7 +945,10 @@ def api_merge_print_full(rid):
         return jsonify({'success': False, 'error': '所有单据生成失败'}), 500
 
     # 合并为一份 Word
-    merged_docx = _merge_docx_and_images(docx_bytes_list, invoices, payments)
+    try:
+        merged_docx = _merge_docx_and_images(docx_bytes_list, invoices, payments)
+    except Exception as exc:
+        return _safe_error(exc, "单据合并失败")
 
     buf = io.BytesIO(merged_docx)
     return send_file(
@@ -963,11 +970,11 @@ def _build_report_context(rid):
     if not reimb:
         return None
 
-    invoices = get_invoices(reimbursement_id=rid)
-    payments = get_payments(reimbursement_id=rid)
+    invoices = get_invoices(reimbursement_id=rid, all_rows=True)
+    payments = get_payments(reimbursement_id=rid, all_rows=True)
 
     # 发票金额汇总
-    total_invoice = sum(float(inv.get('amount') or 0) for inv in invoices)
+    total_invoice = sum((Decimal(str(inv.get('amount') or 0)) for inv in invoices), Decimal('0'))
     # 最早/最晚发票日期
     dates = [inv.get('date', '') for inv in invoices if inv.get('date')]
     earliest = min(dates) if dates else ''
@@ -1048,7 +1055,10 @@ def api_generate_report(rid):
     invoices = context.get('invoices', [])
     payments = context.get('payments', [])
     if invoices or payments:
-        docx_bytes = _merge_docx_and_images([('完整报销单', docx_bytes)], invoices, payments)
+        try:
+            docx_bytes = _merge_docx_and_images([('完整报销单', docx_bytes)], invoices, payments)
+        except Exception as exc:
+            return _safe_error(exc, "完整报销单合并失败")
 
     # 直接流式返回，不在运行时目录留下带业务内容的副本。
     ts = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -1202,8 +1212,8 @@ def _merge_docx_and_images(docx_bytes_list, invoices, payments):
                         # 将元素复制到新文档
                         new_elem = etree.fromstring(etree.tostring(elem))
                         merged.element.body.append(new_elem)
-        except Exception as e:
-            merged.add_paragraph(f'[内容读取失败: {doc_type}]')
+        except Exception as exc:
+            raise ValueError("选中单据无法读取，已取消合并") from exc
 
     # ============================================================
     # 发票和支付记录图片 — 统一放在文档末尾
@@ -1219,11 +1229,14 @@ def _merge_docx_and_images(docx_bytes_list, invoices, payments):
             try:
                 merged.add_heading(label, level=2)
                 merged.add_paragraph(info_text).runs[0].font.size = Pt(9)
-                for png_bytes in _pdf_or_image_to_png_bytes(payload, original_name):
+                rendered = list(_pdf_or_image_to_png_bytes(payload, original_name))
+                if not rendered:
+                    raise ValueError("附件无可合并内容")
+                for png_bytes in rendered:
                     merged.add_picture(io.BytesIO(png_bytes), width=Inches(5.5))
                     merged.add_paragraph('')
-            except Exception:
-                merged.add_paragraph(f'[{label}加载失败]')
+            except Exception as exc:
+                raise ValueError("选中附件无法读取，已取消合并") from exc
 
     buf = io.BytesIO()
     merged.save(buf)

@@ -5,6 +5,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import io
+from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import pytest
 import sqlalchemy as sa
@@ -42,6 +44,13 @@ def test_expense_runtime_has_bounded_queries_and_no_legacy_preview_paths():
     assert "/app/uploads/" not in template_source
     assert "file_path" not in template_source
     assert "controlledFile" in template_source
+
+
+def test_document_template_avoids_dynamic_inline_document_handlers():
+    source = (Path(__file__).parents[1] / "templates" / "expense" / "documents.html").read_text(encoding="utf-8")
+    assert 'onclick="deleteDoc(' not in source
+    assert "data-doc-id" in source
+    assert "escapeHtml(prefillValue)" in source
 
 
 @pytest.fixture(scope="module")
@@ -86,6 +95,42 @@ def test_postgresql_crud_uses_decimal_dates_items_and_protects_control_fields(ex
         expense_service.update_reimbursement(rid, status="已确认")
 
 
+def test_postgresql_confirm_uses_all_rows_beyond_first_page(expense_service):
+    from app.services.expenses import ExpenseValidationError
+
+    rid, _ = expense_service.create_reimbursement(title="501 条全集确认")
+    now = datetime.now(timezone.utc)
+    invoices = [{
+        "reimbursement_id": rid, "invoice_no": f"BULK-{index}", "amount": Decimal("1.00"),
+        "tax_amount": Decimal("0.00"), "price_ex_tax": Decimal("0.00"), "status": "已匹配",
+        "matched_payment_ids": [], "created_at": now,
+    } for index in range(501)]
+    payments = [{
+        "reimbursement_id": rid, "payment_no": f"BULK-PAY-{index}",
+        "amount": Decimal("1.00") if index < 500 else Decimal("2.00"),
+        "status": "已匹配", "matched_invoice_ids": [], "created_at": now,
+    } for index in range(501)]
+    with expense_service.repository.engine.begin() as connection:
+        connection.execute(expense_service.repository.invoices.insert(), invoices)
+        connection.execute(expense_service.repository.payments.insert(), payments)
+    with pytest.raises(ExpenseValidationError, match="金额必须相等"):
+        expense_service.confirm(rid)
+    assert expense_service.get_reimbursement(rid)["status"] == "草稿"
+
+
+def test_confirmed_document_source_rows_are_immutable(expense_service):
+    from app.services.expenses import ExpenseError
+
+    rid, _ = expense_service.create_reimbursement(title="文档来源快照")
+    iid = expense_service.create_invoice(reimbursement_id=rid, amount="18.20")
+    pid = expense_service.create_payment(reimbursement_id=rid, amount="18.20", pay_date="2026-09-03")
+    expense_service.confirm(rid)
+    with pytest.raises(ExpenseError, match="草稿"):
+        expense_service.update_invoice(iid, amount="19.20")
+    with pytest.raises(ExpenseError, match="草稿"):
+        expense_service.update_payment(pid, amount="19.20")
+
+
 def test_cross_reimbursement_detach_is_rejected_without_partial_write(expense_service):
     from app.services.expenses import ExpenseError
 
@@ -120,6 +165,25 @@ def test_manual_match_cannot_overwrite_an_existing_pair(expense_service):
         expense_service.manual_match([first_invoice], [second_payment], rid=rid)
     assert expense_service.get_payment(first_payment)["matched_invoice_ids"] == [first_invoice]
     assert expense_service.get_payment(second_payment)["reimbursement_id"] is None
+
+
+def test_list_api_exposes_pagination_total_and_next(expense_service, tmp_path):
+    from app import create_app
+
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "expense-page-test", "DATA_DIR": str(tmp_path),
+        "SESSION_FILE_DIR": str(tmp_path / "sessions"), "SECURITY_AUTH_ENABLED": False,
+        "CSRF_ENABLED": False, "AI_PROVIDER": "DISABLED", "EXPENSE_SERVICE": expense_service,
+    })
+    client = app.test_client()
+    with client.session_transaction() as state:
+        state.update({"user": "teacher", "user_id": 1})
+    response = client.get("/expense/api/invoices?limit=2&offset=0")
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert len(payload["invoices"]) <= 2
+    assert isinstance(payload["total"], int)
+    assert payload["next_offset"] == (2 if payload["total"] > 2 else None)
 
 
 def test_concurrent_number_generation_has_no_duplicates(expense_service):
@@ -189,6 +253,227 @@ def test_first_attachment_failure_rolls_back_business_row(expense_service):
     with service.repository.engine.connect() as connection:
         after = connection.scalar(sa.select(sa.func.count()).select_from(service.repository.invoices))
     assert after == before
+
+
+def test_generated_document_batch_failure_does_not_change_status(expense_service):
+    class FailingFiles:
+        def upload_expense_documents_atomic(self, *_args, **_kwargs):
+            raise RuntimeError("injected generated-file failure")
+
+    from app.services.expenses import ExpenseService
+    service = ExpenseService(expense_service.repository, file_service=FailingFiles())
+    rid, _ = service.create_reimbursement(title="文档原子性")
+    with service.repository.engine.begin() as connection:
+        service.repository.update_reimbursement(connection, rid, {"status": "已确认"})
+    with pytest.raises(RuntimeError, match="generated-file"):
+        service.persist_generated_documents(
+            rid, [
+                ("settlement.docx", io.BytesIO(b"PKfake-one")),
+                ("approval.docx", io.BytesIO(b"PKfake-two")),
+            ], actor_user_id=1, request_id="doc-fail"
+        )
+    assert service.get_reimbursement(rid)["status"] == "已确认"
+
+
+def _valid_docx_bytes(text):
+    from docx import Document
+    document = Document()
+    document.add_paragraph(text)
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def test_generated_document_batch_persists_two_real_files_and_state_atomically(expense_service, tmp_path):
+    from docx import Document
+    from app.repositories.files import FilesRepository
+    from app.services.expenses import ExpenseService
+    from app.services.files import FileService
+
+    class AuditRecorder:
+        def record(self, connection, **event): return event
+
+    engine = expense_service.repository.engine
+    with engine.begin() as connection:
+        user_id = connection.scalar(sa.text(
+            "INSERT INTO users (username,password,role,name) VALUES (:username,'x','user','张老师') RETURNING id"
+        ), {"username": f"doc-success-{os.getpid()}"})
+    files = FileService(FilesRepository(engine), AuditRecorder(), storage_root=tmp_path / "success", max_bytes=1024 * 1024, preview_max_bytes=1024 * 1024)
+    service = ExpenseService(expense_service.repository, audit_service=AuditRecorder(), file_service=files)
+    rid, _ = service.create_reimbursement(title="真实双文档")
+    with engine.begin() as connection:
+        service.repository.update_reimbursement(connection, rid, {"status": "已确认"})
+    try:
+        stored = service.persist_generated_documents(
+            rid,
+            [("结算单.docx", io.BytesIO(_valid_docx_bytes("SETTLEMENT"))),
+             ("审批单.docx", io.BytesIO(_valid_docx_bytes("APPROVAL")))],
+            actor_user_id=user_id, request_id="doc-success",
+        )
+        assert len(stored) == 2
+        assert service.get_reimbursement(rid)["status"] == "已生成文档"
+        linked = files.list_for_object(object_type="EXPENSE", object_id=str(rid))
+        assert len(linked) == 2
+        with engine.connect() as connection:
+            assert connection.scalar(sa.text(
+                "SELECT count(*) FROM stored_file_versions WHERE file_id IN (SELECT file_id FROM object_files WHERE object_type='EXPENSE' AND object_id=:rid)"
+            ), {"rid": str(rid)}) == 2
+        for item in stored:
+            opened = files.open_version_stream(item["fileId"], 1, object_type="EXPENSE", object_id=str(rid))
+            try:
+                Document(opened["stream"])
+            finally:
+                opened["stream"].close()
+    finally:
+        with engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM object_files WHERE object_type='EXPENSE' AND object_id=:rid"), {"rid": str(rid)})
+            connection.execute(sa.text("DELETE FROM stored_file_versions WHERE file_id IN (SELECT id FROM stored_files WHERE created_by=:uid)"), {"uid": user_id})
+            connection.execute(sa.text("DELETE FROM stored_files WHERE created_by=:uid"), {"uid": user_id})
+            connection.execute(sa.text("DELETE FROM expense_reimbursement WHERE id=:rid"), {"rid": rid})
+            connection.execute(sa.text("DELETE FROM users WHERE id=:uid"), {"uid": user_id})
+
+
+def test_second_generated_document_move_failure_leaves_no_db_or_disk_residue(expense_service, tmp_path, monkeypatch):
+    import app.services.files as files_module
+    from app.repositories.files import FilesRepository
+    from app.services.expenses import ExpenseService
+    from app.services.files import FileService
+
+    class AuditRecorder:
+        def record(self, connection, **event): return event
+
+    engine = expense_service.repository.engine
+    with engine.begin() as connection:
+        user_id = connection.scalar(sa.text(
+            "INSERT INTO users (username,password,role,name) VALUES (:username,'x','user','李老师') RETURNING id"
+        ), {"username": f"doc-failure-{os.getpid()}"})
+    root = tmp_path / "failure"
+    files = FileService(FilesRepository(engine), AuditRecorder(), storage_root=root, max_bytes=1024 * 1024, preview_max_bytes=1024 * 1024)
+    service = ExpenseService(expense_service.repository, audit_service=AuditRecorder(), file_service=files)
+    rid, _ = service.create_reimbursement(title="双文档回滚")
+    with engine.begin() as connection:
+        service.repository.update_reimbursement(connection, rid, {"status": "已确认"})
+    real_replace = files_module.os.replace
+    moves = 0
+
+    def fail_second(source, destination):
+        nonlocal moves
+        moves += 1
+        if moves == 2:
+            raise OSError("injected second move failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(files_module.os, "replace", fail_second)
+    try:
+        with pytest.raises(OSError, match="second move"):
+            service.persist_generated_documents(
+                rid,
+                [("结算单.docx", io.BytesIO(_valid_docx_bytes("ONE"))),
+                 ("审批单.docx", io.BytesIO(_valid_docx_bytes("TWO")))],
+                actor_user_id=user_id, request_id="doc-failure",
+            )
+        assert service.get_reimbursement(rid)["status"] == "已确认"
+        with engine.connect() as connection:
+            assert connection.scalar(sa.text("SELECT count(*) FROM object_files WHERE object_type='EXPENSE' AND object_id=:rid"), {"rid": str(rid)}) == 0
+            assert connection.scalar(sa.text("SELECT count(*) FROM stored_files WHERE created_by=:uid"), {"uid": user_id}) == 0
+        assert not [path for path in root.rglob('*') if path.is_file()]
+    finally:
+        monkeypatch.setattr(files_module.os, "replace", real_replace)
+        with engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM expense_reimbursement WHERE id=:rid"), {"rid": rid})
+            connection.execute(sa.text("DELETE FROM users WHERE id=:uid"), {"uid": user_id})
+
+
+def test_finance_attachment_writes_reject_confirmed_parent_without_orphans(expense_service, tmp_path):
+    from app.repositories.files import FilesRepository
+    from app.services.expenses import ExpenseService
+    from app.services.files import FileService, FileServiceError
+
+    class AuditRecorder:
+        def record(self, connection, **event): return event
+
+    engine = expense_service.repository.engine
+    with engine.begin() as connection:
+        user_id = connection.scalar(sa.text(
+            "INSERT INTO users (username,password,role,name) VALUES (:username,'x','user','王老师') RETURNING id"
+        ), {"username": f"finance-policy-{os.getpid()}"})
+    files = FileService(FilesRepository(engine), AuditRecorder(), storage_root=tmp_path / "policy", max_bytes=1024 * 1024, preview_max_bytes=1024 * 1024)
+    service = ExpenseService(expense_service.repository, audit_service=AuditRecorder(), file_service=files)
+    rid, _ = service.create_reimbursement(title="已确认不可写")
+    with engine.begin() as connection:
+        service.repository.update_reimbursement(connection, rid, {"status": "已确认"})
+        before = connection.scalar(sa.select(sa.func.count()).select_from(service.repository.invoices))
+    try:
+        with pytest.raises(FileServiceError, match="终态"):
+            service.create_invoice_with_upload(
+                io.BytesIO(b"\x89PNG\r\n\x1a\nblocked"), "blocked.png", reimbursement_id=rid,
+                actor_user_id=user_id, request_id="blocked-child", amount="1.00",
+            )
+        with pytest.raises(FileServiceError, match="终态"):
+            files.upload(io.BytesIO(b"\x89PNG\r\n\x1a\nblocked"), original_name="blocked.png", object_type="EXPENSE", object_id=str(rid), actor_user_id=user_id, request_id="blocked-parent")
+        with engine.connect() as connection:
+            assert connection.scalar(sa.select(sa.func.count()).select_from(service.repository.invoices)) == before
+            assert connection.scalar(sa.text("SELECT count(*) FROM stored_files WHERE created_by=:uid"), {"uid": user_id}) == 0
+    finally:
+        with engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM expense_reimbursement WHERE id=:rid"), {"rid": rid})
+            connection.execute(sa.text("DELETE FROM users WHERE id=:uid"), {"uid": user_id})
+
+
+def test_deleting_draft_expense_archives_its_controlled_files(expense_service, tmp_path):
+    from app.repositories.files import FilesRepository
+    from app.services.expenses import ExpenseService
+    from app.services.files import FileService
+
+    class AuditRecorder:
+        def record(self, connection, **event): return event
+
+    engine = expense_service.repository.engine
+    with engine.begin() as connection:
+        user_id = connection.scalar(sa.text(
+            "INSERT INTO users (username,password,role,name) VALUES (:username,'x','user','王老师') RETURNING id"
+        ), {"username": f"expense-delete-{os.getpid()}"})
+    files = FileService(FilesRepository(engine), AuditRecorder(), storage_root=tmp_path / "delete", max_bytes=1024 * 1024, preview_max_bytes=1024 * 1024)
+    service = ExpenseService(expense_service.repository, audit_service=AuditRecorder(), file_service=files)
+    rid, _ = service.create_reimbursement(title="删除附件归档")
+    try:
+        stored = files.upload(
+            io.BytesIO(b"\x89PNG\r\n\x1a\nexpense"), original_name="expense.png",
+            object_type="EXPENSE", object_id=str(rid), actor_user_id=user_id, request_id="expense-delete",
+        )
+        service.delete_reimbursement(rid)
+        assert service.get_reimbursement(rid) is None
+        with engine.connect() as connection:
+            assert connection.scalar(sa.text("SELECT count(*) FROM object_files WHERE object_type='EXPENSE' AND object_id=:rid"), {"rid": str(rid)}) == 0
+            assert connection.scalar(sa.text("SELECT status FROM stored_files WHERE id=:fid"), {"fid": stored["fileId"]}) == "ARCHIVED"
+    finally:
+        with engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM stored_file_versions WHERE file_id=:fid"), {"fid": locals().get("stored", {}).get("fileId")})
+            connection.execute(sa.text("DELETE FROM stored_files WHERE id=:fid"), {"fid": locals().get("stored", {}).get("fileId")})
+            connection.execute(sa.text("DELETE FROM expense_reimbursement WHERE id=:rid"), {"rid": rid})
+            connection.execute(sa.text("DELETE FROM users WHERE id=:uid"), {"uid": user_id})
+
+
+def test_cross_detach_operations_complete_without_deadlock(expense_service):
+    from app.services.expenses import ExpenseError
+
+    iid = expense_service.create_invoice(amount="31.00")
+    pid = expense_service.create_payment(amount="31.00", pay_date="2026-09-03")
+    rid = expense_service.manual_match([iid], [pid], title="锁顺序")
+
+    def detach(kind):
+        try:
+            if kind == "invoice": expense_service.detach_invoice(rid, iid)
+            else: expense_service.detach_payment(rid, pid)
+            return "ok"
+        except ExpenseError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(detach, ("invoice", "payment")))
+    assert "ok" in results
+    assert expense_service.get_invoice(iid)["reimbursement_id"] is None
+    assert expense_service.get_payment(pid)["reimbursement_id"] is None
 
 
 def test_manual_match_failure_injection_rolls_back_all_relations(expense_service, monkeypatch):
@@ -299,6 +584,21 @@ def test_multiple_documents_are_really_present_in_merged_word():
     assert "SECOND-UNIQUE-CONTENT" in text
 
 
+def test_merge_fails_if_any_selected_docx_is_invalid():
+    from flask import Flask
+    from app.routes.documents import _merge_docx_and_images
+
+    with Flask(__name__).app_context(), pytest.raises(Exception):
+        _merge_docx_and_images([("broken", b"not-a-docx")], [], [])
+
+
+def test_currency_helpers_keep_decimal_exactness():
+    from app.document_engine import _cn_number, _parse_amount
+
+    assert _parse_amount("0.29") == Decimal("0.29")
+    assert _cn_number(Decimal("0.29")) == "贰角玖分"
+
+
 def test_legacy_page_urls_redirect_instead_of_missing_template_500(tmp_path):
     from app import create_app
 
@@ -339,6 +639,16 @@ def test_upload_survives_ocr_outage_and_internal_errors_do_not_leak(tmp_path, mo
     from app import create_app
     import app.routes.expense as expense_routes
 
+    class InspectionFiles:
+        @contextmanager
+        def inspect_upload(self, stream, original_name):
+            path = tmp_path / original_name
+            path.write_bytes(stream.read())
+            try:
+                yield path
+            finally:
+                path.unlink(missing_ok=True)
+
     class FakeExpenseService:
         def find_duplicate_invoice(self, *_args): return None
         def create_invoice_with_upload(self, stream, original_name, **kwargs):
@@ -351,7 +661,7 @@ def test_upload_survives_ocr_outage_and_internal_errors_do_not_leak(tmp_path, mo
         "TESTING": True, "SECRET_KEY": "expense-upload-test",
         "DATA_DIR": str(tmp_path), "SESSION_FILE_DIR": str(tmp_path / "sessions"),
         "SECURITY_AUTH_ENABLED": False, "CSRF_ENABLED": False, "AI_PROVIDER": "DISABLED",
-        "EXPENSE_SERVICE": FakeExpenseService(),
+        "EXPENSE_SERVICE": FakeExpenseService(), "FILE_SERVICE": InspectionFiles(),
     })
     monkeypatch.setattr(expense_routes, "recognize_file", lambda _path: (_ for _ in ()).throw(RuntimeError("OCR offline")))
     client = app.test_client()
@@ -367,6 +677,65 @@ def test_upload_survives_ocr_outage_and_internal_errors_do_not_leak(tmp_path, mo
     leaked = client.get("/expense/api/reimbursements")
     assert leaked.status_code == 500
     assert "/secret/" not in leaked.get_data(as_text=True)
+
+
+def test_auto_upload_is_validated_before_ocr_and_routes_by_filename(tmp_path, monkeypatch):
+    from app import create_app
+    import app.routes.expense as expense_routes
+    from app.services.files import FileServiceError
+
+    calls = []
+
+    class InspectionFiles:
+        @contextmanager
+        def inspect_upload(self, stream, original_name):
+            calls.append(("validate", original_name))
+            if original_name.endswith(".exe"):
+                raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "不支持该文件类型", 415)
+            path = tmp_path / original_name
+            path.write_bytes(stream.read())
+            try:
+                yield path
+            finally:
+                path.unlink(missing_ok=True)
+
+    class AutoService:
+        def find_duplicate_payment(self, *_args): return None
+        def create_payment_with_upload(self, stream, original_name, **kwargs):
+            calls.append(("create-payment", original_name))
+            return 9, {"originalName": original_name}
+        def auto_match(self, **_kwargs):
+            raise RuntimeError("matching temporarily unavailable")
+
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "expense-auto-test", "DATA_DIR": str(tmp_path),
+        "SESSION_FILE_DIR": str(tmp_path / "sessions"), "SECURITY_AUTH_ENABLED": False,
+        "CSRF_ENABLED": False, "AI_PROVIDER": "DISABLED", "EXPENSE_SERVICE": AutoService(),
+        "FILE_SERVICE": InspectionFiles(),
+    })
+    monkeypatch.setattr(expense_routes, "recognize_payment", lambda _path: {"amount": "8.00", "pay_date": "2026-09-03"})
+    monkeypatch.setattr(expense_routes, "recognize_file", lambda _path: (_ for _ in ()).throw(AssertionError("wrong OCR path")))
+    client = app.test_client()
+    with client.session_transaction() as state:
+        state.update({"user": "teacher", "user_id": 1, "name": "张老师"})
+    rejected = client.post("/expense/api/upload", data={"type": "auto", "file": (io.BytesIO(b"MZ"), "evil.exe")}, content_type="multipart/form-data")
+    assert rejected.status_code == 415
+    assert not any(kind.startswith("ocr") for kind, _ in calls)
+    accepted = client.post("/expense/api/upload", data={"type": "auto", "file": (io.BytesIO(b"image"), "微信支付凭证.png")}, content_type="multipart/form-data")
+    payload = accepted.get_json()
+    assert accepted.status_code == 200
+    assert payload["success"] is True and payload["type"] == "payment"
+    assert "match_warning" in payload
+
+
+def test_reimbursement_upload_compatibility_url_is_registered(tmp_path):
+    from app import create_app
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "expense-route-alias", "DATA_DIR": str(tmp_path),
+        "SESSION_FILE_DIR": str(tmp_path / "sessions"), "SECURITY_AUTH_ENABLED": False,
+        "CSRF_ENABLED": False, "AI_PROVIDER": "DISABLED",
+    })
+    assert "/expense/api/reimbursements/<int:rid>/upload" in {rule.rule for rule in app.url_map.iter_rules()}
 
 
 def test_postgresql_route_contract_supports_crud_edit_and_confirm(expense_service, tmp_path):
@@ -404,3 +773,103 @@ def test_postgresql_route_contract_supports_crud_edit_and_confirm(expense_servic
     rejected = client.put(f"/expense/api/invoices/{iid}", json={"amount": 32.0})
     assert rejected.status_code == 409
     assert rejected.get_json()["code"] == "INVALID_STATUS"
+
+
+def test_postgresql_reimbursement_auto_upload_route_attaches_real_file(expense_service, tmp_path, monkeypatch):
+    from app import create_app
+    import app.routes.expense as expense_routes
+    from app.repositories.files import FilesRepository
+    from app.services.expenses import ExpenseService
+    from app.services.files import FileService
+
+    class AuditRecorder:
+        def record(self, connection, **event): return event
+
+    engine = expense_service.repository.engine
+    with engine.begin() as connection:
+        user_id = connection.scalar(sa.text(
+            "INSERT INTO users (username,password,role,name) VALUES (:username,'x','user','张老师') RETURNING id"
+        ), {"username": f"route-upload-{os.getpid()}"})
+    files = FileService(FilesRepository(engine), AuditRecorder(), storage_root=tmp_path / "route-files", max_bytes=1024 * 1024, preview_max_bytes=1024 * 1024)
+    service = ExpenseService(expense_service.repository, audit_service=AuditRecorder(), file_service=files)
+    rid, _ = service.create_reimbursement(title="页面上传")
+    monkeypatch.setattr(expense_routes, "recognize_file", lambda _path: {"fields": {"invoice_no": "AUTO-ROUTE", "amount": "9.80", "date": "2026-09-03"}, "text": "ignored"})
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "expense-route-upload", "DATA_DIR": str(tmp_path),
+        "SESSION_FILE_DIR": str(tmp_path / "sessions-upload"), "SECURITY_AUTH_ENABLED": False,
+        "CSRF_ENABLED": False, "AI_PROVIDER": "DISABLED", "DATABASE_ENGINE": engine,
+        "EXPENSE_SERVICE": service, "FILE_SERVICE": files,
+    })
+    client = app.test_client()
+    with client.session_transaction() as state:
+        state.update({"user": "teacher", "user_id": user_id, "name": "张老师"})
+    try:
+        response = client.post(
+            f"/expense/api/reimbursements/{rid}/upload",
+            data={"type": "auto", "file": (io.BytesIO(b"\x89PNG\r\n\x1a\ninvoice"), "scan.png")},
+            content_type="multipart/form-data",
+        )
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["success"] is True and payload["type"] == "invoice"
+        invoice = service.get_invoice(payload["record_id"])
+        assert invoice["reimbursement_id"] == rid
+        assert len(invoice["files"]) == 1
+    finally:
+        with engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM object_files WHERE object_type='INVOICE' AND object_id IN (SELECT id::text FROM expense_invoice WHERE reimbursement_id=:rid)"), {"rid": rid})
+            connection.execute(sa.text("DELETE FROM stored_file_versions WHERE file_id IN (SELECT id FROM stored_files WHERE created_by=:uid)"), {"uid": user_id})
+            connection.execute(sa.text("DELETE FROM stored_files WHERE created_by=:uid"), {"uid": user_id})
+            connection.execute(sa.text("DELETE FROM expense_invoice WHERE reimbursement_id=:rid"), {"rid": rid})
+            connection.execute(sa.text("DELETE FROM expense_reimbursement WHERE id=:rid"), {"rid": rid})
+            connection.execute(sa.text("DELETE FROM users WHERE id=:uid"), {"uid": user_id})
+
+
+def test_postgresql_generate_route_returns_two_downloadable_docx_files(expense_service, tmp_path):
+    from docx import Document
+    from app import create_app
+    from app.repositories.files import FilesRepository
+    from app.services.expenses import ExpenseService
+    from app.services.files import FileService
+
+    class AuditRecorder:
+        def record(self, connection, **event): return event
+
+    engine = expense_service.repository.engine
+    with engine.begin() as connection:
+        user_id = connection.scalar(sa.text(
+            "INSERT INTO users (username,password,role,name) VALUES (:username,'x','user','李老师') RETURNING id"
+        ), {"username": f"route-docs-{os.getpid()}"})
+    files = FileService(FilesRepository(engine), AuditRecorder(), storage_root=tmp_path / "route-docs", max_bytes=1024 * 1024, preview_max_bytes=1024 * 1024)
+    service = ExpenseService(expense_service.repository, audit_service=AuditRecorder(), file_service=files)
+    rid, _ = service.create_reimbursement(title="生成两份文档")
+    with engine.begin() as connection:
+        service.repository.update_reimbursement(connection, rid, {"status": "已确认"})
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "expense-route-docs", "DATA_DIR": str(tmp_path),
+        "SESSION_FILE_DIR": str(tmp_path / "sessions-docs"), "SECURITY_AUTH_ENABLED": False,
+        "CSRF_ENABLED": False, "AI_PROVIDER": "DISABLED", "DATABASE_ENGINE": engine,
+        "EXPENSE_SERVICE": service, "FILE_SERVICE": files,
+    })
+    client = app.test_client()
+    with client.session_transaction() as state:
+        state.update({"user": "teacher", "user_id": user_id, "name": "李老师"})
+    try:
+        response = client.post(f"/expense/api/reimbursements/{rid}/generate_docs")
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["success"] is True and payload["settlement"] is True
+        assert payload["settlement_path"] != payload["approval_path"]
+        assert len(payload["documents"]) == 2
+        for key in ("settlement_path", "approval_path"):
+            downloaded = client.get(payload[key])
+            assert downloaded.status_code == 200
+            Document(io.BytesIO(downloaded.data))
+        assert service.get_reimbursement(rid)["status"] == "已生成文档"
+    finally:
+        with engine.begin() as connection:
+            connection.execute(sa.text("DELETE FROM object_files WHERE object_type='EXPENSE' AND object_id=:rid"), {"rid": str(rid)})
+            connection.execute(sa.text("DELETE FROM stored_file_versions WHERE file_id IN (SELECT id FROM stored_files WHERE created_by=:uid)"), {"uid": user_id})
+            connection.execute(sa.text("DELETE FROM stored_files WHERE created_by=:uid"), {"uid": user_id})
+            connection.execute(sa.text("DELETE FROM expense_reimbursement WHERE id=:rid"), {"rid": rid})
+            connection.execute(sa.text("DELETE FROM users WHERE id=:uid"), {"uid": user_id})

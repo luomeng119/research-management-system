@@ -89,7 +89,32 @@ class FilesRepository:
                 value = int(object_id)
             except (TypeError, ValueError):
                 return None
-        has_write_status = object_type in {"PROPOSAL", "STANDARD", "TEMPLATE"} and "status" in table.c
+        if object_type in {"INVOICE", "PAYMENT"}:
+            reimbursements = sa.Table(
+                "expense_reimbursement", sa.MetaData(), autoload_with=connection
+            )
+            statement = sa.select(table.c.reimbursement_id, table.c.status).where(table.c[key] == value).limit(1)
+            child = connection.execute(statement).mappings().first()
+            if child is None:
+                return None
+            if child["reimbursement_id"] is None:
+                locked = statement.with_for_update(of=table) if lock and connection.dialect.name == "postgresql" else statement
+                current = connection.execute(locked).mappings().first()
+                return bool(current and current["reimbursement_id"] is None and current["status"] == "未匹配")
+            parent_statement = sa.select(reimbursements.c.status).where(
+                reimbursements.c.id == child["reimbursement_id"]
+            )
+            if lock and connection.dialect.name == "postgresql":
+                parent_statement = parent_statement.with_for_update(of=reimbursements)
+            parent_status = connection.scalar(parent_statement)
+            locked = statement.with_for_update(of=table) if lock and connection.dialect.name == "postgresql" else statement
+            current = connection.execute(locked).mappings().first()
+            return bool(
+                parent_status == "草稿" and current
+                and current["reimbursement_id"] == child["reimbursement_id"]
+                and current["status"] == "已匹配"
+            )
+        has_write_status = object_type in {"PROPOSAL", "STANDARD", "TEMPLATE", "EXPENSE"} and "status" in table.c
         columns = [table.c.status] if has_write_status else [sa.literal("WRITABLE")]
         statement = sa.select(*columns).select_from(table).where(table.c[key] == value).limit(1)
         if lock and connection.dialect.name == "postgresql":
@@ -101,7 +126,25 @@ class FilesRepository:
             return status not in {"ESTABLISHED", "REJECTED"}
         if object_type in {"STANDARD", "TEMPLATE"}:
             return status != "ARCHIVED"
+        if object_type == "EXPENSE":
+            # Older FileService contract fixtures predate the finance status
+            # column; only the current finance schema can enforce draft state.
+            return status == "草稿" if "status" in table.c else True
         return True
+
+    def lock_expense_for_document_generation(self, connection: Connection, object_id: str):
+        if "EXPENSE" not in self._object_tables:
+            if not self.object_exists(connection, "EXPENSE", object_id):
+                return None
+        table, key = self._object_tables["EXPENSE"]
+        try:
+            value = int(object_id)
+        except (TypeError, ValueError):
+            return None
+        statement = sa.select(table.c.status).where(table.c[key] == value)
+        if connection.dialect.name == "postgresql":
+            statement = statement.with_for_update(of=table)
+        return connection.scalar(statement)
 
     def create_file(
         self,

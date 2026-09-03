@@ -9,22 +9,22 @@ import re
 import json
 import logging
 import uuid as _uuid
+from decimal import Decimal
 from datetime import datetime
-from pathlib import Path
 from flask import Blueprint, current_app, render_template, request, jsonify, session, redirect, url_for, send_file
 
 from app.expense_db import (
     get_all_reimbursements, get_reimbursement_by_id,
     create_reimbursement, update_reimbursement, delete_reimbursement,
     toggle_reimbursement_paid,
-    mark_reimbursement_documents_generated,
     add_invoice, get_invoices, get_invoice_by_id, update_invoice, delete_invoice,
     add_payment, get_payments, get_payment_by_id, update_payment, delete_payment,
-    get_unmatched_invoices, get_unmatched_payments, recalculate_reimbursement_total,
+    recalculate_reimbursement_total,
     get_expense_stats, find_duplicate_invoice, find_duplicate_payment,
 )
 from app.ocr.recognizer import recognize_file, recognize_payment
 from app.expense_utils import parse_amount
+from app.services.files import FileServiceError
 
 bp = Blueprint('expense', __name__, url_prefix='/expense')
 
@@ -40,7 +40,8 @@ def _service():
 
 def _safe_error(exc, fallback="操作失败"):
     from app.services.expenses import ExpenseError
-    if isinstance(exc, ExpenseError):
+    from app.services.files import FileServiceError
+    if isinstance(exc, (ExpenseError, FileServiceError)):
         return jsonify({'success': False, 'error': exc.message, 'code': exc.code}), exc.status_code
     logging.exception("[Expense] %s", fallback)
     return jsonify({'success': False, 'error': fallback}), 500
@@ -101,6 +102,15 @@ def approvals():
 
 @bp.route('/api/upload', methods=['POST'])
 def api_upload():
+    return _handle_upload()
+
+
+@bp.route('/api/reimbursements/<int:rid>/upload', methods=['POST'])
+def api_reimbursement_upload(rid):
+    return _handle_upload(reimbursement_id=rid)
+
+
+def _handle_upload(reimbursement_id=None):
     """受控上传；OCR 不可用时仍创建可手工补录的记录。"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
@@ -108,32 +118,47 @@ def api_upload():
     if uploaded is None or not uploaded.filename:
         return jsonify({'success': False, 'error': '没有选择文件'}), 400
     doc_type = request.form.get('type', 'invoice')
-    if doc_type not in {'invoice', 'payment'}:
+    if doc_type not in {'invoice', 'payment', 'auto'}:
         return jsonify({'success': False, 'error': '文件类型无效'}), 400
-
-    raw = uploaded.stream.read()
-    uploaded.stream.seek(0)
-    if not raw:
-        return jsonify({'success': False, 'error': '空文件不允许上传'}), 415
 
     recognized = None
     manual_required = False
     try:
-        import tempfile
-        suffix = Path(uploaded.filename).suffix.lower()
-        with tempfile.NamedTemporaryFile(suffix=suffix) as staged:
-            staged.write(raw)
-            staged.flush()
-            recognized = recognize_file(staged.name) if doc_type == 'invoice' else recognize_payment(staged.name)
+        file_service = current_app.extensions.get('file_service')
+        if file_service is None:
+            return jsonify({'success': False, 'error': '附件服务不可用'}), 503
+        lowered_name = uploaded.filename.casefold()
+        effective_type = doc_type
+        with file_service.inspect_upload(uploaded.stream, uploaded.filename) as staged_path:
+            payment_name = any(marker in lowered_name for marker in ('支付', '付款', '转账', '交易凭证', 'payment'))
+            if effective_type == 'payment' or (effective_type == 'auto' and payment_name):
+                effective_type = 'payment'
+                recognized = recognize_payment(str(staged_path))
+            else:
+                effective_type = 'invoice'
+                recognized = recognize_file(str(staged_path))
+                invoice_fields = recognized.get('fields', {}) if isinstance(recognized, dict) else {}
+                invoice_evidence = any(invoice_fields.get(key) for key in (
+                    'invoice_no', 'invoice_type', 'seller', 'buyer', 'content', 'tax_amount'
+                ))
+                if doc_type == 'auto' and not invoice_evidence:
+                    payment_result = recognize_payment(str(staged_path))
+                    if isinstance(payment_result, dict) and any(payment_result.get(key) for key in ('payment_no', 'pay_date', 'payer', 'amount')):
+                        effective_type = 'payment'
+                        recognized = payment_result
+        uploaded.stream.seek(0)
+    except FileServiceError as exc:
+        return _safe_error(exc, "上传验证失败")
     except Exception:
         logging.warning("[Expense] OCR unavailable; preserving manual workflow", exc_info=True)
         manual_required = True
+        uploaded.stream.seek(0)
 
     try:
         actor_user_id = int(session.get('user_id') or 0)
         request_id = getattr(request, 'request_id', 'expense-upload')
-        stream = io.BytesIO(raw)
-        if doc_type == 'invoice':
+        stream = uploaded.stream
+        if effective_type == 'invoice':
             fields = recognized.get('fields', {}) if isinstance(recognized, dict) else {}
             amount = parse_amount(fields.get('amount', '0'))
             inv_date = fields.get('date', '')
@@ -142,7 +167,7 @@ def api_upload():
                 return jsonify({'success': False, 'error': '相同金额、日期和发票号的发票已存在', 'duplicate': True, 'existing_id': existing['id']}), 200
             iid, stored = _service().create_invoice_with_upload(
                 stream, uploaded.filename, actor_user_id=actor_user_id, request_id=request_id,
-                invoice_no=fields.get('invoice_no', ''), date=inv_date, amount=str(amount),
+                reimbursement_id=reimbursement_id, invoice_no=fields.get('invoice_no', ''), date=inv_date, amount=str(amount),
                 tax_amount=str(parse_amount(fields.get('tax_amount', '0'))),
                 price_ex_tax=str(parse_amount(fields.get('price_ex_tax', '0'))),
                 buyer=fields.get('buyer', ''), seller=fields.get('seller', ''),
@@ -156,11 +181,18 @@ def api_upload():
                 departure_airport=fields.get('departure_airport', ''), arrival_airport=fields.get('arrival_airport', ''),
                 departure_time=fields.get('departure_time', ''), ocr_text=(recognized or {}).get('text', ''),
             )
-            match_result = match_invoices_and_payments() if not manual_required else {'new_matches': []}
+            match_result, match_warning = {'new_matches': []}, None
+            if not manual_required and reimbursement_id is None:
+                try:
+                    match_result = match_invoices_and_payments()
+                except Exception:
+                    logging.warning("[Expense] upload committed but automatic matching failed", exc_info=True)
+                    match_warning = '文件已保存，自动匹配暂时不可用，请手工整理'
             return jsonify({'success': True, 'type': 'invoice', 'record_id': iid, 'fields': fields,
                             'ocr_text': '', 'filename': stored['originalName'],
                             'confidence': fields.get('confidence', '待补录'),
-                            'manual_required': manual_required, 'matched': match_result.get('new_matches', [])})
+                            'manual_required': manual_required, 'matched': match_result.get('new_matches', []),
+                            **({'match_warning': match_warning} if match_warning else {})})
         fields = recognized if isinstance(recognized, dict) else {}
         amount = parse_amount(fields.get('amount', '0'))
         pay_date = fields.get('pay_date', '')
@@ -169,14 +201,21 @@ def api_upload():
             return jsonify({'success': False, 'error': '相同金额和日期的支付记录已存在', 'duplicate': True, 'existing_id': existing['id']}), 200
         pid, stored = _service().create_payment_with_upload(
             stream, uploaded.filename, actor_user_id=actor_user_id, request_id=request_id,
-            payment_no=fields.get('payment_no', ''), amount=str(amount), pay_date=pay_date,
+            reimbursement_id=reimbursement_id, payment_no=fields.get('payment_no', ''), amount=str(amount), pay_date=pay_date,
             payer=fields.get('payer', ''), ocr_text=fields.get('ocr_text', ''),
         )
-        match_result = match_invoices_and_payments() if not manual_required else {'new_matches': []}
+        match_result, match_warning = {'new_matches': []}, None
+        if not manual_required and reimbursement_id is None:
+            try:
+                match_result = match_invoices_and_payments()
+            except Exception:
+                logging.warning("[Expense] upload committed but automatic matching failed", exc_info=True)
+                match_warning = '文件已保存，自动匹配暂时不可用，请手工整理'
         return jsonify({'success': True, 'type': 'payment', 'record_id': pid,
                         'fields': {key: fields.get(key, '') for key in ('payment_no', 'amount', 'pay_date', 'payer')},
                         'ocr_text': '', 'filename': stored['originalName'],
-                        'manual_required': manual_required, 'matched': match_result.get('new_matches', [])})
+                        'manual_required': manual_required, 'matched': match_result.get('new_matches', []),
+                        **({'match_warning': match_warning} if match_warning else {})})
     except Exception as exc:
         return _safe_error(exc, "上传处理失败")
 
@@ -191,11 +230,13 @@ def api_reimbursements():
     try:
         status = request.args.get('status', '')
         keyword = request.args.get('keyword', '')
-        records = get_all_reimbursements(
-            status=status if status else None,
-            keyword=keyword if keyword else None,
+        limit = request.args.get('limit', 200, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        records, total, next_offset = _service().page_reimbursements(
+            status=status if status else None, keyword=keyword if keyword else None,
+            limit=limit, offset=offset,
         )
-        return jsonify({'success': True, 'reimbursements': records})
+        return jsonify({'success': True, 'reimbursements': records, 'total': total, 'next_offset': next_offset})
     except Exception as e:
         logging.error(f"[Expense] 获取报销项失败: {e}")
         return _safe_error(e)
@@ -211,8 +252,8 @@ def api_reimbursement_get(rid):
         if not reimbursement:
             return jsonify({'success': False, 'error': '报销项不存在'}), 404
 
-        invoices = get_invoices(reimbursement_id=rid)
-        payments = get_payments(reimbursement_id=rid)
+        invoices = get_invoices(reimbursement_id=rid, all_rows=True)
+        payments = get_payments(reimbursement_id=rid, all_rows=True)
 
         return jsonify({
             'success': True,
@@ -323,12 +364,12 @@ def api_reimbursement_generate_docs(rid):
         if not reimbursement:
             return jsonify({'success': False, 'error': '报销项不存在'}), 404
 
-        invoices = get_invoices(reimbursement_id=rid)
-        payments = get_payments(reimbursement_id=rid)
+        invoices = get_invoices(reimbursement_id=rid, all_rows=True)
+        payments = get_payments(reimbursement_id=rid, all_rows=True)
 
-        from app.expense_utils import amount_to_cn
-        total_amount = float(reimbursement.get('total_amount') or 0)
-        total_cn = amount_to_cn(total_amount)
+        from app.document_engine import _cn_number
+        total_amount = Decimal(str(reimbursement.get('total_amount') or 0))
+        total_cn = _cn_number(total_amount)
         applicant = session.get('name', '')
 
         # 尝试用模板
@@ -446,30 +487,22 @@ def api_reimbursement_generate_docs(rid):
             output2.seek(0)
             docs_to_send.append(('审批单.docx', output2))
 
-            # 更新状态
-            mark_reimbursement_documents_generated(rid)
-
-            # 依次发送两个文件
-            if len(docs_to_send) == 1:
-                name, buf = docs_to_send[0]
-                buf.seek(0)
-                return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document', as_attachment=True, download_name=name)
-            else:
-                file_service = current_app.extensions.get('file_service')
-                if file_service is None:
-                    return jsonify({'success': False, 'error': '附件服务不可用'}), 503
-                approval = docs_to_send[1][1]
-                approval.seek(0)
-                stored = file_service.upload(
-                    approval, original_name='审批单.docx', object_type='EXPENSE', object_id=str(rid),
-                    actor_user_id=int(session.get('user_id') or 0),
-                    request_id=getattr(request, 'request_id', 'expense-generate-docs'),
-                )
-                return jsonify({
-                    'success': True,
-                    'settlement': True,
-                    'approval_path': f'/expense/api/download_approval/{rid}/{stored["fileId"]}',
-                })
+            stored = _service().persist_generated_documents(
+                rid,
+                docs_to_send,
+                actor_user_id=int(session.get('user_id') or 0),
+                request_id=getattr(request, 'request_id', 'expense-generate-docs'),
+            )
+            return jsonify({
+                'success': True,
+                'settlement': True,
+                'settlement_path': f'/expense/api/download_approval/{rid}/{stored[0]["fileId"]}',
+                'approval_path': f'/expense/api/download_approval/{rid}/{stored[1]["fileId"]}',
+                'documents': [
+                    {'name': name, 'path': f'/expense/api/download_approval/{rid}/{item["fileId"]}'}
+                    for (name, _), item in zip(docs_to_send, stored)
+                ],
+            })
 
         except ImportError:
             return jsonify({'success': False, 'error': 'python-docx 未安装'}), 500
@@ -516,8 +549,12 @@ def api_invoices():
         reimbursement_id = request.args.get('reimbursement_id')
         status = request.args.get('status', '')
         rid = int(reimbursement_id) if reimbursement_id else None
-        invoices = get_invoices(reimbursement_id=rid, status=status if status else None)
-        return jsonify({'success': True, 'invoices': invoices})
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        invoices, total, next_offset = _service().page_invoices(
+            rid, status if status else None, limit=limit, offset=offset,
+        )
+        return jsonify({'success': True, 'invoices': invoices, 'total': total, 'next_offset': next_offset})
     except Exception as e:
         logging.error(f"[Expense] 获取发票失败: {e}")
         return _safe_error(e)
@@ -590,8 +627,12 @@ def api_payments_list():
         reimbursement_id = request.args.get('reimbursement_id')
         status = request.args.get('status', '')
         rid = int(reimbursement_id) if reimbursement_id else None
-        payments = get_payments(reimbursement_id=rid, status=status if status else None)
-        return jsonify({'success': True, 'payments': payments})
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        payments, total, next_offset = _service().page_payments(
+            rid, status if status else None, limit=limit, offset=offset,
+        )
+        return jsonify({'success': True, 'payments': payments, 'total': total, 'next_offset': next_offset})
     except Exception as e:
         logging.error(f"[Expense] 获取支付记录失败: {e}")
         return _safe_error(e)
@@ -668,14 +709,18 @@ def api_pending():
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        invoices = get_unmatched_invoices()
-        payments = get_unmatched_payments()
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        invoices, invoice_total, invoice_next = _service().page_invoices(status='未匹配', limit=limit, offset=offset)
+        payments, payment_total, payment_next = _service().page_payments(status='未匹配', limit=limit, offset=offset)
         return jsonify({
             'success': True,
             'invoices': invoices,
             'payments': payments,
-            'invoice_count': len(invoices),
-            'payment_count': len(payments),
+            'invoice_count': invoice_total,
+            'payment_count': payment_total,
+            'invoice_next_offset': invoice_next,
+            'payment_next_offset': payment_next,
         })
     except Exception as e:
         logging.error(f"[Expense] 获取待整理区失败: {e}")

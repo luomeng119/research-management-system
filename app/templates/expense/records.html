@@ -432,7 +432,8 @@ function generateDocs(rid) {
         .then(r => r.json())
         .then(d => {
             if (!d.success) { alert('生成失败: ' + d.error); return; }
-            if (d.settlement) window.open(`/expense/api/download_approval/${rid}`, '_blank');
+            if (d.settlement_path) window.open(d.settlement_path, '_blank');
+            if (d.approval_path) window.open(d.approval_path, '_blank');
             loadRecords();
             if (expandedRid === rid) fetchDetail(rid);
             alert('文档生成完成！');
@@ -614,7 +615,7 @@ function handleFiles(files) {
     // 标记为上传中（等收到成功响应后才加入已上传集合）
     const count = newFiles.length;
     showFeedback(count > 1 ? `正在识别 ${count} 个文件…` : `正在识别：${newFiles[0].name}…`, false);
-    let uploaded = 0, failed = 0, errors = [];
+    let completed = 0, failed = 0, errors = [];
     let results = [];
 
     newFiles.forEach(file => {
@@ -627,7 +628,7 @@ function handleFiles(files) {
         fetch(url, { method: 'POST', body: formData, credentials: 'include' })
             .then(r => r.json())
             .then(data => {
-                uploaded++;
+                completed++;
                 if (!data.success) {
                     failed++;
                     errors.push(file.name + ': ' + (data.error || '失败'));
@@ -645,7 +646,7 @@ function handleFiles(files) {
                         results.push({ name: file.name, success: true, type: data.type, fields: data.fields, matched: data.matched || [] });
                     }
                 }
-                if (uploaded + failed === count) {
+                if (completed === count) {
                     if (failed > 0) {
                         showFeedback('完成：' + (count - failed) + ' 个成功，' + failed + ' 个失败\n' + errors.join('；'), true);
                     } else {
@@ -656,8 +657,8 @@ function handleFiles(files) {
                 }
             })
             .catch(() => {
-                uploaded++; failed++; errors.push(file.name + ': 网络错误');
-                if (uploaded + failed === count) { showFeedback('完成（部分失败）：' + errors.join('；'), true); loadAll(); uploadRid = null; }
+                completed++; failed++; errors.push(file.name + ': 网络错误');
+                if (completed === count) { showFeedback('完成（部分失败）：' + errors.join('；'), true); loadAll(); uploadRid = null; }
             });
     });
 }

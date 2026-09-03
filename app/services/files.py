@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import codecs
@@ -395,6 +396,15 @@ class FileService:
             stage_path.unlink(missing_ok=True)
             raise
 
+    @contextmanager
+    def inspect_upload(self, stream, original_name: str):
+        """Validate and stage an upload for bounded pre-persistence inspection."""
+        staged = self._stage(stream, original_name)
+        try:
+            yield staged.path
+        finally:
+            staged.path.unlink(missing_ok=True)
+
     def _destination(self, extension: str) -> tuple[str, Path]:
         now = datetime.now(timezone.utc)
         relative = Path(str(now.year), f"{now.month:02d}", f"{uuid.uuid4().hex}{extension}")
@@ -553,6 +563,59 @@ class FileService:
             actor_user_id=actor_user_id, request_id=request_id,
             create_metadata=create_metadata,
         )
+
+    def upload_expense_documents_atomic(
+        self, items, *, object_id: str, actor_user_id: int, request_id: str,
+        finalize_metadata,
+    ) -> list[dict]:
+        """Persist a generated document set and its expense state in one transaction."""
+        staged_items = []
+        moved_paths = []
+        try:
+            for stream, original_name in items:
+                staged = self._stage(stream, original_name)
+                relative_path, final_path = self._destination(staged.extension)
+                staged_items.append((staged, relative_path, final_path))
+            results = []
+            with self.repository.engine.begin() as connection:
+                status = self.repository.lock_expense_for_document_generation(connection, str(object_id))
+                if status is None:
+                    raise FileServiceError("OBJECT_NOT_FOUND", "关联业务对象不存在", 404)
+                if status not in {"已确认", "已生成文档"}:
+                    raise FileServiceError("OBJECT_READ_ONLY", "请先确认报销项", 409)
+                for staged, relative_path, final_path in staged_items:
+                    file_id = uuid.uuid4()
+                    self.repository.create_file(
+                        connection, file_id=file_id, business_id=f"FILE-{uuid.uuid4().hex.upper()}",
+                        original_name=staged.original_name, media_type=staged.media_type,
+                        actor_user_id=actor_user_id,
+                    )
+                    self.repository.create_version(
+                        connection, version_id=uuid.uuid4(), file_id=file_id, version_no=1,
+                        storage_path=relative_path, sha256=staged.sha256,
+                        size_bytes=staged.size_bytes, media_type=staged.media_type,
+                        actor_user_id=actor_user_id,
+                    )
+                    self.repository.link_object(
+                        connection, link_id=uuid.uuid4(), object_type="EXPENSE",
+                        object_id=str(object_id), file_id=file_id, actor_user_id=actor_user_id,
+                    )
+                    os.replace(staged.path, final_path)
+                    moved_paths.append(final_path)
+                    self._audit(
+                        connection, operation="UPLOAD", staged=staged, file_id=str(file_id),
+                        actor_user_id=actor_user_id, request_id=request_id, started=time.monotonic(),
+                    )
+                    results.append(self._result(str(file_id), staged, relative_path, 1))
+                finalize_metadata(connection)
+            return results
+        except Exception:
+            for path in moved_paths:
+                path.unlink(missing_ok=True)
+            raise
+        finally:
+            for staged, _relative, _final in staged_items:
+                staged.path.unlink(missing_ok=True)
 
     def add_version(self, file_id: str, stream, *, original_name: str, object_type: str, object_id: str, expected_version: int, actor_user_id: int, request_id: str) -> dict:
         object_type = str(object_type or "").upper()
