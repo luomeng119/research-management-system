@@ -317,7 +317,7 @@ function fetchDetail(rid) {
         .then(data => {
             if (!data.success) {
                 const content = document.getElementById(`expand-content-${rid}`);
-                if (content) content.innerHTML = '<div class="text-danger px-3 py-2">加载失败：' + (data.error || '未知错误') + '</div>';
+                if (content) content.textContent = '加载失败：' + (data.error || '未知错误');
                 return;
             }
             const r = data.reimbursement;
@@ -329,7 +329,7 @@ function fetchDetail(rid) {
             const invRows = invoices.length ? invoices.map(inv => `
                 <tr ${listRowAttrs(inv)}>
                     <td><small>${escapeHtml(inv.invoice_no || '-')}</small></td>
-                    <td><span class="editable" data-type="invoice" data-id="${inv.id}" data-field="date" title="点击编辑">${inv.date || '-'}</span></td>
+                    <td><span class="editable" data-type="invoice" data-id="${inv.id}" data-field="date" title="点击编辑">${escapeHtml(inv.date || '-')}</span></td>
                     <td><span class="editable text-warning" data-type="invoice" data-id="${inv.id}" data-field="amount" title="点击编辑">¥${(inv.amount||0).toFixed(2)}</span></td>
                     <td><small>${escapeHtml(inv.seller || '-')}</small></td>
                     <td><small>${escapeHtml(inv.content || '-')}</small></td>
@@ -343,7 +343,7 @@ function fetchDetail(rid) {
             const payRows = payments.length ? payments.map(pay => `
                 <tr ${listRowAttrs(pay)}>
                     <td><small>${escapeHtml(pay.payment_no || '-')}</small></td>
-                    <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="pay_date" title="点击编辑">${pay.pay_date || '-'}</span></td>
+                    <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="pay_date" title="点击编辑">${escapeHtml(pay.pay_date || '-')}</span></td>
                     <td><span class="editable text-warning" data-type="payment" data-id="${pay.id}" data-field="amount" title="点击编辑">¥${(pay.amount||0).toFixed(2)}</span></td>
                     <td><small class="text-muted">-</small></td>
                     <td><small class="text-muted">-</small></td>
@@ -371,7 +371,7 @@ function fetchDetail(rid) {
                 <div id="docs-list-${rid}" class="mb-3"></div>
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <div class="fw-bold text-muted">📄 发票明细 <span class="small">（金额/日期点击即可编辑）</span></div>
-                    <button class="btn btn-sm btn-outline-primary py-0" onclick="showAddToReimbModal(${rid}, '${r.reimbursement_type}')">
+                    <button class="btn btn-sm btn-outline-primary py-0" onclick="showAddToReimbModal(${rid}, '${r.reimbursement_type === '出差报销' ? '出差报销' : '采购报销'}')">
                         <i class="bi bi-plus-circle"></i> 增加
                     </button>
                 </div>
@@ -686,8 +686,8 @@ function showUploadResult(results) {
             if (m.invoices) m.invoices.forEach(i => groups[rid].invoices.push(i));
         });
         matchHtml = Object.values(groups).map(g => {
-            const invNos = g.invoices.map(i => i.invoice_no || i.id).join('、');
-            const payNo = g.payment ? (g.payment.payment_no || g.payment.id) : '-';
+            const invNos = escapeHtml(g.invoices.map(i => i.invoice_no || i.id).join('、'));
+            const payNo = escapeHtml(g.payment ? (g.payment.payment_no || g.payment.id) : '-');
             const total = g.invoices.reduce((s, i) => s + parseFloat(i.amount || 0), 0) || (g.payment ? parseFloat(g.payment.amount || 0) : 0);
             return `<div class="mt-2 p-2 bg-success-subtle border border-success rounded">
                 <strong class="text-success">✓ 已自动匹配到报销项 #${g.rid}</strong>：
@@ -727,9 +727,9 @@ function loadPendingInvoices() {
             const tb = document.getElementById('listUnmatchedInvoice');
             if (!items.length) { tb.innerHTML = '<tr><td colspan="6" class="text-muted text-center">暂无可整理发票</td></tr>'; return; }
             tb.innerHTML = items.map(inv => {
-                const fp = inv.file_path || '';
-                const fname = fp.split('/').pop() || '-';
-                const uploadUrl = fp.replace('/app/uploads/', '/uploads/').replace(/^.*?\/uploads\//, '/uploads/');
+                const file = controlledFile(inv, 'INVOICE');
+                const fname = file ? file.originalName : '-';
+                const uploadUrl = file ? file.url : '';
                 // 内容显示：items[0].name + spec > content > seller > invoice_type
                 let content = '-';
                 if (inv.items && inv.items.length > 0) {
@@ -743,10 +743,10 @@ function loadPendingInvoices() {
                 } else if (inv.invoice_type) {
                     content = inv.invoice_type;
                 }
-                return `<tr class="preview-row" data-file="${uploadUrl}" data-name="${fname}" data-type="invoice" onclick="previewRow(this)">
-                    <td title="${inv.seller || ''}">${escapeHtml(inv.seller || '-')}</td>
+                return `<tr class="preview-row" data-file="${escapeHtml(uploadUrl)}" data-name="${escapeHtml(fname)}" data-type="invoice" onclick="previewRow(this)">
+                    <td title="${escapeHtml(inv.seller || '')}">${escapeHtml(inv.seller || '-')}</td>
                     <td><span class="editable" data-type="invoice" data-id="${inv.id}" data-field="amount">¥${(inv.amount||0).toFixed(2)}</span></td>
-                    <td><span class="editable" data-type="invoice" data-id="${inv.id}" data-field="date">${inv.date || '-'}</span></td>
+                    <td><span class="editable" data-type="invoice" data-id="${inv.id}" data-field="date">${escapeHtml(inv.date || '-')}</span></td>
                     <td style="font-size:11px;">${escapeHtml(inv.invoice_no || '-')}</td>
                     <td class="small text-truncate" style="max-width:120px;" title="${escapeHtml(content)}">${escapeHtml(content)}</td>
                     <td class="text-center">
@@ -772,13 +772,13 @@ function loadPendingPayments() {
             const tb = document.getElementById('listUnmatchedPayment');
             if (!items.length) { tb.innerHTML = '<tr><td colspan="6" class="text-muted text-center">暂无可整理支付记录</td></tr>'; return; }
             tb.innerHTML = items.map(pay => {
-                const fp = pay.file_path || '';
-                const fname = fp.split('/').pop() || '-';
-                const uploadUrl = fp.replace('/app/uploads/', '/uploads/').replace(/^.*?\/uploads\//, '/uploads/');
-                return `<tr class="preview-row" data-file="${uploadUrl}" data-name="${fname}" data-type="payment" onclick="previewRow(this)">
+                const file = controlledFile(pay, 'PAYMENT');
+                const fname = file ? file.originalName : '-';
+                const uploadUrl = file ? file.url : '';
+                return `<tr class="preview-row" data-file="${escapeHtml(uploadUrl)}" data-name="${escapeHtml(fname)}" data-type="payment" onclick="previewRow(this)">
                     <td>${escapeHtml(pay.payer || '-')}</td>
                     <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="amount">¥${(pay.amount||0).toFixed(2)}</span></td>
-                    <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="pay_date">${pay.pay_date || '-'}</span></td>
+                    <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="pay_date">${escapeHtml(pay.pay_date || '-')}</span></td>
                     <td style="font-size:11px;">${escapeHtml(pay.payment_no || '-')}</td>
                     <td class="small text-truncate" style="max-width:120px;" title="${escapeHtml(pay.payer || '')}">${escapeHtml(pay.payer || '-')}</td>
                     <td class="text-center">
@@ -935,20 +935,18 @@ function previewById(type, id) {
         fetch(`/expense/api/invoices/${id}`, { credentials: 'include' })
             .then(r => r.json())
             .then(d => {
-                if (d.invoice && d.invoice.file_path) {
-                    const fp = d.invoice.file_path;
-                    const url = fp.replace('/app/uploads/', '/uploads/').replace(/^.*?\/uploads\//, '/uploads/');
-                    previewDocument(url, fp.split('/').pop());
+                const file = controlledFile(d.invoice, 'INVOICE');
+                if (file) {
+                    previewDocument(file.url, file.originalName);
                 }
             });
     } else {
         fetch(`/expense/api/payments/${id}`, { credentials: 'include' })
             .then(r => r.json())
             .then(d => {
-                if (d.payment && d.payment.file_path) {
-                    const fp = d.payment.file_path;
-                    const url = fp.replace('/app/uploads/', '/uploads/').replace(/^.*?\/uploads\//, '/uploads/');
-                    previewDocument(url, fp.split('/').pop());
+                const file = controlledFile(d.payment, 'PAYMENT');
+                if (file) {
+                    previewDocument(file.url, file.originalName);
                 }
             });
     }
@@ -1011,13 +1009,12 @@ function showHoverCard(el, type, fileUrl, fname) {
             let html = `<div class="fw-bold mb-1">${escapeHtml(obj.seller || obj.payer || '-')}</div>`;
             html += '<div class="row g-1 small">';
             html += `<div class="col-5 text-muted">金额</div><div class="col-7 fw-bold text-warning">¥${(obj.amount||0).toFixed(2)}</div>`;
-            html += `<div class="col-5 text-muted">日期</div><div class="col-7">${obj.date || obj.pay_date || '-'}</div>`;
+            html += `<div class="col-5 text-muted">日期</div><div class="col-7">${escapeHtml(obj.date || obj.pay_date || '-')}</div>`;
             if (obj.invoice_no) { html += `<div class="col-5 text-muted">发票号</div><div class="col-7" style="font-size:11px;">${escapeHtml(obj.invoice_no)}</div>`; }
             if (obj.payment_no) { html += `<div class="col-5 text-muted">凭证号</div><div class="col-7" style="font-size:11px;">${escapeHtml(obj.payment_no)}</div>`; }
             html += '</div>';
             html += `<div class="mt-1 pt-1 border-top small text-muted text-truncate" title="${escapeHtml(fname)}">文件: ${escapeHtml(fname)}</div>`;
-            const escapedFname = (fname || '').replace(/'/g, "\\'").replace(/"/g, '\\"');
-            html += `<button class="btn btn-sm btn-outline-info mt-2 w-100" onclick="event.stopPropagation(); hideHoverCard(); previewDocument('${(fileUrl||'').replace(/'/g,"\\'")}', '${escapedFname}')"><i class="bi bi-eye"></i> 预览文件</button>`;
+            html += '<button class="btn btn-sm btn-outline-info mt-2 w-100" type="button"><i class="bi bi-eye"></i> 预览文件</button>';
             hc.innerHTML = html;
         })
         .catch(() => {
@@ -1075,7 +1072,7 @@ function loadModalInvoices() {
                     <label class="form-check-label d-flex justify-content-between w-100" for="inv-${inv.id}">
                         <span>${typeIcon} ${escapeHtml(inv.seller || invType || '无号')}</span>
                         <span class="text-warning">¥${(inv.amount||0).toFixed(2)}</span>
-                        <span class="text-muted">${inv.date || '-'}</span>
+                        <span class="text-muted">${escapeHtml(inv.date || '-')}</span>
                     </label>
                 </div>`;
             }).join('');
@@ -1100,7 +1097,7 @@ function loadModalPayments() {
                     <label class="form-check-label d-flex justify-content-between w-100" for="pay-${pay.id}">
                         <span>${escapeHtml(pay.payer || '-')}</span>
                         <span class="text-warning">¥${(pay.amount||0).toFixed(2)}</span>
-                        <span class="text-muted">${pay.pay_date || '-'}</span>
+                        <span class="text-muted">${escapeHtml(pay.pay_date || '-')}</span>
                     </label>
                 </div>`).join('');
         })
@@ -1262,7 +1259,7 @@ function loadDocsList(rid) {
             if (!el) return;
             if (d.documents && d.documents.length > 0) {
                 el.innerHTML = d.documents.map(doc =>
-                    `<div class="col-12"><a href="/expense/documents/api/reimbursements/${rid}/documents/${doc.id}/download" target="_blank" class="text-decoration-none"><i class="bi bi-file-earmark-word"></i> ${doc.doc_type || '单据'}</a></div>`
+                    `<div class="col-12"><a href="/expense/documents/api/reimbursements/${rid}/documents/${encodeURIComponent(doc.id)}/download" target="_blank" class="text-decoration-none"><i class="bi bi-file-earmark-word"></i> ${escapeHtml(doc.doc_type || '单据')}</a></div>`
                 ).join('');
             } else {
                 el.innerHTML = '<div class="text-muted small">暂无单据，请点击"新建单据"</div>';
@@ -1279,6 +1276,18 @@ function loadDocsList(rid) {
 function escapeHtml(s) {
     if (!s) return '';
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function controlledFile(record, objectType) {
+    const file = record && Array.isArray(record.files) ? record.files[0] : null;
+    if (!file) return null;
+    const params = new URLSearchParams({
+        fileId: file.fileId,
+        versionNo: String(file.versionNo),
+        objectType: objectType,
+        objectId: String(record.id)
+    });
+    return {url: '/preview/file?' + params.toString(), originalName: file.originalName || '附件'};
 }
 
 // ============================================================

@@ -124,7 +124,10 @@ class DocumentFiller:
         Returns:
             (meta: dict, doc: Document)
         """
-        tpl_dir = self.templates_dir / doc_type
+        name = str(doc_type or "")
+        if not name or Path(name).name != name or any(marker in name for marker in ("/", "\\", "..")):
+            raise FileNotFoundError("模板不存在")
+        tpl_dir = self.templates_dir / name
         if not tpl_dir.is_dir():
             raise FileNotFoundError(f"模板目录不存在: {doc_type}")
 
@@ -225,13 +228,12 @@ class DocumentFiller:
                         elif '结束日期' in lbl:
                             end_val = val
                     if start_val and end_val:
-                        from datetime import datetime
                         try:
                             s = datetime.strptime(start_val, '%Y-%m-%d')
                             e = datetime.strptime(end_val, '%Y-%m-%d')
                             days = (e - s).days + 1
                             return str(max(1, days))
-                        except:
+                        except (TypeError, ValueError):
                             pass
                     return '1'
                 return field_values.get(field_id)

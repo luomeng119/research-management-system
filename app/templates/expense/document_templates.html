@@ -47,16 +47,17 @@ function loadTemplates() {
             let html = '';
             d.templates.forEach(t => {
                 const desc = templateDescs[t.doc_type] || '暂无描述';
+                const encodedType = encodeURIComponent(t.doc_type || '');
                 html += `<div class="col-md-6 col-lg-4">
                     <div class="card h-100" style="background:rgba(255,255,255,0.05); border:1px solid rgba(0,255,255,0.2);">
                         <div class="card-body">
-                            <h5 class="card-title"><i class="bi bi-file-earmark-word text-info"></i> ${t.doc_type}</h5>
-                            <p class="card-text text-white-50 small">${desc}</p>
+                            <h5 class="card-title"><i class="bi bi-file-earmark-word text-info"></i> ${escapeHtml(t.doc_type)}</h5>
+                            <p class="card-text text-white-50 small">${escapeHtml(desc)}</p>
                             <div class="d-flex gap-2 mt-2">
-                                <button class="btn btn-outline-info btn-sm" onclick="showPreview('${t.doc_type}')">
+                                <button class="btn btn-outline-info btn-sm" onclick="showPreview(decodeURIComponent('${encodedType}'))">
                                     <i class="bi bi-eye"></i> 预览字段
                                 </button>
-                                <span class="badge bg-secondary align-self-center">v${t.version || '1.0'}</span>
+                                <span class="badge bg-secondary align-self-center">v${escapeHtml(t.version || '1.0')}</span>
                             </div>
                         </div>
                     </div>
@@ -81,7 +82,7 @@ function showPreview(docType) {
             let html = '<table class="table table-sm table-bordered mb-0" style="font-size:12px;">';
             html += '<thead><tr><th>行列</th><th>字段ID</th><th>内容预览</th></tr></thead><tbody>';
             rows.slice(0, 30).forEach(r => {
-                html += `<tr><td>R${r.row} C${r.col}</td><td><code>${r.field_id}</code></td><td>${r.text}</td></tr>`;
+                html += `<tr><td>R${Number(r.row)} C${Number(r.col)}</td><td><code>${escapeHtml(r.field_id)}</code></td><td>${escapeHtml(r.text)}</td></tr>`;
             });
             html += '</tbody></table>';
             const modal = new bootstrap.Modal(document.getElementById('previewModal'));

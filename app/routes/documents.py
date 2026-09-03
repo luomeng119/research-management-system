@@ -194,7 +194,8 @@ import io
 import json
 import uuid as _uuid
 from datetime import datetime
-from flask import Blueprint, render_template, request, jsonify, session, send_file, redirect, url_for
+from flask import Blueprint, current_app, render_template, request, jsonify, session, send_file, redirect, url_for
+from werkzeug.exceptions import HTTPException
 
 from app.expense_db import (
     get_reimbursement_by_id,
@@ -211,6 +212,22 @@ from app.expense_db import (
 from app.document_engine import DocumentFiller, _cn_number
 
 bp = Blueprint('documents', __name__, url_prefix='/expense/documents')
+
+
+@bp.errorhandler(Exception)
+def _documents_error(exc):
+    if isinstance(exc, HTTPException):
+        return exc
+    return _safe_error(exc)
+
+
+def _safe_error(exc, fallback="操作失败"):
+    from app.services.expenses import ExpenseError
+    if isinstance(exc, ExpenseError):
+        return jsonify({'success': False, 'error': exc.message, 'code': exc.code}), exc.status_code
+    import logging
+    logging.exception("[Documents] %s", fallback)
+    return jsonify({'success': False, 'error': fallback}), 500
 
 # ----------------------------------------------------------
 # 模板目录（相对于 app/）
@@ -294,7 +311,7 @@ def api_reimbursements():
     except Exception as e:
         import logging
         logging.error(f"[Documents] 获取报销项失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e, "获取报销项失败")
 
 
 @bp.route('/api/reimbursements/<int:rid>', methods=['GET'])
@@ -310,7 +327,7 @@ def api_reimbursement_get(rid):
     except Exception as e:
         import logging
         logging.error(f"[Documents] 获取报销项详情失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e, "获取报销项详情失败")
 
 
 # ----------------------------------------------------------
@@ -338,7 +355,7 @@ def api_template_preview(doc_type):
         preview = filler.get_preview(doc_type)
         return jsonify({'success': True, 'preview': preview})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e, "模板预览失败")
 
 
 # ----------------------------------------------------------
@@ -761,10 +778,10 @@ def api_download_document(rid, doc_id):
     filler = DocumentFiller(templates_dir=TEMPLATE_DIR)
     try:
         docx_bytes = filler.generate(doc_type, field_values, context)
-    except FileNotFoundError as e:
-        return jsonify({'success': False, 'error': f'模板文件不存在: {e}'}), 404
+    except FileNotFoundError:
+        return jsonify({'success': False, 'error': '模板文件不存在'}), 404
     except Exception as e:
-        return jsonify({'success': False, 'error': f'生成失败: {e}'}), 500
+        return _safe_error(e, "单据生成失败")
 
     buf = io.BytesIO(docx_bytes)
     safe_name = doc_type.replace('/', '_').replace('\\', '_')
@@ -836,9 +853,10 @@ def api_merge_print(rid):
         try:
             docx_bytes = filler.generate(doc_type, field_values, context)
             docx_bytes_list.append((doc_type, docx_bytes))
-        except Exception as e:
-            # 单个失败不影响其他
-            pass
+        except FileNotFoundError:
+            return jsonify({'success': False, 'error': f'{doc_type or "所选"}模板文件不存在'}), 404
+        except Exception as exc:
+            return _safe_error(exc, "单据合并失败")
 
     if not docx_bytes_list:
         return jsonify({'success': False, 'error': '所有单据生成失败'}), 500
@@ -854,16 +872,13 @@ def api_merge_print(rid):
             download_name=f'单据汇总_{rid}.docx',
         )
 
-    # 多个合并：简单拼接（保留各文档独立内容）
-    # 注意：python-docx 不支持真正的合并，这里返回第一个文档作为降级方案
-    # 完整合并需要 docxcompose 库
-    _, docx_bytes = docx_bytes_list[0]
-    buf = io.BytesIO(docx_bytes)
+    # 多个单据必须全部进入输出，不能降级为第一份。
+    buf = io.BytesIO(_merge_docx_and_images(docx_bytes_list, [], []))
     return send_file(
         buf,
         mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         as_attachment=True,
-        download_name=f'单据_{docs_to_print[0].get("doc_type", "导出")}_{rid}.docx',
+        download_name=f'单据汇总_{rid}.docx',
     )
 
 
@@ -917,8 +932,10 @@ def api_merge_print_full(rid):
         try:
             docx_bytes = filler.generate(doc_type, field_values, context)
             docx_bytes_list.append((doc_type, docx_bytes))
-        except Exception as e:
-            pass
+        except FileNotFoundError:
+            return jsonify({'success': False, 'error': f'{doc_type or "所选"}模板文件不存在'}), 404
+        except Exception as exc:
+            return _safe_error(exc, "单据合并失败")
 
     if not docx_bytes_list:
         return jsonify({'success': False, 'error': '所有单据生成失败'}), 500
@@ -940,14 +957,9 @@ def _build_report_context(rid):
     构建完整报销单的填充上下文（出差报销项目）。
     从数据库提取发票、支付记录等数据，汇总为模板字段值。
     """
-    from app.expense_db import get_db, get_invoices, get_payments
-    from app.expense_utils import parse_amount
-    from datetime import datetime
+    from app.expense_db import get_reimbursement_by_id, get_invoices, get_payments
 
-    conn = get_db()
-    reimb = conn.execute(
-        'SELECT * FROM expense_reimbursement WHERE id=?', (rid,)
-    ).fetchone()
+    reimb = get_reimbursement_by_id(rid)
     if not reimb:
         return None
 
@@ -979,9 +991,9 @@ def _build_report_context(rid):
     total_cn = _cn_number(total_invoice)
 
     return {
-        'reimb': dict(reimb),
-        'invoices': [dict(inv) for inv in invoices],
-        'payments': [dict(pay) for pay in payments],
+        'reimb': reimb,
+        'invoices': invoices,
+        'payments': payments,
         'total_invoice': total_invoice,
         'total_invoice_cn': total_cn,
         'earliest_date': earliest,
@@ -1001,28 +1013,26 @@ def api_generate_report(rid):
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
 
-    from app.expense_db import get_db
+    from app.expense_db import get_reimbursement_by_id
     from app.document_engine import DocumentFiller
     _base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     TEMPLATE_DIR = os.path.join(_base_dir, '报销单模板')
 
-    conn = get_db()
-    reimb = conn.execute(
-        'SELECT * FROM expense_reimbursement WHERE id=?', (rid,)
-    ).fetchone()
+    reimb = get_reimbursement_by_id(rid)
     if not reimb:
         return jsonify({'success': False, 'error': '报销项目不存在'}), 404
 
-    reimb = dict(reimb)
     reimb_type = reimb.get('reimbursement_type', '')
 
     # 根据报销类型选择模板
     if '出差' in reimb_type:
         tmpl_name = '出差完整报销单据模板.docx'
         tmpl_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', '报销单模板', tmpl_name)
+        if not os.path.isfile(tmpl_path):
+            return jsonify({'success': False, 'error': '完整出差报销模板缺失'}), 404
     else:
-        # 物资采购模板走已有 DocumentFiller 逻辑
-        tmpl_name = '科研物资采购申请单'
+        # 交付包只有 JSON 定义，没有真实 DOCX；不得伪造成功结果。
+        return jsonify({'success': False, 'error': '科研物资采购申请单模板缺失'}), 404
 
     context = _build_report_context(rid)
     if context is None:
@@ -1033,23 +1043,6 @@ def api_generate_report(rid):
         with open(tmpl_path, 'rb') as f:
             tmpl_bytes = f.read()
         docx_bytes = _fill_chuchai_template(tmpl_bytes, context)
-    else:
-        # 用 DocumentFiller 填充物资采购模板
-        filler = DocumentFiller(templates_dir=TEMPLATE_DIR)
-        # 构造 field_values（从 invoices 汇总）
-        field_values = {
-            'T0[1,1]': reimb.get('title', ''),  # 申请单位
-            'T0[2,1]': session.get('name', ''),  # 申请人
-            'T0[2,4]': datetime.now().strftime('%Y年%m月%d日'),
-        }
-        # 汇总发票金额填入采购物品
-        total = sum(float(inv.get('amount', 0)) for inv in context.get('invoices', []))
-        field_values['T0[3,1]'] = f'合计：¥{total:.2f}'
-        docx_bytes = filler.generate(tmpl_name, field_values, {
-            'session': {'name': session.get('name', ''), 'dept': session.get('dept', '')},
-            'invoices': context.get('invoices', []),
-            'payments': context.get('payments', []),
-        })
 
     # 追加发票+支付记录附件到文档末尾
     invoices = context.get('invoices', [])
@@ -1057,16 +1050,10 @@ def api_generate_report(rid):
     if invoices or payments:
         docx_bytes = _merge_docx_and_images([('完整报销单', docx_bytes)], invoices, payments)
 
-    # 保存到 documents/ 目录
+    # 直接流式返回，不在运行时目录留下带业务内容的副本。
     ts = datetime.now().strftime('%Y%m%d%H%M%S')
     safe_title = reimb.get('title', '报销单').replace('/', '_').replace('\\', '_')
     filename = f'{safe_title}_{ts}_完整报销单.docx'
-    docs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'documents')
-    os.makedirs(docs_dir, exist_ok=True)
-    filepath = os.path.join(docs_dir, filename)
-    with open(filepath, 'wb') as f:
-        f.write(docx_bytes)
-
     # 返回下载
     buf = io.BytesIO(docx_bytes)
     return send_file(
@@ -1077,46 +1064,69 @@ def api_generate_report(rid):
     )
 
 
-def _pdf_or_image_to_png_bytes(file_path):
-    """
-    将 PDF 或图片文件转换为 PNG 字节数据。
-    PDF：每页转为一张 PNG，返回字节列表（每页一项）。
-    图片：直接返回 [字节内容]。
-    """
-    import fitz  # PyMuPDF
-    ext = os.path.splitext(file_path)[1].lower()
-    if ext == '.pdf':
-        doc = fitz.open(file_path)
+def _pdf_or_image_to_png_bytes(payload, original_name):
+    """Convert one already-integrity-checked controlled attachment to PNG pages."""
+    import fitz
+    suffix = os.path.splitext(str(original_name))[1].lower()
+    if len(payload) > 20 * 1024 * 1024:
+        raise ValueError('attachment size limit exceeded')
+    if suffix == '.pdf':
+        doc = fitz.open(stream=payload, filetype='pdf')
         if doc.page_count > 50:
             doc.close()
             raise ValueError('attachment page limit exceeded')
+
         def render_pages():
             total_pixels = 0
             try:
                 for page in doc:
-                    mat = fitz.Matrix(2.0, 2.0)
-                    page_pixels = int(page.rect.width * mat.a) * int(page.rect.height * mat.d)
+                    matrix = fitz.Matrix(2.0, 2.0)
+                    page_pixels = int(page.rect.width * matrix.a) * int(page.rect.height * matrix.d)
                     total_pixels += page_pixels
                     if page_pixels > 20_000_000 or total_pixels > 100_000_000:
                         raise ValueError('attachment pixel limit exceeded')
-                    pix = page.get_pixmap(matrix=mat)
-                    rendered = pix.tobytes('png')
+                    rendered = page.get_pixmap(matrix=matrix).tobytes('png')
                     if len(rendered) > 20 * 1024 * 1024:
                         raise ValueError('attachment render limit exceeded')
                     yield rendered
-                    del pix
             finally:
                 doc.close()
         return render_pages()
-    else:
-        if os.path.getsize(file_path) > 20 * 1024 * 1024:
-            raise ValueError('attachment size limit exceeded')
-        with open(file_path, 'rb') as f:
-            return [f.read()]
+    return [payload]
+
+
+def _controlled_attachments(invoices, payments):
+    service = current_app.extensions.get('file_service')
+    if service is None:
+        return []
+    attachments = []
+    for object_type, rows, label in (('INVOICE', invoices, '发票明细'), ('PAYMENT', payments, '支付记录')):
+        for row in rows:
+            for metadata in service.list_for_object(object_type=object_type, object_id=str(row['id'])):
+                opened = service.open_version_stream(
+                    metadata['fileId'], metadata['versionNo'],
+                    object_type=object_type, object_id=str(row['id']),
+                )
+                try:
+                    payload = opened['stream'].read(20 * 1024 * 1024 + 1)
+                finally:
+                    opened['stream'].close()
+                if len(payload) > 20 * 1024 * 1024:
+                    raise ValueError('attachment size limit exceeded')
+                if object_type == 'INVOICE':
+                    info = f'发票号：{row.get("invoice_no", "")}  |  金额：¥{row.get("amount", 0)}  |  销售方：{row.get("seller", "")}'
+                else:
+                    info = f'凭证号：{row.get("payment_no", "")}  |  金额：¥{row.get("amount", 0)}  |  付款人：{row.get("payer", "")}'
+                attachments.append((label, info, payload, metadata['originalName']))
+    return attachments
 
 
 def _resolve_legacy_attachment(app_root, stored_path):
-    """Resolve legacy invoice/payment paths without trusting database text."""
+    """Compatibility-only safe resolver retained for migration regression tests.
+
+    Runtime expense/document flows never call this helper; all new reads use
+    ``FileService`` object links above.
+    """
     from pathlib import Path
     import stat
     from urllib.parse import unquote
@@ -1198,51 +1208,22 @@ def _merge_docx_and_images(docx_bytes_list, invoices, payments):
     # ============================================================
     # 发票和支付记录图片 — 统一放在文档末尾
     # ============================================================
-    app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-    # 收集所有附件（发票 + 支付记录）
-    attachments = []  # (type_label, info_text, file_path, extra_data_dict)
-
-    for inv in invoices:
-        fp = inv.get('file_path', '')
-        if not fp:
-            continue
-        full_path = _resolve_legacy_attachment(app_root, fp)
-        if full_path is None:
-            continue
-        info = f'发票号：{inv.get("invoice_no", "")}  |  金额：¥{inv.get("amount", 0)}  |  销售方：{inv.get("seller", "")}'
-        attachments.append(('发票明细', info, full_path, inv))
-
-    for pay in payments:
-        fp = pay.get('file_path', '')
-        if not fp:
-            continue
-        full_path = _resolve_legacy_attachment(app_root, fp)
-        if full_path is None:
-            continue
-        info = f'凭证号：{pay.get("payment_no", "")}  |  金额：¥{pay.get("amount", 0)}  |  收款方：{pay.get("payer", "")}'
-        attachments.append(('支付记录', info, full_path, pay))
+    attachments = _controlled_attachments(invoices, payments)
 
     if attachments:
         # 分页，附件在文档末尾
         merged.add_page_break()
         merged.add_heading('附件', level=1)
 
-        for label, info_text, full_path, data in attachments:
-            if full_path.exists():
-                try:
-                    merged.add_heading(label, level=2)
-                    merged.add_paragraph(info_text).runs[0].font.size = Pt(9)
-                    # PDF → PNG bytes → add_picture；图片直接 bytes
-                    png_pages = _pdf_or_image_to_png_bytes(full_path)
-                    for png_bytes in png_pages:
-                        from io import BytesIO
-                        merged.add_picture(BytesIO(png_bytes), width=Inches(5.5))
-                        merged.add_paragraph('')
-                except Exception:
-                    merged.add_paragraph(f'[{label}加载失败]')
-            else:
-                merged.add_paragraph('[附件文件不存在]')
+        for label, info_text, payload, original_name in attachments:
+            try:
+                merged.add_heading(label, level=2)
+                merged.add_paragraph(info_text).runs[0].font.size = Pt(9)
+                for png_bytes in _pdf_or_image_to_png_bytes(payload, original_name):
+                    merged.add_picture(io.BytesIO(png_bytes), width=Inches(5.5))
+                    merged.add_paragraph('')
+            except Exception:
+                merged.add_paragraph(f'[{label}加载失败]')
 
     buf = io.BytesIO()
     merged.save(buf)

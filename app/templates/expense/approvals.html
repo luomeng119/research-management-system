@@ -104,14 +104,14 @@ function loadRecords() {
                 return;
             }
             tbody.innerHTML = list.map(r => `
-                <tr class="list-row-hover" onmouseenter="showDetailPopup(${JSON.stringify(r).replace(/"/g, '&quot;')}, event)" onmousemove="showDetailPopup(${JSON.stringify(r).replace(/"/g, '&quot;')}, event)" onmouseleave="hideDetailPopup()" style="cursor:pointer;">
-                    <td><small>${r.reimbursement_no || '-'}</small></td>
+                <tr class="list-row-hover">
+                    <td><small>${escapeHtml(r.reimbursement_no || '-')}</small></td>
                     <td>${escapeHtml(r.title || '-')}</td>
                     <td class="text-warning fw-bold">¥${(r.total_amount||0).toFixed(2)}</td>
                     <td>${r.invoice_count || 0}</td>
                     <td>${r.payment_count || 0}</td>
-                    <td><span class="badge bg-${r.status==='已确认'?'success':r.status==='已生成文档'?'info':r.status==='已完成'?'primary':'warning'}">${r.status}</span></td>
-                    <td><small>${r.created_at ? r.created_at.slice(0,16) : '-'}</small></td>
+                    <td><span class="badge bg-${r.status==='已确认'?'success':r.status==='已生成文档'?'info':r.status==='已完成'?'primary':'warning'}">${escapeHtml(r.status)}</span></td>
+                    <td><small>${escapeHtml(r.created_at ? r.created_at.slice(0,16) : '-')}</small></td>
                     <td>
                         <a href="/expense/records" class="btn btn-sm btn-outline-info">详情</a>
                     </td>

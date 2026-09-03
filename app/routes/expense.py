@@ -11,40 +11,39 @@ import logging
 import uuid as _uuid
 from datetime import datetime
 from pathlib import Path
-from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for, send_file
-from werkzeug.utils import secure_filename
+from flask import Blueprint, current_app, render_template, request, jsonify, session, redirect, url_for, send_file
 
 from app.expense_db import (
     get_all_reimbursements, get_reimbursement_by_id,
     create_reimbursement, update_reimbursement, delete_reimbursement,
     toggle_reimbursement_paid,
+    mark_reimbursement_documents_generated,
     add_invoice, get_invoices, get_invoice_by_id, update_invoice, delete_invoice,
     add_payment, get_payments, get_payment_by_id, update_payment, delete_payment,
     get_unmatched_invoices, get_unmatched_payments, recalculate_reimbursement_total,
-    get_db
+    get_expense_stats, find_duplicate_invoice, find_duplicate_payment,
 )
 from app.ocr.recognizer import recognize_file, recognize_payment
 from app.expense_utils import parse_amount
 
 bp = Blueprint('expense', __name__, url_prefix='/expense')
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'uploads', 'expense')
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'expense_templates')
-os.makedirs(UPLOAD_DIR + '/invoices', exist_ok=True)
-os.makedirs(UPLOAD_DIR + '/payments', exist_ok=True)
-
-ALLOWED_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png', 'bmp', 'gif', 'webp'}
 
 # 出差报销的发票类型
 TRAVEL_INVOICE_TYPES = {'火车票', '航空行程单', '出租车发票', '网约车'}
 
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+def _service():
+    return current_app.extensions["expense_service"]
 
 
-def get_upload_dir(doc_type):
-    return os.path.join(UPLOAD_DIR, doc_type, datetime.now().strftime('%Y-%m'))
+def _safe_error(exc, fallback="操作失败"):
+    from app.services.expenses import ExpenseError
+    if isinstance(exc, ExpenseError):
+        return jsonify({'success': False, 'error': exc.message, 'code': exc.code}), exc.status_code
+    logging.exception("[Expense] %s", fallback)
+    return jsonify({'success': False, 'error': fallback}), 500
 
 
 # ============ 页面路由 ============
@@ -60,7 +59,7 @@ def index():
 def upload():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
-    return render_template('expense/upload.html')
+    return redirect(url_for('expense.records'))
 
 
 @bp.route('/records')
@@ -74,21 +73,21 @@ def records():
 def payments():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
-    return render_template('expense/payments.html')
+    return redirect(url_for('expense.records'))
 
 
 @bp.route('/pending')
 def pending():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
-    return render_template('expense/pending.html')
+    return redirect(url_for('expense.records'))
 
 
 @bp.route('/fill')
 def fill():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
-    return render_template('expense/fill.html')
+    return redirect(url_for('expense.records'))
 
 
 @bp.route('/approvals')
@@ -102,213 +101,84 @@ def approvals():
 
 @bp.route('/api/upload', methods=['POST'])
 def api_upload():
-    """上传文件并执行 OCR 识别，自动触发匹配"""
+    """受控上传；OCR 不可用时仍创建可手工补录的记录。"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
-
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'error': '没有文件'}), 400
-
-    file = request.files['file']
-    doc_type = request.form.get('type', 'invoice')  # invoice 或 payment
-
-    if file.filename == '':
+    uploaded = request.files.get('file')
+    if uploaded is None or not uploaded.filename:
         return jsonify({'success': False, 'error': '没有选择文件'}), 400
+    doc_type = request.form.get('type', 'invoice')
+    if doc_type not in {'invoice', 'payment'}:
+        return jsonify({'success': False, 'error': '文件类型无效'}), 400
 
-    if not allowed_file(file.filename):
-        return jsonify({'success': False, 'error': f'不支持的文件类型'}), 400
+    raw = uploaded.stream.read()
+    uploaded.stream.seek(0)
+    if not raw:
+        return jsonify({'success': False, 'error': '空文件不允许上传'}), 415
 
-    # 保存文件
-    filename = secure_filename(file.filename)
-    now = datetime.now()
-    save_dir = get_upload_dir('invoices' if doc_type == 'invoice' else 'payments')
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f"{now.strftime('%Y%m%d%H%M%S')}_{filename}")
-    file.save(save_path)
+    recognized = None
+    manual_required = False
+    try:
+        import tempfile
+        suffix = Path(uploaded.filename).suffix.lower()
+        with tempfile.NamedTemporaryFile(suffix=suffix) as staged:
+            staged.write(raw)
+            staged.flush()
+            recognized = recognize_file(staged.name) if doc_type == 'invoice' else recognize_payment(staged.name)
+    except Exception:
+        logging.warning("[Expense] OCR unavailable; preserving manual workflow", exc_info=True)
+        manual_required = True
 
     try:
-        # 自动判断是发票还是支付记录：两个 OCR 器并行跑，分数高者胜出
-        import threading
-        result_invoice_holder = [None]
-        result_payment_holder = [None]
-
-        def run_invoice():
-            result_invoice_holder[0] = recognize_file(save_path)
-        def run_payment():
-            result_payment_holder[0] = recognize_payment(save_path)
-
-        t1 = threading.Thread(target=run_invoice)
-        t2 = threading.Thread(target=run_payment)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
-        result_invoice = result_invoice_holder[0]
-        result_payment = result_payment_holder[0]
-
-        # 评分：统计有效字段数量
-        def score_invoice(r):
-            if not isinstance(r, dict): return 0
-            fields = r.get('fields', {})
-            score = 0
-            for k in ('invoice_no', 'date', 'amount', 'seller', 'buyer', 'tax_amount', 'price_ex_tax', 'tax_rate'):
-                if fields.get(k): score += 1
-            return score
-
-        def score_payment(r):
-            if not isinstance(r, dict): return 0
-            score = 0
-            for k in ('payment_no', 'amount', 'pay_date'):
-                if r.get(k): score += 1
-            return score
-
-        score_i = score_invoice(result_invoice)
-        score_p = score_payment(result_payment)
-
-        # 允许手动 override（前端传 type 参数时尊重选择）
+        actor_user_id = int(session.get('user_id') or 0)
+        request_id = getattr(request, 'request_id', 'expense-upload')
+        stream = io.BytesIO(raw)
         if doc_type == 'invoice':
-            chosen_type = 'invoice'
-        elif doc_type == 'payment':
-            chosen_type = 'payment'
-        else:
-            chosen_type = 'invoice' if score_i >= score_p else 'payment'
-
-        logging.info(f"[Expense] OCR 自动判断: invoice分数={score_i}, payment分数={score_p}, 选择={chosen_type}")
-
-        if chosen_type == 'invoice':
-            # OCR 发票
-            if not isinstance(result_invoice, dict) or 'fields' not in result_invoice:
-                logging.error(f"[Expense] OCR 返回格式错误: {type(result_invoice).__name__}")
-                return jsonify({'success': False, 'error': 'OCR 识别失败，请重试'}), 500
-            fields = result_invoice['fields']
-            ocr_text = result_invoice.get('text', '')
-
-            # 金额数字化
+            fields = recognized.get('fields', {}) if isinstance(recognized, dict) else {}
             amount = parse_amount(fields.get('amount', '0'))
             inv_date = fields.get('date', '')
-
-            # ---- 服务器端去重：金额+日期相同则跳过 ----
-            if amount > 0 and inv_date:
-                with get_db() as conn:
-                    c = conn.cursor()
-                    c.execute(
-                        "SELECT id, invoice_no FROM expense_invoice WHERE amount=? AND date=? AND invoice_no=? LIMIT 1",
-                        (amount, inv_date, fields.get('invoice_no', ''))
-                    )
-                    existing = c.fetchone()
-                    if existing:
-                        logging.info(f"[Expense] 发票去重命中: amount=***, date={inv_date}, existing_id={existing[0]}")
-                        return jsonify({
-                            'success': False,
-                            'error': f'金额 {amount:.2f} + 日期 {inv_date} 的发票已存在（发票号: {existing[1] or existing[0]}），请勿重复上传',
-                            'duplicate': True,
-                            'existing_id': existing[0],
-                        }), 200
-
-            # 保存发票记录
-            invoice_id = add_invoice(
-                reimbursement_id=None,
-                invoice_no=fields.get('invoice_no', ''),
-                date=fields.get('date', ''),
-                amount=amount,
-                tax_amount=parse_amount(fields.get('tax_amount', '0')),
-                price_ex_tax=parse_amount(fields.get('price_ex_tax', '0')),
-                buyer=fields.get('buyer', ''),
-                seller=fields.get('seller', ''),
-                content=fields.get('content', ''),
-                spec=fields.get('spec', ''),
-                invoice_type=fields.get('invoice_type', ''),
-                tax_rate=fields.get('tax_rate', ''),
-                ocr_text=ocr_text,
-                file_path=save_path,
-                confidence=fields.get('confidence', '中'),
-                items=fields.get('items', []),
-                # 火车票/机票结构化字段
-                train_no=fields.get('train_no', ''),
-                departure_station=fields.get('departure_station', ''),
-                arrival_station=fields.get('arrival_station', ''),
-                departure_date=fields.get('departure_date', ''),
-                seat_type=fields.get('seat_type', ''),
-                passenger_name=fields.get('passenger_name', ''),
-                id_card_no=fields.get('id_card_no', ''),
-                flight_no=fields.get('flight_no', ''),
-                departure_airport=fields.get('departure_airport', ''),
-                arrival_airport=fields.get('arrival_airport', ''),
-                departure_time=fields.get('departure_time', ''),
+            existing = find_duplicate_invoice(str(amount), inv_date, fields.get('invoice_no', '')) if amount > 0 and inv_date else None
+            if existing:
+                return jsonify({'success': False, 'error': '相同金额、日期和发票号的发票已存在', 'duplicate': True, 'existing_id': existing['id']}), 200
+            iid, stored = _service().create_invoice_with_upload(
+                stream, uploaded.filename, actor_user_id=actor_user_id, request_id=request_id,
+                invoice_no=fields.get('invoice_no', ''), date=inv_date, amount=str(amount),
+                tax_amount=str(parse_amount(fields.get('tax_amount', '0'))),
+                price_ex_tax=str(parse_amount(fields.get('price_ex_tax', '0'))),
+                buyer=fields.get('buyer', ''), seller=fields.get('seller', ''),
+                content=fields.get('content', ''), spec=fields.get('spec', ''),
+                invoice_type=fields.get('invoice_type', ''), tax_rate=fields.get('tax_rate', ''),
+                confidence=fields.get('confidence', '中'), items=fields.get('items', []),
+                train_no=fields.get('train_no', ''), departure_station=fields.get('departure_station', ''),
+                arrival_station=fields.get('arrival_station', ''), departure_date=fields.get('departure_date', ''),
+                seat_type=fields.get('seat_type', ''), passenger_name=fields.get('passenger_name', ''),
+                id_card_no=fields.get('id_card_no', ''), flight_no=fields.get('flight_no', ''),
+                departure_airport=fields.get('departure_airport', ''), arrival_airport=fields.get('arrival_airport', ''),
+                departure_time=fields.get('departure_time', ''), ocr_text=(recognized or {}).get('text', ''),
             )
-
-            # 触发匹配
-            match_result = match_invoices_and_payments()
-
-            return jsonify({
-                'success': True,
-                'type': 'invoice',
-                'record_id': invoice_id,
-                'fields': fields,
-                'ocr_text': ocr_text[:500] if ocr_text else '',
-                'filename': filename,
-                'confidence': fields.get('confidence', '中'),
-                'matched': match_result.get('new_matches', []) if match_result else [],
-            })
-
-        else:
-            # OCR 支付记录
-            if not isinstance(result_payment, dict):
-                logging.error(f"[Expense] 支付凭证 OCR 返回格式错误: {type(result_payment).__name__}")
-                return jsonify({'success': False, 'error': '支付凭证识别失败，请重试'}), 500
-
-            amount = parse_amount(result_payment.get('amount', '0'))
-            pay_date = result_payment.get('pay_date', '')
-
-            # ---- 服务器端去重：金额+日期相同则跳过 ----
-            if amount > 0 and pay_date:
-                with get_db() as conn:
-                    c = conn.cursor()
-                    c.execute(
-                        "SELECT id, payment_no FROM expense_payment WHERE amount=? AND pay_date=? LIMIT 1",
-                        (amount, pay_date)
-                    )
-                    existing = c.fetchone()
-                    if existing:
-                        logging.info(f"[Expense] 支付记录去重命中: amount=***, pay_date={pay_date}, existing_id={existing[0]}")
-                        return jsonify({
-                            'success': False,
-                            'error': f'金额 {amount:.2f} + 日期 {pay_date} 的支付记录已存在（凭证号: {existing[1] or existing[0]}），请勿重复上传',
-                            'duplicate': True,
-                            'existing_id': existing[0],
-                        }), 200
-
-            payment_id = add_payment(
-                reimbursement_id=None,
-                payment_no=result_payment.get('payment_no', ''),
-                amount=amount,
-                pay_date=result_payment.get('pay_date', ''),
-                payer=result_payment.get('payer', ''),
-                ocr_text=result_payment.get('ocr_text', ''),
-                file_path=save_path
-            )
-
-            # 触发匹配
-            match_result = match_invoices_and_payments()
-
-            return jsonify({
-                'success': True,
-                'type': 'payment',
-                'record_id': payment_id,
-                'fields': {
-                    'payment_no': result_payment.get('payment_no', ''),
-                    'amount': result_payment.get('amount', ''),
-                    'pay_date': result_payment.get('pay_date', ''),
-                    'payer': result_payment.get('payer', ''),
-                },
-                'ocr_text': result_payment.get('ocr_text', '')[:500],
-                'filename': filename,
-                'matched': match_result.get('new_matches', []) if match_result else [],
-            })
-
-    except Exception as e:
-        logging.error(f"[Expense] OCR 失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+            match_result = match_invoices_and_payments() if not manual_required else {'new_matches': []}
+            return jsonify({'success': True, 'type': 'invoice', 'record_id': iid, 'fields': fields,
+                            'ocr_text': '', 'filename': stored['originalName'],
+                            'confidence': fields.get('confidence', '待补录'),
+                            'manual_required': manual_required, 'matched': match_result.get('new_matches', [])})
+        fields = recognized if isinstance(recognized, dict) else {}
+        amount = parse_amount(fields.get('amount', '0'))
+        pay_date = fields.get('pay_date', '')
+        existing = find_duplicate_payment(str(amount), pay_date) if amount > 0 and pay_date else None
+        if existing:
+            return jsonify({'success': False, 'error': '相同金额和日期的支付记录已存在', 'duplicate': True, 'existing_id': existing['id']}), 200
+        pid, stored = _service().create_payment_with_upload(
+            stream, uploaded.filename, actor_user_id=actor_user_id, request_id=request_id,
+            payment_no=fields.get('payment_no', ''), amount=str(amount), pay_date=pay_date,
+            payer=fields.get('payer', ''), ocr_text=fields.get('ocr_text', ''),
+        )
+        match_result = match_invoices_and_payments() if not manual_required else {'new_matches': []}
+        return jsonify({'success': True, 'type': 'payment', 'record_id': pid,
+                        'fields': {key: fields.get(key, '') for key in ('payment_no', 'amount', 'pay_date', 'payer')},
+                        'ocr_text': '', 'filename': stored['originalName'],
+                        'manual_required': manual_required, 'matched': match_result.get('new_matches', [])})
+    except Exception as exc:
+        return _safe_error(exc, "上传处理失败")
 
 
 # ============ API：报销项 ============
@@ -328,7 +198,7 @@ def api_reimbursements():
         return jsonify({'success': True, 'reimbursements': records})
     except Exception as e:
         logging.error(f"[Expense] 获取报销项失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/reimbursements/<int:rid>', methods=['GET'])
@@ -352,7 +222,7 @@ def api_reimbursement_get(rid):
         })
     except Exception as e:
         logging.error(f"[Expense] 获取报销项详情失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/reimbursements', methods=['POST'])
@@ -369,7 +239,7 @@ def api_reimbursement_create():
         return jsonify({'success': True, 'id': rid, 'reimbursement_no': rno})
     except Exception as e:
         logging.error(f"[Expense] 创建报销项失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/reimbursements/<int:rid>', methods=['PUT'])
@@ -383,7 +253,7 @@ def api_reimbursement_update(rid):
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 更新报销项失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/reimbursements/<int:rid>', methods=['DELETE'])
@@ -401,7 +271,7 @@ def api_reimbursement_delete(rid):
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 删除报销项失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/reimbursements/<int:rid>/toggle_type', methods=['POST'])
@@ -410,18 +280,11 @@ def api_reimbursement_toggle_type(rid):
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        reimbursement = get_reimbursement_by_id(rid)
-        if not reimbursement:
-            return jsonify({'success': False, 'error': '报销项不存在'}), 404
-        if reimbursement.get('status') not in ('草稿',):
-            return jsonify({'success': False, 'error': '已确认的报销项不可切换类型'}), 400
-        current = reimbursement.get('reimbursement_type', '采购报销')
-        new_type = '出差报销' if current == '采购报销' else '采购报销'
-        update_reimbursement(rid, reimbursement_type=new_type)
+        new_type = _service().toggle_type(rid)
         return jsonify({'success': True, 'reimbursement_type': new_type})
     except Exception as e:
         logging.error(f"[Expense] 切换报销类型失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/reimbursements/<int:rid>/toggle_paid', methods=['POST'])
@@ -430,14 +293,11 @@ def api_reimbursement_toggle_paid(rid):
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        reimbursement = get_reimbursement_by_id(rid)
-        if not reimbursement:
-            return jsonify({'success': False, 'error': '报销项不存在'}), 404
-        new_val = toggle_reimbursement_paid(rid)
+        new_val = _service().toggle_paid(rid)
         return jsonify({'success': True, 'is_paid': new_val})
     except Exception as e:
         logging.error(f"[Expense] 切换报销状态失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/reimbursements/<int:rid>/confirm', methods=['POST'])
@@ -446,21 +306,11 @@ def api_reimbursement_confirm(rid):
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        reimbursement = get_reimbursement_by_id(rid)
-        if not reimbursement:
-            return jsonify({'success': False, 'error': '报销项不存在'}), 404
-        # 检查是否有发票和支付记录
-        invoices = get_invoices(reimbursement_id=rid)
-        payments = get_payments(reimbursement_id=rid)
-        if not invoices:
-            return jsonify({'success': False, 'error': '报销项没有发票'}), 400
-        if not payments:
-            return jsonify({'success': False, 'error': '报销项没有支付记录'}), 400
-        update_reimbursement(rid, status='已确认', confirmed_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        _service().confirm(rid)
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 确认报销项失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/reimbursements/<int:rid>/generate_docs', methods=['POST'])
@@ -597,7 +447,7 @@ def api_reimbursement_generate_docs(rid):
             docs_to_send.append(('审批单.docx', output2))
 
             # 更新状态
-            update_reimbursement(rid, status='已生成文档')
+            mark_reimbursement_documents_generated(rid)
 
             # 依次发送两个文件
             if len(docs_to_send) == 1:
@@ -605,20 +455,20 @@ def api_reimbursement_generate_docs(rid):
                 buf.seek(0)
                 return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document', as_attachment=True, download_name=name)
             else:
-                # 返回第一个，第二个通过另一个链接（唯一文件名，防止并发覆盖）
-                name1, buf1 = docs_to_send[0]
-                buf1.seek(0)
-                # 生成唯一临时文件名：approval_{rid}_{uuid4}.docx
-                file_uuid = _uuid.uuid4().hex
-                tmp_basename = f'approval_{rid}_{file_uuid}.docx'
-                tmp_path = os.path.join(tempfile.gettempdir(), tmp_basename)
-                docs_to_send[1][1].seek(0)
-                with open(tmp_path, 'wb') as f:
-                    f.write(docs_to_send[1][1].read())
+                file_service = current_app.extensions.get('file_service')
+                if file_service is None:
+                    return jsonify({'success': False, 'error': '附件服务不可用'}), 503
+                approval = docs_to_send[1][1]
+                approval.seek(0)
+                stored = file_service.upload(
+                    approval, original_name='审批单.docx', object_type='EXPENSE', object_id=str(rid),
+                    actor_user_id=int(session.get('user_id') or 0),
+                    request_id=getattr(request, 'request_id', 'expense-generate-docs'),
+                )
                 return jsonify({
                     'success': True,
                     'settlement': True,
-                    'approval_path': f'/expense/api/download_approval/{rid}/{file_uuid}',
+                    'approval_path': f'/expense/api/download_approval/{rid}/{stored["fileId"]}',
                 })
 
         except ImportError:
@@ -626,27 +476,33 @@ def api_reimbursement_generate_docs(rid):
 
     except Exception as e:
         logging.error(f"[Expense] 生成文档失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/download_approval/<int:rid>/<path:file_uuid>', methods=['GET'])
 def api_download_approval(rid, file_uuid):
-    """下载审批单（UUID 保证只能下载自己触发的文件）"""
+    """从受控存储读取审批单。"""
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     # 权限校验：检查报销项是否存在（防止枚举攻击）
     reimb = get_reimbursement_by_id(rid)
     if not reimb:
         return jsonify({'success': False, 'error': '报销项不存在'}), 404
-    # 验证 uuid 格式（防止路径遍历）
-    if not file_uuid or len(file_uuid) < 8:
+    try:
+        _uuid.UUID(file_uuid)
+    except (TypeError, ValueError):
         return jsonify({'success': False, 'error': '无效的文件标识'}), 400
-    import tempfile
-    tmp_basename = f'approval_{rid}_{file_uuid}.docx'
-    tmp_path = os.path.join(tempfile.gettempdir(), tmp_basename)
-    if os.path.exists(tmp_path):
-        return send_file(tmp_path, mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document', as_attachment=True, download_name='审批单.docx')
-    return jsonify({'success': False, 'error': '文件不存在或已过期'}), 404
+    file_service = current_app.extensions.get('file_service')
+    if file_service is None:
+        return jsonify({'success': False, 'error': '附件服务不可用'}), 503
+    try:
+        metadata = next((item for item in file_service.list_for_object(object_type='EXPENSE', object_id=str(rid)) if item['fileId'] == file_uuid), None)
+        if metadata is None:
+            return jsonify({'success': False, 'error': '文件不存在或已过期'}), 404
+        opened = file_service.open_version_stream(file_uuid, metadata['versionNo'], object_type='EXPENSE', object_id=str(rid))
+        return send_file(opened['stream'], mimetype=opened['mediaType'], as_attachment=True, download_name=opened['originalName'])
+    except Exception as exc:
+        return _safe_error(exc, '下载审批单失败')
 
 
 # ============ API：发票 ============
@@ -664,7 +520,7 @@ def api_invoices():
         return jsonify({'success': True, 'invoices': invoices})
     except Exception as e:
         logging.error(f"[Expense] 获取发票失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/invoices/<int:iid>', methods=['GET'])
@@ -679,7 +535,7 @@ def api_invoice_get(iid):
         return jsonify({'success': True, 'invoice': invoice})
     except Exception as e:
         logging.error(f"[Expense] 获取发票详情失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/invoices/<int:iid>', methods=['PUT'])
@@ -689,16 +545,18 @@ def api_invoice_update(iid):
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
         data = request.get_json() or {}
-        # 金额字段数字化
+        # JSON 数字先转成十进制文本，避免 float 直接进入金额层。
         if 'amount' in data:
-            data['amount'] = parse_amount(data['amount'])
+            data['amount'] = str(data['amount'])
         if 'tax_amount' in data:
-            data['tax_amount'] = parse_amount(data['tax_amount'])
+            data['tax_amount'] = str(data['tax_amount'])
+        if 'price_ex_tax' in data:
+            data['price_ex_tax'] = str(data['price_ex_tax'])
         update_invoice(iid, **data)
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 更新发票失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/invoices/<int:iid>', methods=['DELETE'])
@@ -718,7 +576,7 @@ def api_invoice_delete(iid):
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 删除发票失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 # ============ API：支付记录 ============
@@ -736,7 +594,7 @@ def api_payments_list():
         return jsonify({'success': True, 'payments': payments})
     except Exception as e:
         logging.error(f"[Expense] 获取支付记录失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/payments/<int:pid>', methods=['GET'])
@@ -751,7 +609,7 @@ def api_payment_get(pid):
         return jsonify({'success': True, 'payment': payment})
     except Exception as e:
         logging.error(f"[Expense] 获取支付记录详情失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/payments/<int:pid>', methods=['PUT'])
@@ -762,12 +620,12 @@ def api_payment_update(pid):
     try:
         data = request.get_json() or {}
         if 'amount' in data:
-            data['amount'] = parse_amount(data['amount'])
+            data['amount'] = str(data['amount'])
         update_payment(pid, **data)
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 更新支付记录失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/payments/<int:pid>', methods=['DELETE'])
@@ -786,7 +644,7 @@ def api_payment_delete(pid):
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 删除支付记录失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 # ============ API：匹配 ============
@@ -801,7 +659,7 @@ def api_match():
         return jsonify({'success': True, **result})
     except Exception as e:
         logging.error(f"[Expense] 匹配失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/pending', methods=['GET'])
@@ -821,7 +679,7 @@ def api_pending():
         })
     except Exception as e:
         logging.error(f"[Expense] 获取待整理区失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/reimbursements/<int:rid>/unmatch_invoice/<int:iid>', methods=['POST'])
@@ -830,15 +688,11 @@ def api_unmatch_invoice(rid, iid):
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        invoice = get_invoice_by_id(iid)
-        if not invoice:
-            return jsonify({'success': False, 'error': '发票不存在'}), 404
-        update_invoice(iid, reimbursement_id=None, status='未匹配', matched_payment_ids='[]')
-        recalculate_reimbursement_total(rid)
+        _service().detach_invoice(rid, iid)
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 取消匹配失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 
@@ -848,14 +702,11 @@ def api_unmatch_payment(rid, pid):
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        payment = get_payment_by_id(pid)
-        if not payment:
-            return jsonify({'success': False, 'error': '支付记录不存在'}), 404
-        update_payment(pid, reimbursement_id=None, status='未匹配', matched_invoice_ids='[]')
+        _service().detach_payment(rid, pid)
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 取消匹配失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 @bp.route('/api/reimbursements/<int:rid>/add_invoice/<int:iid>', methods=['POST'])
 def api_add_invoice_to_reimbursement(rid, iid):
@@ -863,18 +714,11 @@ def api_add_invoice_to_reimbursement(rid, iid):
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        invoice = get_invoice_by_id(iid)
-        if not invoice:
-            return jsonify({'success': False, 'error': '发票不存在'}), 404
-        reimbursement = get_reimbursement_by_id(rid)
-        if not reimbursement:
-            return jsonify({'success': False, 'error': '报销项不存在'}), 404
-        update_invoice(iid, reimbursement_id=rid, status='已匹配')
-        recalculate_reimbursement_total(rid)
+        _service().attach_invoice(rid, iid)
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 添加发票到报销项失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/reimbursements/<int:rid>/add_payment/<int:pid>', methods=['POST'])
@@ -883,17 +727,11 @@ def api_add_payment_to_reimbursement(rid, pid):
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        payment = get_payment_by_id(pid)
-        if not payment:
-            return jsonify({'success': False, 'error': '支付记录不存在'}), 404
-        reimbursement = get_reimbursement_by_id(rid)
-        if not reimbursement:
-            return jsonify({'success': False, 'error': '报销项不存在'}), 404
-        update_payment(pid, reimbursement_id=rid, status='已匹配')
+        _service().attach_payment(rid, pid)
         return jsonify({'success': True})
     except Exception as e:
         logging.error(f"[Expense] 添加支付记录到报销项失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 @bp.route('/api/manual_match', methods=['POST'])
@@ -910,147 +748,23 @@ def api_manual_match():
         if not invoice_ids or not payment_ids:
             return jsonify({'success': False, 'error': '请选择至少一张发票和一条支付记录'}), 400
 
-        # 如果没有指定报销项，创建新的
-        if not rid:
-            title = f"{datetime.now().strftime('%Y年%m月')}报销"
-            approver = session.get('name', '')
-            rid, _ = create_reimbursement(title=title, approver=approver)
-
-        # 绑定发票
-        for iid in invoice_ids:
-            update_invoice(iid, reimbursement_id=rid, status='已匹配')
-
-        # 绑定支付记录
-        for pid in payment_ids:
-            update_payment(pid, reimbursement_id=rid, status='已匹配')
-
-        # 重算总金额
-        recalculate_reimbursement_total(rid)
+        rid = _service().manual_match(
+            invoice_ids, payment_ids, int(rid) if rid else None,
+            title=f"{datetime.now().strftime('%Y年%m月')}报销",
+            approver=session.get('name', ''),
+        )
 
         return jsonify({'success': True, 'reimbursement_id': rid})
     except Exception as e:
         logging.error(f"[Expense] 手工匹配失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)
 
 
 # ============ 匹配引擎核心逻辑 ============
 
 def match_invoices_and_payments():
-    """
-    核心匹配逻辑（子集求和版本）：
-    - 对每条未匹配支付记录，在剩余未匹配发票中穷举所有子集
-    - 找金额之和等于支付记录金额的发票组合（允许多张发票凑一张支付记录）
-    - 每张发票只能使用一次（用完从剩余池移除）
-    - 返回匹配结果统计
-    """
-    from itertools import combinations
-
-    def find_best_subset(candidates, target, pay_date):
-        """
-        找出一组发票其金额之和最接近 target（优先完全相等，最少发票数）
-        candidates: [(id, amount, date), ...] 未被使用的发票
-        target: 目标金额
-        pay_date: 支付记录日期（发票日期必须 <= 支付日期）
-        返回: [invoice_id, ...] 或 None
-        """
-        if target <= 0 or not candidates:
-            return None
-        # 不做日期过滤：允许发票日期晚于支付日期（如先消费后开票场景）
-        valid_candidates = candidates
-        max_subset_size = min(len(valid_candidates), 10)
-        for size in range(1, max_subset_size + 1):
-            for combo in combinations(valid_candidates, size):
-                if abs(sum(inv[1] for inv in combo) - target) < 0.01:
-                    return [inv[0] for inv in combo]
-        return None
-
-    unmatched_invoices = get_unmatched_invoices()
-    unmatched_payments = get_unmatched_payments()
-
-    new_matches = []
-    used_invoice_ids = set()   # 全局已使用发票ID（不可重复）
-    used_payment_ids = set()  # 全局已使用支付记录ID
-
-    # 按金额降序处理支付记录（大金额优先，更容易组合）
-    payments_sorted = sorted(
-        unmatched_payments,
-        key=lambda p: float(p.get('amount') or 0),
-        reverse=True
-    )
-
-    for payment in payments_sorted:
-        pid = payment['id']
-        if pid in used_payment_ids:
-            continue
-        pay_amount = float(payment.get('amount') or 0)
-        pay_date = payment.get('pay_date', '')
-
-        if pay_amount <= 0:
-            continue
-
-        # 可用的发票候选（排除已用的）
-        available = [
-            (i['id'], float(i['amount'] or 0), i.get('date', ''))
-            for i in unmatched_invoices
-            if i['id'] not in used_invoice_ids
-        ]
-
-        matched_inv_ids = find_best_subset(available, pay_amount, pay_date)
-
-        if not matched_inv_ids:
-            continue
-
-        # 找到匹配：创建或复用报销项
-        title = f"{datetime.now().strftime('%Y年%m月')}报销"
-        approver = session.get('name', '')
-
-        # 归属冲突检测：检查所有发票是否已属于不同报销项
-        existing_rids = set()
-        for iid in matched_inv_ids:
-            inv_obj = get_invoice_by_id(iid)
-            if inv_obj and inv_obj.get('reimbursement_id'):
-                existing_rids.add(inv_obj['reimbursement_id'])
-
-        if len(existing_rids) > 1:
-            # 多张发票已分属不同报销项，跳过此支付记录（冲突）
-            logging.warning(f"[Expense] 匹配冲突：发票 {matched_inv_ids} 分属不同报销项 {existing_rids}，跳过支付记录 {pid}")
-            continue
-        elif len(existing_rids) == 1:
-            rid = existing_rids.pop()
-        else:
-            # 根据发票类型判断报销类型
-            matched_inv_types = [get_invoice_by_id(iid).get('invoice_type', '') for iid in matched_inv_ids]
-            is_travel = any(t in TRAVEL_INVOICE_TYPES for t in matched_inv_types)
-            reimbursement_type = '出差报销' if is_travel else '采购报销'
-            rid, _ = create_reimbursement(title=title, approver=approver, reimbursement_type=reimbursement_type)
-
-        # 绑定支付记录
-        update_payment(pid, reimbursement_id=rid, status='已匹配')
-        used_payment_ids.add(pid)
-
-        # 收集匹配的发票对象并绑定
-        matched_invoice_objs = []
-        for iid in matched_inv_ids:
-            update_invoice(iid, reimbursement_id=rid, status='已匹配')
-            used_invoice_ids.add(iid)
-            inv_obj = get_invoice_by_id(iid)
-            if inv_obj:
-                matched_invoice_objs.append(inv_obj)
-
-        # 重算总金额
-        recalculate_reimbursement_total(rid)
-
-        new_matches.append({
-            'reimbursement_id': rid,
-            'payment': payment,
-            'invoices': matched_invoice_objs,
-        })
-
-    return {
-        'new_matches': new_matches,
-        'total_invoices_matched': len(used_invoice_ids),
-        'total_payments_matched': len(used_payment_ids),
-    }
+    """在单个 PostgreSQL 事务中执行有界精确金额匹配。"""
+    return _service().auto_match(approver=session.get('name', ''))
 
 
 # ============ 首页统计数据 ============
@@ -1061,54 +775,8 @@ def api_stats():
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        with get_db() as conn:
-            c = conn.cursor()
-
-            # 待确认报销项数（状态=草稿 且 有发票）
-            c.execute('''SELECT COUNT(DISTINCT r.id) FROM expense_reimbursement r
-                JOIN expense_invoice i ON i.reimbursement_id = r.id
-                WHERE r.status = '草稿' ''')
-            draft_count = c.fetchone()[0]
-
-            # 待整理发票数
-            c.execute("SELECT COUNT(*) FROM expense_invoice WHERE status='未匹配'")
-            unmatched_invoice_count = c.fetchone()[0]
-
-            # 待整理支付记录数
-            c.execute("SELECT COUNT(*) FROM expense_payment WHERE status='未匹配'")
-            unmatched_payment_count = c.fetchone()[0]
-
-            # 三单完整性告警：报销项有发票但无支付记录，或有支付记录但无发票
-            c.execute('''SELECT COUNT(DISTINCT r.id) FROM expense_reimbursement r
-                WHERE r.status NOT IN ('已作废', '已完成')
-                AND EXISTS (SELECT 1 FROM expense_invoice i WHERE i.reimbursement_id = r.id)
-                AND NOT EXISTS (SELECT 1 FROM expense_payment p WHERE p.reimbursement_id = r.id)''')
-            missing_payment = c.fetchone()[0]
-
-            c.execute('''SELECT COUNT(DISTINCT r.id) FROM expense_reimbursement r
-                WHERE r.status NOT IN ('已作废', '已完成')
-                AND NOT EXISTS (SELECT 1 FROM expense_invoice i WHERE i.reimbursement_id = r.id)
-                AND EXISTS (SELECT 1 FROM expense_payment p WHERE p.reimbursement_id = r.id)''')
-            missing_invoice = c.fetchone()[0]
-
-            # 最近报销项
-            c.execute('SELECT * FROM expense_reimbursement ORDER BY created_at DESC LIMIT 5')
-            rows = c.fetchall()
-            cols = [d[0] for d in c.description]
-            recent = [dict(zip(cols, r)) for r in rows]
-
-
-            return jsonify({
-                'success': True,
-                'stats': {
-                    'draft_count': draft_count,
-                    'unmatched_invoice_count': unmatched_invoice_count,
-                    'unmatched_payment_count': unmatched_payment_count,
-                    'missing_payment_count': missing_payment,
-                    'missing_invoice_count': missing_invoice,
-                },
-                'recent_reimbursements': recent,
-            })
+        stats, recent = get_expense_stats()
+        return jsonify({'success': True, 'stats': stats, 'recent_reimbursements': recent})
     except Exception as e:
         logging.error(f"[Expense] 获取统计失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return _safe_error(e)

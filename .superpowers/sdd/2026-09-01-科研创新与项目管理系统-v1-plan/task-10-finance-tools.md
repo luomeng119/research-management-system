@@ -41,4 +41,13 @@
 
 ## 执行报告
 
-待实现者追加。
+### 2026-09-03 实现批次
+
+- RED：首个 Service 契约测试因 `app.services.expenses` 不存在失败；真实 DOCX 生成测试暴露 `resolve_auto_fields` 的 `datetime` 局部遮蔽异常。两项均在实现后转绿。
+- 实现：报销、发票/明细、支付记录已迁移到 PostgreSQL Repository/Service；兼容门面不再包含 SQLite、DDL 或运行时建表。金额/日期/JSON 限额、字段白名单、状态锁、跨报销项拒绝、总额重算和审计均由 Service 管理。
+- 并发/原子性：报销和支付编号使用 PostgreSQL advisory lock；自动匹配使用事务级 advisory lock + 行锁且封顶 20 个候选/50,000 次组合；attach/detach/manual/auto/confirm/delete/documents JSON 均在单事务内完成。故障注入验证业务行与匹配关系不会部分提交。
+- 附件：新上传只通过 FileService，列表/详情返回受控 `fileId/versionNo`，前端使用 `/preview/file` 受控引用；删除发票/支付时在同一事务归档文件元数据、解除对象链接并删除业务行，不遗留活动孤儿链接。OCR 不可用时仍保存受控附件和待手工补录记录。
+- 文档：三个现有 DOCX 模板均已真实生成 Word；仅有 JSON 的“科研物资采购申请单”明确返回模板缺失；多单据合并会真实复制全部选定内容，全量合并从 FileService 读取附件并控制文件/页数/像素上限。
+- 安全/兼容：保留契约中页面和 API URL，缺页面转到 records；响应屏蔽 OCR 全文、绝对路径和完整证件号，内部异常不回显；修复报销页面中用户值进入动态 HTML/内联事件的相关 XSS sink。
+- GREEN：本地财务专项 `11 passed, 12 skipped`（PostgreSQL 用例未注入时跳过）；隔离 PostgreSQL runner 为 `1 + 11 + 2 + 1 + 23 + 54 = 92 passed`，其中财务专项 `23 passed`；受影响回归 `150 passed, 53 skipped`；最终全量 `360 passed, 60 skipped`；`compileall`、`bash -n scripts/test_postgres.sh`、`git diff --check` 均通过。
+- 残余边界：交付包财务四表为空，本批证据为真实 PostgreSQL 空库+合成业务数据，不代表已验收真实历史财务数据迁移；DOCX 结构与内容完整性已自动验证，最终版式仍需人工视觉验收。独立 Spec/Quality 复核未由本实现者代替。

@@ -197,6 +197,24 @@ def create_app(test_config=None):
     if generic_tables_service is not None:
         app.extensions["generic_tables_service"] = generic_tables_service
 
+    expense_service = app.config.get("EXPENSE_SERVICE")
+    if expense_service is None and engine is not None:
+        import sqlalchemy as sa
+
+        inspector = sa.inspect(engine)
+        if all(inspector.has_table(name) for name in (
+            "expense_reimbursement", "expense_invoice",
+            "expense_invoice_item", "expense_payment",
+        )):
+            from app.repositories.expenses import ExpensesRepository
+            from app.services.expenses import ExpenseService
+
+            expense_service = ExpenseService(
+                ExpensesRepository(engine), audit_service, file_service,
+            )
+    if expense_service is not None:
+        app.extensions["expense_service"] = expense_service
+
     assistant_service = app.config.get("ASSISTANT_SERVICE")
     if assistant_service is None and engine is not None and audit_service is not None:
         import sqlalchemy as sa

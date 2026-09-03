@@ -330,6 +330,8 @@ if [[ "$t10_contract" -eq 1 ]]; then
   T10_TEST_DATABASE_URL="$DATABASE_URL" \
     "$t02_python" -m pytest app/tests/test_generic_tables_postgres.py -q \
     -k postgresql_concurrent_snapshot
+  T10_TEST_DATABASE_URL="$DATABASE_URL" \
+    "$t02_python" -m pytest app/tests/test_expense_tools.py -q
 fi
 "$t02_python" -m pytest app/tests/test_db_contract.py -q
 if [[ "$t03_contract" -eq 1 ]]; then
