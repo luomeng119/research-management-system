@@ -557,6 +557,56 @@ def test_postgresql_expert_runtime_contract():
         engine.dispose()
 
 
+@pytest.mark.skipif(
+    not os.environ.get("T10_TEST_DATABASE_URL"),
+    reason="requires isolated PostgreSQL",
+)
+def test_postgresql_expert_runtime_contract_reference_library_uses_runtime_metadata(tmp_path):
+    """The T10 runner must exercise retained files outside doc_templates."""
+    from app.repositories.files import FilesRepository
+    from app.repositories.reference_library import ReferenceLibraryRepository
+    from app.services.files import FileService
+    from app.services.reference_library import ReferenceLibraryService
+
+    engine = sa.create_engine(os.environ["T10_TEST_DATABASE_URL"])
+    suffix = uuid.uuid4().hex[:10]
+    users = sa.Table("users", sa.MetaData(), autoload_with=engine)
+    doc_templates = sa.Table("doc_templates", sa.MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        owner_id = connection.execute(users.insert().values(
+            username=f"t10_reference_{suffix}", password="test-only", role="BUSINESS_USER",
+            name="参考库测试", status="active", directory_permissions={}, must_change_password=False,
+            version=1,
+        ).returning(users.c.id)).scalar_one()
+        before_schemas = connection.execute(sa.select(sa.func.count()).select_from(doc_templates)).scalar_one()
+    try:
+        service = ReferenceLibraryService(
+            ReferenceLibraryRepository(engine), AuditRecorder(),
+            FileService(FilesRepository(engine), AuditRecorder(), storage_root=tmp_path / "reference-files", max_bytes=1024 * 1024, preview_max_bytes=1024),
+        )
+        standard = service.upload_standard(BytesIO(b"%PDF-1.4\npostgres"), "postgres.pdf", f"PG标准{suffix}", "国家标准", owner_id, f"req-pg-standard-{suffix}")
+        template = service.upload_template(BytesIO(b"%PDF-1.4\npostgres-template"), "postgres-template.pdf", "财务模板", f"PG模板{suffix}.pdf", actor_user_id=owner_id, request_id=f"req-pg-template-{suffix}")
+        assert service.open_standard_download(standard["docId"])["stream"].read().startswith(b"%PDF-")
+        assert service.resolve_template_path(f"财务模板/PG模板{suffix}.pdf")["templateId"] == template["templateId"]
+        with engine.connect() as connection:
+            assert connection.execute(sa.select(sa.func.count()).select_from(doc_templates)).scalar_one() == before_schemas
+    finally:
+        with engine.begin() as connection:
+            metadata = sa.MetaData()
+            links = sa.Table("object_files", metadata, autoload_with=engine)
+            versions = sa.Table("stored_file_versions", metadata, autoload_with=engine)
+            files = sa.Table("stored_files", metadata, autoload_with=engine)
+            items = sa.Table("reference_template_items", metadata, autoload_with=engine)
+            standards = sa.Table("standards", metadata, autoload_with=engine)
+            connection.execute(links.delete().where(links.c.created_by == owner_id))
+            connection.execute(versions.delete().where(versions.c.created_by == owner_id))
+            connection.execute(files.delete().where(files.c.created_by == owner_id))
+            connection.execute(items.delete().where(items.c.created_by == owner_id))
+            connection.execute(standards.delete().where(standards.c.uploader == str(owner_id)))
+            connection.execute(users.delete().where(users.c.id == owner_id))
+        engine.dispose()
+
+
 def test_expert_import_preview_and_commit_are_database_backed_and_atomic(expert_service):
     service, audit = expert_service
     preview = service.create_expert_import_preview(

@@ -114,6 +114,23 @@ def create_app(test_config=None):
     if file_service is not None:
         app.extensions["file_service"] = file_service
 
+    reference_library_service = app.config.get("REFERENCE_LIBRARY_SERVICE")
+    if reference_library_service is None and engine is not None and audit_service is not None:
+        import sqlalchemy as sa
+
+        inspector = sa.inspect(engine)
+        if file_service is not None and all(inspector.has_table(name) for name in (
+            "standards", "reference_template_folders", "reference_template_items",
+        )):
+            from app.repositories.reference_library import ReferenceLibraryRepository
+            from app.services.reference_library import ReferenceLibraryService
+
+            reference_library_service = ReferenceLibraryService(
+                ReferenceLibraryRepository(engine), audit_service, file_service,
+            )
+    if reference_library_service is not None:
+        app.extensions["reference_library_service"] = reference_library_service
+
     proposal_service = app.config.get("PROPOSAL_SERVICE")
     if proposal_service is None and engine is not None and audit_service is not None:
         import sqlalchemy as sa

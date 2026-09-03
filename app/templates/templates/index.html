@@ -95,225 +95,58 @@
 var folderData = {{ folder_tree|tojson|safe }};
 
 function renderTree(nodes, container) {
+    container.replaceChildren();
     if (!nodes || nodes.length === 0) {
-        container.innerHTML = '<p class="text-muted">暂无文件夹</p>';
+        var empty = document.createElement('p');
+        empty.className = 'text-muted';
+        empty.textContent = '暂无文件夹';
+        container.appendChild(empty);
         return;
     }
-    var html = '<ul class="nav flex-column">';
-    nodes.forEach(function(n) { html += buildNode(n); });
-    html += '</ul>';
-    container.innerHTML = html;
-    bindEvents();
+    var list = document.createElement('ul');
+    list.className = 'nav flex-column';
+    nodes.forEach(function(node) { list.appendChild(buildNode(node)); });
+    container.appendChild(list);
 }
 
 function buildNode(node) {
-    var hasChildren = node.children && node.children.length > 0;
-    var lvl = node.level || 0;
-    var indent = lvl * 20;
-    var html = '<li class="nav-item folder-node" data-path="' + (node.path || '') + '">';
-    html += '<div class="d-flex align-items-center mb-2" style="padding-left:' + indent + 'px;">';
-    
-    // 调试：显示hasChildren的值
-    
-    if (hasChildren) {
-        html += '<i class="bi bi-chevron-right toggle-icon me-1" style="cursor:pointer;"></i>';
-    } else {
-        html += '<span class="me-2" style="width:16px;display:inline-block;"></span>';
+    var item = document.createElement('li');
+    item.className = 'nav-item folder-node';
+    item.dataset.path = node.path || '';
+    var heading = document.createElement('div');
+    heading.className = 'd-flex align-items-center mb-2';
+    heading.style.paddingLeft = ((node.level || 0) * 20) + 'px';
+    var body = document.createElement('div'); body.className = 'ms-4';
+    var children = node.children || [];
+    if (children.length) {
+        var toggle = document.createElement('button');
+        toggle.type = 'button'; toggle.className = 'btn btn-sm btn-link p-0 me-1'; toggle.textContent = '展开';
+        body.hidden = true;
+        toggle.addEventListener('click', function() { body.hidden = !body.hidden; toggle.textContent = body.hidden ? '展开' : '折叠'; });
+        heading.appendChild(toggle);
     }
-    
-    // 文件夹勾选框
-    html += '<input type="checkbox" class="form-check-input me-2 folder-cb" value="' + node.path + '" data-type="folder" onchange="toggleKids(this)">';
-    // 子文件夹根据层级使用不同图标
-    var folderIcon = lvl === 0 ? 'bi-folder' : (lvl === 1 ? 'bi-folder2' : 'bi-folder2-open');
-    html += '<i class="bi ' + folderIcon + ' text-warning me-2" style="cursor:pointer" onclick="loadFolder(\'' + node.path + '\')"></i>';
-    html += '<span class="me-2" style="cursor:pointer" onclick="loadFolder(\'' + node.path + '\')">' + node.name + '</span>';
-    html += '<span class="badge bg-secondary me-2">' + node.fileCount + '</span>';
-    
-    // 上传按钮
-    html += '<label class="btn btn-outline-success btn-sm me-1" for="file-' + node.path + '"><i class="bi bi-upload"></i><input type="file" id="file-' + node.path + '" class="d-none" data-folder="' + node.path + '" multiple onchange="uploadFiles(this)"></label>';
-    
-    // 新建子目录按钮
-    html += '<button class="btn btn-outline-primary btn-sm me-1 btn-subfolder" data-folder="' + node.path + '"><i class="bi bi-folder-plus"></i></button>';
-    
-    // 删除文件夹按钮
-    if (node.path !== '') {
-        html += '<button class="btn btn-outline-danger btn-sm btn-delete-folder" data-folder="' + node.path + '"><i class="bi bi-trash"></i></button>';
-    }
-    
-    html += '</div>';
-    
-    if (hasChildren) {
-        html += '<div class="children" style="display:none;">';
-        node.children.forEach(function(c) { html += buildNode(c); });
-        html += '</div>';
-    }
-    
-    if (node.files && node.files.length > 0) {
-        html += '<div class="ms-4" style="padding-left:' + (indent + 20) + 'px;">';
-        node.files.forEach(function(f) {
-            // 根据文件类型选择图标
-            var fileIcon = 'bi-file-text';
-            var fileColor = 'text-primary';
-            var ext = f.name.split('.').pop().toLowerCase();
-            if (['doc','docx'].indexOf(ext) >= 0) { fileIcon = 'bi-file-word'; fileColor = 'text-primary'; }
-            else if (['xls','xlsx'].indexOf(ext) >= 0) { fileIcon = 'bi-file-excel'; fileColor = 'text-success'; }
-            else if (['ppt','pptx'].indexOf(ext) >= 0) { fileIcon = 'bi-file-ppt'; fileColor = 'text-danger'; }
-            else if (ext === 'pdf') { fileIcon = 'bi-file-pdf'; fileColor = 'text-danger'; }
-            else if (['jpg','jpeg','png','gif','bmp'].indexOf(ext) >= 0) { fileIcon = 'bi-file-image'; fileColor = 'text-warning'; }
-            else if (['zip','rar','7z'].indexOf(ext) >= 0) { fileIcon = 'bi-file-zip'; fileColor = 'text-secondary'; }
-            else if (['txt'].indexOf(ext) >= 0) { fileIcon = 'bi-file-text'; fileColor = 'text-muted'; }
-            else if (['md'].indexOf(ext) >= 0) { fileIcon = 'bi-file-markdown'; fileColor = 'text-info'; }
-            
-            html += '<div class="d-flex align-items-center mb-1">';
-            html += '<input type="checkbox" class="form-check-input me-2 file-cb" value="' + f.path + '" data-type="file" onchange="toggleFolder(this)">';
-            html += '<i class="bi ' + fileIcon + ' me-2 ' + fileColor + '"></i>';
-            html += '<span class="me-2">' + f.name + '</span>';
-            html += '<span class="text-muted me-2" style="font-size:0.8em">(' + (f.size/1024).toFixed(1) + ' KB)</span>';
-            html += '<button class="btn btn-outline-info btn-sm me-1" onclick="openPreview(\'' + f.path + '\', \'' + f.name.replace(/'/g, "\\'") + '\', \'template\', \'/templates/download/' + encodeURIComponent(f.path) + '\')" title="预览"><i class="bi bi-eye"></i></button>';
-            html += '<a href="/templates/download/' + encodeURIComponent(f.path) + '" class="btn btn-outline-primary btn-sm me-1" title="下载"><i class="bi bi-download"></i></a>';
-            html += '<button class="btn btn-outline-warning btn-sm btn-rename me-1" data-path="' + f.path + '" data-name="' + f.name + '" title="重命名"><i class="bi bi-pencil"></i></button>';
-            html += '<button class="btn btn-outline-danger btn-sm btn-del" data-path="' + f.path + '"><i class="bi bi-trash"></i></button>';
-            html += '</div>';
-        });
-        html += '</div>';
-    }
-    html += '</li>';
-    return html;
-}
-
-function toggleKids(cb) {
-    var checked = cb.checked;
-    var parentLi = cb.closest('.folder-node');
-    if (!parentLi) return;
-
-    var hiddenChildren = [];
-    parentLi.querySelectorAll('.children').forEach(function(childDiv) {
-        if (childDiv.style.display === 'none') {
-            hiddenChildren.push(childDiv);
-            childDiv.style.display = 'block';
-        }
+    var folder = document.createElement('button');
+    folder.type = 'button'; folder.className = 'btn btn-link p-0 me-2'; folder.textContent = node.name;
+    folder.addEventListener('click', function() { loadFolder(node.path); });
+    heading.appendChild(folder);
+    var count = document.createElement('span'); count.className = 'badge bg-secondary me-2'; count.textContent = String(node.fileCount || 0); heading.appendChild(count);
+    var uploader = document.createElement('input'); uploader.type = 'file'; uploader.multiple = true; uploader.className = 'form-control form-control-sm me-2'; uploader.dataset.folder = node.path; uploader.addEventListener('change', function() { uploadFiles(uploader); }); heading.appendChild(uploader);
+    var add = document.createElement('button'); add.type = 'button'; add.className = 'btn btn-outline-primary btn-sm me-1'; add.textContent = '新建子目录'; add.addEventListener('click', function() { showCreateFolder(node.path); }); heading.appendChild(add);
+    var archive = document.createElement('button'); archive.type = 'button'; archive.className = 'btn btn-outline-danger btn-sm'; archive.textContent = '归档'; archive.addEventListener('click', function() { if (confirm('确定归档此文件夹及其内容？')) { var fd = new FormData(); fd.append('folder', node.path); fetch('/templates/delete_folder', {method:'POST', body:fd}).then(function(r){return r.json();}).then(function(data){ if(data.success) location.reload(); else alert(data.message); }); } }); heading.appendChild(archive);
+    item.appendChild(heading);
+    (node.files || []).forEach(function(file) {
+        var row = document.createElement('div'); row.className = 'd-flex align-items-center mb-1';
+        var label = document.createElement('span'); label.className = 'me-2'; label.textContent = file.name; row.appendChild(label);
+        var size = document.createElement('span'); size.className = 'text-muted me-2'; size.textContent = '(' + (file.size / 1024).toFixed(1) + ' KB)'; row.appendChild(size);
+        var preview = document.createElement('button'); preview.type = 'button'; preview.className = 'btn btn-outline-info btn-sm me-1'; preview.textContent = '预览'; preview.addEventListener('click', function() { openPreview(file.path, file.name, 'template', '/templates/download/' + encodeURIComponent(file.path)); }); row.appendChild(preview);
+        var link = document.createElement('a'); link.className = 'btn btn-outline-primary btn-sm me-1'; link.href = '/templates/download/' + encodeURIComponent(file.path); link.textContent = '下载'; row.appendChild(link);
+        var rename = document.createElement('button'); rename.type = 'button'; rename.className = 'btn btn-outline-warning btn-sm me-1'; rename.textContent = '重命名'; rename.addEventListener('click', function(){ var value = prompt('请输入新文件名:', file.name); if (value && value.trim() && value.trim() !== file.name) { var fd = new FormData(); fd.append('filepath', file.path); fd.append('new_name', value.trim()); fetch('/templates/rename_file',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(data){if(data.success)location.reload();else alert(data.message);}); }}); row.appendChild(rename);
+        var remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn btn-outline-danger btn-sm'; remove.textContent = '归档'; remove.addEventListener('click', function(){ if(confirm('确定归档此文件？')) { var fd = new FormData(); fd.append('filepath', file.path); fetch('/templates/delete_file',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(data){if(data.success)location.reload();else alert(data.message);}); }}); row.appendChild(remove);
+        body.appendChild(row);
     });
-
-    parentLi.querySelectorAll('input[type="checkbox"]').forEach(function(checkbox) {
-        if (checkbox !== cb) {
-            checkbox.checked = checked;
-        }
-    });
-
-    hiddenChildren.forEach(function(childDiv) {
-        childDiv.style.display = 'none';
-    });
-}
-
-function toggleFolder(cb) {
-    var checked = cb.checked;
-    var current = cb.closest('.folder-node');
-    while (current) {
-        var folderCb = current.querySelector(':scope > div > .folder-cb');
-        if (folderCb) {
-            folderCb.checked = checked;
-        }
-        current = current.parentElement.closest('.folder-node');
-    }
-}
-
-function bindEvents() {
-    // 展开/折叠（添加调试）
-    document.querySelectorAll('.toggle-icon').forEach(function(icon) {
-        icon.onclick = function(e) {
-            e.stopPropagation();
-            var parentLi = this.closest('.folder-node');
-            var childrenDiv = parentLi.querySelector('.children');
-            if (childrenDiv) {
-                if (childrenDiv.style.display === 'none') {
-                    childrenDiv.style.display = 'block';
-                    this.classList.replace('bi-chevron-right', 'bi-chevron-down');
-                } else {
-                    childrenDiv.style.display = 'none';
-                    this.classList.replace('bi-chevron-down', 'bi-chevron-right');
-                }
-            } else {
-            }
-        };
-    });
-    
-    // 新建子目录
-    document.querySelectorAll('.btn-subfolder').forEach(function(btn) {
-        btn.onclick = function(e) {
-            e.stopPropagation();
-            var folder = this.getAttribute('data-folder');
-            showCreateFolder(folder);
-        };
-    });
-    
-    // 删除文件夹
-    document.querySelectorAll('.btn-delete-folder').forEach(function(btn) {
-        btn.onclick = function(e) {
-            e.stopPropagation();
-            var folder = this.getAttribute('data-folder');
-            if (confirm('确定删除此文件夹及其所有内容？')) {
-                var fd = new FormData();
-                fd.append('folder', folder);
-                fetch('/templates/delete_folder', {method:'POST', body:fd})
-                .then(r=>r.json())
-                .then(data=>{
-                    if (data.success) {
-                        location.reload();
-                    } else {
-                        alert(data.message);
-                    }
-                });
-            }
-        };
-    });
-    
-    // 删除文件
-    document.querySelectorAll('.btn-del').forEach(function(btn) {
-        btn.onclick = function(e) {
-            e.stopPropagation();
-            var path = this.getAttribute('data-path');
-            if (confirm('确定删除此文件？')) {
-                var fd = new FormData();
-                fd.append('filepath', path);
-                fetch('/templates/delete_file', {method:'POST', body:fd})
-                .then(r=>r.json())
-                .then(data=>{
-                    if (data.success) {
-                        location.reload();
-                    } else {
-                        alert(data.message);
-                    }
-                });
-            }
-        };
-    });
-
-    // 重命名文件
-    document.querySelectorAll('.btn-rename').forEach(function(btn) {
-        btn.onclick = function(e) {
-            e.stopPropagation();
-            var path = this.getAttribute('data-path');
-            var oldName = this.getAttribute('data-name');
-            var ext = oldName.split('.').pop();
-            var baseName = oldName.replace(/\.[^.]+$/, '');
-            var newName = prompt('请输入新文件名（不含后缀）:', baseName);
-            if (newName && newName.trim() && newName.trim() !== baseName) {
-                newName = newName.trim() + '.' + ext;
-                var fd = new FormData();
-                fd.append('filepath', path);
-                fd.append('new_name', newName);
-                fetch('/templates/rename_file', {method:'POST', body:fd})
-                .then(r=>r.json())
-                .then(data=>{
-                    if (data.success) {
-                        location.reload();
-                    } else {
-                        alert(data.message);
-                    }
-                });
-            }
-        };
-    });
+    (node.children || []).forEach(function(child) { body.appendChild(buildNode(child)); });
+    item.appendChild(body);
+    return item;
 }
 
 // 点击文件夹加载该目录下的文件
