@@ -46,6 +46,13 @@
 - PostgreSQL stale-lock RED: the new `archive` race failed because `archive` did
   not first complete the ordinary ACTIVE precheck before its locked recheck.
   Adding the compatible precheck made the full parameterized race green.
+- PostgreSQL lock-observability RED: temporarily replacing the worker's real
+  `_lock_object_write` call with a no-op made the three parameterized stale-lock
+  cases fail at `mutation did not enter a PostgreSQL Lock wait`; the observer
+  reads the worker connection's `pg_backend_pid()` and independently polls
+  `pg_stat_activity.wait_event_type`. Restoring the real `FOR UPDATE` recheck
+  made all three cases green. This is deliberately not based on a short
+  unfinished-future timing assertion.
 - Focused cleanup/read-only coverage:
   `.venv/bin/python -m pytest app/tests/test_file_service.py -k 'upload_new_object or archived_retained_resource' -q`
   returned `18 passed, 36 deselected`.
@@ -59,9 +66,14 @@
   record survived; the losing staged file was removed. The parameterized archive
   lock race holds an uncommitted ARCHIVED standard row under `FOR UPDATE`; upload,
   new-version, and archive workers each first observe the prior ACTIVE snapshot,
-  block at their locked recheck, then return `OBJECT_READ_ONLY` after the archive
-  transaction commits. Each asserts no additional file/version/link/audit/disk
-  residue.
+  publish the worker connection's PostgreSQL backend pid, and are observed from a
+  separate connection waiting with `wait_event_type = 'Lock'` before the archive
+  transaction may commit. They then return `OBJECT_READ_ONLY`. Before/after
+  snapshots compare the complete stored-file/version/link counts, the actor's
+  exact audit-operation sequence, linked file/status tuple, and every file and
+  byte beneath the test storage root. Thus each operation proves no new metadata,
+  no `ADD_VERSION`/`ARCHIVE` audit, no orphan disk file, and that the original
+  stored file remains ACTIVE.
 - `git diff --check` passed.
 
 ## Failure evidence

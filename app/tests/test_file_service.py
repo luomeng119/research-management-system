@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import os
 from pathlib import Path
+from queue import Queue
+import time
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -1052,17 +1054,60 @@ def test_postgres_archived_standard_rechecks_after_stale_preflight_lock(
         object_id=object_id, actor_user_id=user_id, request_id=f"req-standard-lock-first-{suffix}",
     )
     prechecked = Event()
-    lock_attempted = Event()
-    finished = Event()
+    worker_pids = Queue()
     original_preflight = pg_service._validate_object_write
     original_lock = pg_service._lock_object_write
+
+    def snapshot():
+        with pg_engine.connect() as connection:
+            linked_files = tuple(connection.execute(
+                sa.select(files.c.id, files.c.status)
+                .join(links, links.c.file_id == files.c.id)
+                .where(links.c.object_type == "STANDARD", links.c.object_id == object_id)
+                .order_by(files.c.id)
+            ).all())
+            return {
+                "stored_files": connection.scalar(sa.select(sa.func.count()).select_from(files)),
+                "stored_file_versions": connection.scalar(
+                    sa.select(sa.func.count()).select_from(versions)
+                ),
+                "object_files": connection.scalar(sa.select(sa.func.count()).select_from(links)),
+                "actor_audit_operations": tuple(connection.scalars(
+                    sa.select(audit_events.c.metadata["operation"].as_string())
+                    .where(audit_events.c.actor_user_id == user_id)
+                    .order_by(audit_events.c.created_at, audit_events.c.id)
+                )),
+                "linked_files": linked_files,
+            }
+
+    def disk_snapshot():
+        return tuple(sorted(
+            (path.relative_to(storage_root).as_posix(), path.read_bytes())
+            for path in storage_root.rglob("*") if path.is_file()
+        ))
+
+    def observe_lock_wait(pid):
+        deadline = time.monotonic() + 3
+        with pg_engine.connect() as observer:
+            while time.monotonic() < deadline:
+                waiting = observer.execute(
+                    sa.text(
+                        "SELECT wait_event_type FROM pg_stat_activity WHERE pid = :pid"
+                    ),
+                    {"pid": pid},
+                ).scalar_one_or_none()
+                if waiting == "Lock":
+                    return
+                time.sleep(0.02)
+        raise AssertionError("mutation did not enter a PostgreSQL Lock wait")
 
     def record_preflight(*args, **kwargs):
         original_preflight(*args, **kwargs)
         prechecked.set()
 
     def record_lock(*args, **kwargs):
-        lock_attempted.set()
+        connection = args[0]
+        worker_pids.put(connection.scalar(sa.text("SELECT pg_backend_pid()")))
         return original_lock(*args, **kwargs)
 
     monkeypatch.setattr(pg_service, "_validate_object_write", record_preflight)
@@ -1089,9 +1134,9 @@ def test_postgres_archived_standard_rechecks_after_stale_preflight_lock(
                 )
         except FileServiceError as error:
             return error.code
-        finally:
-            finished.set()
 
+    before_database = snapshot()
+    before_disk = disk_snapshot()
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         with pg_engine.begin() as connection:
@@ -1105,36 +1150,16 @@ def test_postgres_archived_standard_rechecks_after_stale_preflight_lock(
             )
             future = executor.submit(mutate)
             assert prechecked.wait(timeout=3), "mutation did not complete the stale ACTIVE precheck"
-            assert lock_attempted.wait(timeout=3), "mutation did not attempt the transaction lock"
-            assert not finished.wait(timeout=0.1), "mutation did not block on the business-object lock"
+            observe_lock_wait(worker_pids.get(timeout=3))
         result = future.result(timeout=5)
     finally:
         executor.shutdown(wait=True)
 
     assert result == "OBJECT_READ_ONLY"
-    with pg_engine.connect() as connection:
-        assert connection.scalar(
-            sa.select(sa.func.count()).select_from(links).where(
-                links.c.object_type == "STANDARD", links.c.object_id == object_id
-            )
-        ) == 1
-        assert connection.scalar(
-            sa.select(sa.func.count()).select_from(files).where(
-                files.c.id == uuid.UUID(first["fileId"])
-            )
-        ) == 1
-        assert connection.scalar(
-            sa.select(sa.func.count()).select_from(versions).where(
-                versions.c.file_id == uuid.UUID(first["fileId"])
-            )
-        ) == 1
-        assert connection.scalar(
-            sa.select(sa.func.count()).select_from(audit_events).where(
-                audit_events.c.actor_user_id == user_id,
-                audit_events.c.metadata["operation"].as_string() == "UPLOAD",
-            )
-        ) == 1
-    assert len([path for path in storage_root.rglob("*") if path.is_file()]) == 1
+    assert snapshot() == before_database
+    assert disk_snapshot() == before_disk
+    assert before_database["linked_files"] == ((uuid.UUID(first["fileId"]), "ACTIVE"),)
+    assert before_database["actor_audit_operations"] == ("UPLOAD",)
 
 
 def test_ooxml_zip_bomb_shape_is_rejected_without_residue(service, engine):
