@@ -6,7 +6,7 @@ from pathlib import Path
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 
 import pytest
 import sqlalchemy as sa
@@ -138,9 +138,6 @@ def test_upload_new_object_creates_standard_metadata_and_first_file_atomically(s
 
     def create_standard(connection):
         assert connection.in_transaction()
-        assert connection.dialect.name == "sqlite"
-        assert connection.scalar(sa.select(sa.literal(1))) == 1
-        assert list(connection.scalars(sa.select(sa.literal("metadata")))) == ["metadata"]
         connection.execute(
             standards.insert().values(doc_id="STD-2026-001", name="测试标准", status="ACTIVE")
         )
@@ -189,6 +186,52 @@ def test_upload_new_object_rejects_callback_transaction_control_without_residue(
             _pdf(), original_name="事务控制探针.pdf", object_type="STANDARD",
             object_id=f"STD-2026-{operation}", create_metadata=create_then_attempt_transaction_control,
             actor_user_id=1, request_id=f"req-standard-{operation}",
+        )
+
+    assert error.value.code == "FILE_OPERATION_FAILED"
+    assert rejected is True
+    assert _rows(engine, "standards") == []
+    assert _rows(engine, "stored_files") == []
+    assert _rows(engine, "stored_file_versions") == []
+    assert _rows(engine, "object_files") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
+
+
+@pytest.mark.parametrize("escape", ["result_connection", "text_commit"])
+def test_upload_new_object_writer_rejects_result_and_sql_transaction_escapes(
+    service, engine, escape
+):
+    standards = sa.Table("standards", sa.MetaData(), autoload_with=engine)
+    rejected = False
+
+    def create_then_attempt_writer_escape(writer):
+        nonlocal rejected
+        result = writer.execute(
+            standards.insert().values(
+                doc_id=f"STD-2026-{escape}", name="写入器逃逸探针", status="ACTIVE"
+            )
+        )
+        if escape == "result_connection":
+            try:
+                result.connection.commit()
+            except AttributeError:
+                rejected = True
+                raise RuntimeError("safe metadata writer result has no connection")
+            raise AssertionError("metadata writer result exposed a connection")
+        try:
+            writer.execute(sa.text("COMMIT"))
+        except RuntimeError as exc:
+            if "Insert" not in str(exc):
+                raise AssertionError("metadata SQL transaction control was not explicitly rejected") from exc
+            rejected = True
+            raise
+        raise AssertionError("metadata SQL transaction control was not explicitly rejected")
+
+    with pytest.raises(FileServiceError) as error:
+        service.upload_new_object(
+            _pdf(), original_name="写入器逃逸探针.pdf", object_type="STANDARD",
+            object_id=f"STD-2026-{escape}", create_metadata=create_then_attempt_writer_escape,
+            actor_user_id=1, request_id=f"req-standard-{escape}",
         )
 
     assert error.value.code == "FILE_OPERATION_FAILED"
@@ -971,6 +1014,124 @@ def test_postgres_concurrent_first_standard_upload_is_atomic_and_archived_is_rea
         assert connection.scalar(
             sa.select(sa.func.count()).select_from(versions).where(
                 versions.c.file_id == uuid.UUID(first["fileId"])
+            )
+        ) == 1
+    assert len([path for path in storage_root.rglob("*") if path.is_file()]) == 1
+
+
+@pytest.mark.parametrize("operation", ["upload", "add_version", "archive"])
+def test_postgres_archived_standard_rechecks_after_stale_preflight_lock(
+    tmp_path, monkeypatch, operation
+):
+    if "TEST_DATABASE_URL" not in os.environ:
+        pytest.skip("requires the isolated PostgreSQL contract runner")
+    from app.repositories.audit import AuditRepository
+    from app.services.audit import AuditService
+
+    suffix = uuid.uuid4().hex[:10]
+    pg_engine, user_id, _expense_id = _postgres_entities(suffix)
+    metadata = sa.MetaData()
+    standards = sa.Table("standards", metadata, autoload_with=pg_engine)
+    files = sa.Table("stored_files", metadata, autoload_with=pg_engine)
+    versions = sa.Table("stored_file_versions", metadata, autoload_with=pg_engine)
+    links = sa.Table("object_files", metadata, autoload_with=pg_engine)
+    audit_events = sa.Table("audit_events", metadata, autoload_with=pg_engine)
+    object_id = f"STD-LOCK-{suffix}-{operation}"
+    storage_root = tmp_path / f"standard-lock-{operation}"
+    with pg_engine.begin() as connection:
+        connection.execute(
+            standards.insert().values(doc_id=object_id, name="锁定标准", status="ACTIVE")
+        )
+    pg_service = FileService(
+        FilesRepository(pg_engine),
+        AuditService(AuditRepository(pg_engine), app_version="test-v1"),
+        storage_root=storage_root, max_bytes=1024, preview_max_bytes=512,
+    )
+    first = pg_service.upload(
+        _pdf(b"v1"), original_name="锁定标准.pdf", object_type="STANDARD",
+        object_id=object_id, actor_user_id=user_id, request_id=f"req-standard-lock-first-{suffix}",
+    )
+    prechecked = Event()
+    lock_attempted = Event()
+    finished = Event()
+    original_preflight = pg_service._validate_object_write
+    original_lock = pg_service._lock_object_write
+
+    def record_preflight(*args, **kwargs):
+        original_preflight(*args, **kwargs)
+        prechecked.set()
+
+    def record_lock(*args, **kwargs):
+        lock_attempted.set()
+        return original_lock(*args, **kwargs)
+
+    monkeypatch.setattr(pg_service, "_validate_object_write", record_preflight)
+    monkeypatch.setattr(pg_service, "_lock_object_write", record_lock)
+
+    def mutate():
+        try:
+            if operation == "upload":
+                pg_service.upload(
+                    _pdf(b"new"), original_name="锁定标准.pdf", object_type="STANDARD",
+                    object_id=object_id, actor_user_id=user_id,
+                    request_id=f"req-standard-lock-upload-{suffix}",
+                )
+            elif operation == "add_version":
+                pg_service.add_version(
+                    first["fileId"], _pdf(b"v2"), original_name="锁定标准.pdf",
+                    object_type="STANDARD", object_id=object_id, expected_version=1,
+                    actor_user_id=user_id, request_id=f"req-standard-lock-version-{suffix}",
+                )
+            else:
+                pg_service.archive(
+                    first["fileId"], object_type="STANDARD", object_id=object_id,
+                    actor_user_id=user_id, request_id=f"req-standard-lock-archive-{suffix}",
+                )
+        except FileServiceError as error:
+            return error.code
+        finally:
+            finished.set()
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        with pg_engine.begin() as connection:
+            connection.execute(
+                sa.select(standards.c.doc_id)
+                .where(standards.c.doc_id == object_id)
+                .with_for_update(of=standards)
+            )
+            connection.execute(
+                standards.update().where(standards.c.doc_id == object_id).values(status="ARCHIVED")
+            )
+            future = executor.submit(mutate)
+            assert prechecked.wait(timeout=3), "mutation did not complete the stale ACTIVE precheck"
+            assert lock_attempted.wait(timeout=3), "mutation did not attempt the transaction lock"
+            assert not finished.wait(timeout=0.1), "mutation did not block on the business-object lock"
+        result = future.result(timeout=5)
+    finally:
+        executor.shutdown(wait=True)
+
+    assert result == "OBJECT_READ_ONLY"
+    with pg_engine.connect() as connection:
+        assert connection.scalar(
+            sa.select(sa.func.count()).select_from(links).where(
+                links.c.object_type == "STANDARD", links.c.object_id == object_id
+            )
+        ) == 1
+        assert connection.scalar(
+            sa.select(sa.func.count()).select_from(files).where(
+                files.c.id == uuid.UUID(first["fileId"])
+            )
+        ) == 1
+        assert connection.scalar(
+            sa.select(sa.func.count()).select_from(versions).where(
+                versions.c.file_id == uuid.UUID(first["fileId"])
+            )
+        ) == 1
+        assert connection.scalar(
+            sa.select(sa.func.count()).select_from(audit_events).where(
+                audit_events.c.actor_user_id == user_id,
+                audit_events.c.metadata["operation"].as_string() == "UPLOAD",
             )
         ) == 1
     assert len([path for path in storage_root.rglob("*") if path.is_file()]) == 1

@@ -16,6 +16,8 @@ import uuid
 import zipfile
 from xml.parsers import expat
 
+from sqlalchemy.sql.dml import Insert
+
 
 ALLOWED_EXTENSIONS = {
     ".txt", ".md", ".csv", ".json", ".xml", ".yml", ".yaml", ".log",
@@ -170,24 +172,10 @@ class _MetadataWriter:
     def __init__(self, active_connection) -> None:
         self.__active_connection = active_connection
 
-    @property
-    def dialect(self):
-        return self.__active_connection.dialect
-
-    def execute(self, statement, parameters=None, *, execution_options=None):
-        return self.__active_connection.execute(
-            statement, parameters, execution_options=execution_options
-        )
-
-    def scalar(self, statement, parameters=None, *, execution_options=None):
-        return self.__active_connection.scalar(
-            statement, parameters, execution_options=execution_options
-        )
-
-    def scalars(self, statement, parameters=None, *, execution_options=None):
-        return self.__active_connection.scalars(
-            statement, parameters, execution_options=execution_options
-        )
+    def execute(self, statement, parameters=None) -> None:
+        if not isinstance(statement, Insert):
+            raise RuntimeError("metadata callback may only execute SQLAlchemy Insert statements")
+        self.__active_connection.execute(statement, parameters)
 
     def in_transaction(self):
         return self.__active_connection.in_transaction()
@@ -593,6 +581,7 @@ class FileService:
 
     def archive(self, file_id: str, *, object_type: str, object_id: str, actor_user_id: int, request_id: str) -> dict:
         object_type = str(object_type or "").upper()
+        self._validate_object_write(object_type, str(object_id))
         started = time.monotonic()
         try:
             with self.repository.engine.begin() as connection:
