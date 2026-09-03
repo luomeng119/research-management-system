@@ -479,7 +479,6 @@ def test_legacy_lists_tree_and_equipment_selector_use_project_service(
     service, tmp_path, monkeypatch
 ):
     monkeypatch.setattr("app.models.DB_PATH", str(tmp_path / "legacy.db"))
-    monkeypatch.setattr("app.models_generic_tables.DB_PATH", str(tmp_path / "legacy.db"))
     created = {}
     for category in CATEGORY_TABLES:
         created[category] = service.create_standalone(category, {

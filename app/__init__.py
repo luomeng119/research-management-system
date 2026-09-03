@@ -181,6 +181,22 @@ def create_app(test_config=None):
     if resources_service is not None:
         app.extensions["resources_service"] = resources_service
 
+    generic_tables_service = app.config.get("GENERIC_TABLES_SERVICE")
+    if generic_tables_service is None and engine is not None:
+        import sqlalchemy as sa
+
+        inspector = sa.inspect(engine)
+        if all(inspector.has_table(name) for name in (
+            "generic_tables", "generic_table_versions",
+            "generic_table_columns", "generic_table_data",
+        )):
+            from app.repositories.generic_tables import GenericTablesRepository
+            from app.services.generic_tables import GenericTablesService
+
+            generic_tables_service = GenericTablesService(GenericTablesRepository(engine))
+    if generic_tables_service is not None:
+        app.extensions["generic_tables_service"] = generic_tables_service
+
     assistant_service = app.config.get("ASSISTANT_SERVICE")
     if assistant_service is None and engine is not None and audit_service is not None:
         import sqlalchemy as sa

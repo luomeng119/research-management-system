@@ -72,10 +72,8 @@ for version, status, summary, issues in (
 
 data_dir = tempfile.mkdtemp(prefix="research-v1-e2e-")
 import app.models as legacy_models
-import app.models_generic_tables as legacy_generic_models
 
 legacy_models.DB_PATH = f"{data_dir}/research.db"
-legacy_generic_models.DB_PATH = f"{data_dir}/research.db"
 legacy_models.EquipmentGroupModel().create_tables()
 application = create_app({
     "TESTING": True,

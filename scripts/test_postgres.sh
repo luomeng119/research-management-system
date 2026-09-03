@@ -8,8 +8,8 @@ fi
 
 t02_admin_hint=${1%%\?*}
 t02_database_name=${t02_admin_hint##*/}
-if [[ ! "$t02_database_name" =~ (^|_)t0(2|3|4|5|6|7)($|_) ]]; then
-  echo "refusing database identifier outside the T02-T07 contract: $t02_database_name" >&2
+if [[ ! "$t02_database_name" =~ (^|_)t(0[2-7]|10)($|_) ]]; then
+  echo "refusing database identifier outside the T02-T07 contract (T10 is also allowed): $t02_database_name" >&2
   exit 65
 fi
 t03_contract=0
@@ -31,6 +31,10 @@ fi
 t07_contract=0
 if [[ "$t02_database_name" =~ (^|_)t07($|_) ]]; then
   t07_contract=1
+fi
+t10_contract=0
+if [[ "$t02_database_name" =~ (^|_)t10($|_) ]]; then
+  t10_contract=1
 fi
 
 for t02_command in initdb pg_ctl psql createdb; do
@@ -322,6 +326,11 @@ T09_TEST_DATABASE_URL="$MIGRATION_DATABASE_URL" \
 T10_TEST_DATABASE_URL="$DATABASE_URL" \
   "$t02_python" -m pytest app/tests/test_legacy_modules.py -q \
   -k postgresql_expert_runtime_contract
+if [[ "$t10_contract" -eq 1 ]]; then
+  T10_TEST_DATABASE_URL="$DATABASE_URL" \
+    "$t02_python" -m pytest app/tests/test_generic_tables_postgres.py -q \
+    -k postgresql_concurrent_snapshot
+fi
 "$t02_python" -m pytest app/tests/test_db_contract.py -q
 if [[ "$t03_contract" -eq 1 ]]; then
   "$t02_python" -m pytest app/tests/test_auth_audit_postgres.py -q

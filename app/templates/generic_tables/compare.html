@@ -132,23 +132,24 @@ function renderDiff() {
     const colDiff = DIFF.col_diff || {};
     const rowDiff = DIFF.row_diff || [];
 
-    // 表头
     const thead = document.getElementById('compareHead');
-    let headerHtml = `<tr><th style="width:40px;">#</th><th>状态</th>`;
+    thead.replaceChildren();
+    const headerRow = thead.appendChild(document.createElement('tr'));
+    const numberHead = headerRow.appendChild(document.createElement('th'));
+    numberHead.style.width = '40px'; numberHead.textContent = '#';
+    headerRow.appendChild(document.createElement('th')).textContent = '状态';
     allCols.forEach(ck => {
         const d = colDiff[ck] || '';
         let cls = '';
         if (d === 'added') cls = 'cell-added';
         else if (d === 'deleted') cls = 'cell-deleted';
         else if (d === 'modified') cls = 'cell-modified';
-        headerHtml += `<th class="${cls}">${ck}</th>`;
+        const th = headerRow.appendChild(document.createElement('th'));
+        th.className = cls; th.textContent = ck;
     });
-    headerHtml += '</tr>';
-    thead.innerHTML = headerHtml;
 
-    // 表体
     const tbody = document.getElementById('compareBody');
-    let html = '';
+    tbody.replaceChildren();
     rowDiff.forEach((item, idx) => {
         const rowClass = {
             'added': 'row-added',
@@ -157,14 +158,16 @@ function renderDiff() {
             'unchanged': 'row-unchanged'
         }[item.status] || 'row-unchanged';
 
-        const statusBadge = {
-            'added': '<span class="badge bg-success">新增</span>',
-            'deleted': '<span class="badge bg-danger">删除</span>',
-            'modified': '<span class="badge bg-warning text-dark">修改</span>',
-            'unchanged': '<span class="text-muted">—</span>'
-        }[item.status] || '';
-
-        let rowHtml = `<tr class="${rowClass}"><td>${idx + 1}</td><td>${statusBadge}</td>`;
+        const tr = tbody.appendChild(document.createElement('tr'));
+        tr.className = rowClass;
+        tr.appendChild(document.createElement('td')).textContent = String(idx + 1);
+        const statusCell = tr.appendChild(document.createElement('td'));
+        const badge = statusCell.appendChild(document.createElement('span'));
+        const status = {
+            added: ['badge bg-success', '新增'], deleted: ['badge bg-danger', '删除'],
+            modified: ['badge bg-warning text-dark', '修改'], unchanged: ['text-muted', '—']
+        }[item.status] || ['', ''];
+        badge.className = status[0]; badge.textContent = status[1];
         allCols.forEach(ck => {
             const oldVal = item.old ? (item.old[ck] ?? '') : '';
             const newVal = item.new ? (item.new[ck] ?? '') : '';
@@ -172,12 +175,16 @@ function renderDiff() {
             if (item.status === 'added') cellCls = 'cell-added';
             else if (item.status === 'deleted') cellCls = 'cell-deleted';
             else if (item.status === 'modified' && oldVal !== newVal) cellCls = 'cell-modified';
-            rowHtml += `<td class="${cellCls}">${item.status === 'deleted' ? oldVal : newVal}</td>`;
+            const td = tr.appendChild(document.createElement('td'));
+            td.className = cellCls;
+            td.textContent = String(item.status === 'deleted' ? oldVal : newVal);
         });
-        rowHtml += '</tr>';
-        html += rowHtml;
     });
-    tbody.innerHTML = html || '<tr><td colspan="100" class="text-center text-muted py-4">无差异</td></tr>';
+    if (!rowDiff.length) {
+        const row = tbody.appendChild(document.createElement('tr'));
+        const cell = row.appendChild(document.createElement('td'));
+        cell.colSpan = 100; cell.className = 'text-center text-muted py-4'; cell.textContent = '无差异';
+    }
 }
 
 document.addEventListener('DOMContentLoaded', renderDiff);

@@ -4,22 +4,33 @@
 页面 + RESTful API
 """
 import os
+from pathlib import Path
+import tempfile
 import uuid
 import json
 from datetime import datetime
-from flask import Blueprint, render_template, request, jsonify, session, send_file
-from werkzeug.utils import secure_filename
+from flask import Blueprint, after_this_request, render_template, request, jsonify, session, send_file
 from app.models_generic_tables import GenericTableModel
+from app.services.generic_tables import GenericTablesError, MAX_FILE_BYTES
 
 bp = Blueprint('generic_tables', __name__, url_prefix='/tables')
 bp2 = Blueprint('generic_tables_api', __name__, url_prefix='/api/generic-tables')
 
-ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'uploads')
+ALLOWED_EXTENSIONS = {'xlsx'}
 
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+@bp2.errorhandler(GenericTablesError)
+def handle_generic_tables_error(error):
+    return jsonify({'error': error.message, 'code': error.code}), error.status_code
+
+
+@bp.errorhandler(GenericTablesError)
+def handle_generic_tables_page_error(error):
+    return error.message, error.status_code
 
 
 def require_login(f):
@@ -232,6 +243,8 @@ def api_create_version(table_id):
                 'snapshot_id': snapshot_id,
                 'new_current_id': new_current_id
             })
+        except GenericTablesError:
+            raise
         except Exception as e:
             return jsonify({'error': f'保存快照失败：{str(e)[:200]}'}), 500
     elif method == 'import':
@@ -280,6 +293,8 @@ def api_rollback(table_id):
             creator=session.get('user', 'unknown')
         )
         return jsonify({'new_current_id': new_current_id, 'version_id': new_current_id})
+    except GenericTablesError:
+        raise
     except Exception as e:
         return jsonify({'error': f'回滚失败：{str(e)[:200]}'}), 500
 
@@ -440,7 +455,7 @@ def api_rows_import(version_id):
         return jsonify({'error': '未上传文件'}), 400
     file = request.files['file']
     if not file or not allowed_file(file.filename):
-        return jsonify({'error': '仅支持 .xlsx/.xls 文件'}), 400
+        return jsonify({'error': '仅支持 .xlsx 文件'}), 400
     model = GenericTableModel()
     # REQ-020: 校验版本存在 + is_locked=0（只能在 current 导入）
     version = model.get_version_by_id(version_id)
@@ -448,19 +463,17 @@ def api_rows_import(version_id):
         return jsonify({'error': '版本不存在'}), 404
     if version.get('is_locked', 0) == 1:
         return jsonify({'error': '只能在当前编辑版本导入数据'}), 403
-    filename = secure_filename(file.filename)
-    save_path = os.path.join(UPLOAD_DIR, 'generic_tables')
-    os.makedirs(save_path, exist_ok=True)
-    filepath = os.path.join(save_path, f'{uuid.uuid4().hex}_{filename}')
-    file.save(filepath)
-    count = model.import_rows_from_excel(version_id, filepath,
-                                         session.get('user', 'unknown'),
-                                         request.form.get('mode', 'replace'))
-    # 清理上传文件
+    handle, filepath = tempfile.mkstemp(suffix='.xlsx')
+    os.close(handle)
     try:
-        os.remove(filepath)
-    except Exception:
-        pass
+        file.save(filepath)
+        if Path(filepath).stat().st_size > MAX_FILE_BYTES:
+            return jsonify({'error': '导入文件过大'}), 413
+        count = model.import_rows_from_excel(version_id, filepath,
+                                             session.get('user', 'unknown'),
+                                             request.form.get('mode', 'replace'))
+    finally:
+        Path(filepath).unlink(missing_ok=True)
     return jsonify({'imported': count})
 
 
@@ -475,6 +488,10 @@ def api_export(version_id):
     filepath = model.export_to_excel(version_id)
     table = model.get_by_id(version['table_id'])
     filename = f"{table['name'] if table else '导出'}_{version.get('version_label', version.get('version_number', ''))}.xlsx"
+    @after_this_request
+    def remove_export(response):
+        Path(filepath).unlink(missing_ok=True)
+        return response
     return send_file(filepath, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 

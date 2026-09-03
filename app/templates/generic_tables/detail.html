@@ -269,7 +269,7 @@
     </button>
     <label class="btn btn-sm btn-outline-success mb-0" style="cursor:pointer;">
         <i class="bi bi-upload"></i> 导入Excel
-        <input type="file" accept=".xlsx,.xls" style="display:none;" id="importFile" onchange="importExcelNew(this)">
+        <input type="file" accept=".xlsx" style="display:none;" id="importFile" onchange="importExcelNew(this)">
     </label>
     {% endif %}
     <button class="btn btn-sm btn-outline-success" onclick="exportExcel()">
@@ -395,7 +395,9 @@
                             <i class="bi bi-eye"></i>
                         </a>
                         {% if is_current %}
-                        <button class="btn btn-sm btn-outline-warning" style="font-size:11px;padding:2px 6px;" onclick="openRollbackModal('{{ v.version_id }}', '{{ v.version_label or ('v' + v.version_number|string) }}', '{{ v.created_at[:16] }}', '{{ v.creator }}')" title="回滚到 {{ v.version_label }}">
+                        <button class="btn btn-sm btn-outline-warning rollback-version" style="font-size:11px;padding:2px 6px;"
+                                data-version-id="{{ v.version_id }}" data-version-label="{{ v.version_label or ('v' + v.version_number|string) }}"
+                                data-created-at="{{ v.created_at[:16] }}" data-creator="{{ v.creator }}" title="回滚到此版本">
                             <i class="bi bi-arrow-counterclockwise"></i>
                         </button>
                         {% endif %}
@@ -442,10 +444,10 @@
                     </div>
                 </div>
                 <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-primary" onclick="editColumn('{{ col.col_key }}')">
+                    <button class="btn btn-outline-primary edit-column" data-col-key="{{ col.col_key }}">
                         <i class="bi bi-pencil"></i>
                     </button>
-                    <button class="btn btn-outline-danger" onclick="deleteColumn('{{ col.col_key }}')">
+                    <button class="btn btn-outline-danger delete-column" data-col-key="{{ col.col_key }}">
                         <i class="bi bi-trash"></i>
                     </button>
                 </div>
@@ -567,6 +569,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const badge = document.getElementById('lockBadge');
         if (badge) badge.style.display = '';
     }
+    document.querySelectorAll('.rollback-version').forEach(button => button.addEventListener('click', () =>
+        openRollbackModal(button.dataset.versionId, button.dataset.versionLabel,
+                          button.dataset.createdAt, button.dataset.creator)));
+    document.querySelectorAll('.edit-column').forEach(button => button.addEventListener('click', () => editColumn(button.dataset.colKey)));
+    document.querySelectorAll('.delete-column').forEach(button => button.addEventListener('click', () => deleteColumn(button.dataset.colKey)));
 });
 
 // ---------- 渲染表格 ----------
@@ -578,33 +585,47 @@ function renderTable() {
     const effPageSize = PAGE_SIZE === -1 ? Math.max(total, 1) : PAGE_SIZE;
     const start = (currentPage - 1) * effPageSize;
     const pageRows = ROWS.slice(start, start + effPageSize);
-    if (!pageRows.length) { tbody.innerHTML = ''; renderPagination(); return; }
-    tbody.innerHTML = pageRows.map((row, idx) => {
-        const checked = selectedRows.has(row.row_key) ? 'checked' : '';
+    tbody.replaceChildren();
+    if (!pageRows.length) { renderPagination(); return; }
+    pageRows.forEach((row, idx) => {
         const rowColor = row.row_color || '';
         const classes = [];
         if (selectedRows.has(row.row_key)) classes.push('row-selected');
         if (rowColor) classes.push('row-color-' + rowColor);
-        const rowClass = classes.join(' ');
-        // 3 色块（REQ-016）：固定顺序 黄/绿/红，根据 rowColor 标 active
-        // 激活态占位色块也要带 data-row-key 以响应取消点击
-        const activeChip = rowColor ? `<span class="color-chip color-${rowColor} active" data-color="${rowColor}" data-row-key="${row.row_key}"></span>` : '';
-        let cells = `<td><input type="checkbox" ${checked} onchange="toggleRow('${row.row_key}')"></td>`;
-        cells += `<td class="color-cells" data-col-key="_color">${activeChip}`
-            + `<span class="color-chip color-yellow" data-row-key="${row.row_key}" data-color="yellow" title="注意"></span>`
-            + `<span class="color-chip color-green" data-row-key="${row.row_key}" data-color="green" title="确认"></span>`
-            + `<span class="color-chip color-red" data-row-key="${row.row_key}" data-color="red" title="警告"></span>`
-            + `</td>`;
-        cells += `<td data-col-key="_index">${start + idx + 1}</td>`;
+        const tr = document.createElement('tr');
+        tr.className = classes.join(' ');
+        tr.dataset.rowKey = row.row_key;
+        const selectCell = tr.appendChild(document.createElement('td'));
+        const checkbox = selectCell.appendChild(document.createElement('input'));
+        checkbox.type = 'checkbox';
+        checkbox.checked = selectedRows.has(row.row_key);
+        checkbox.addEventListener('change', () => toggleRow(row.row_key));
+        const colorCell = tr.appendChild(document.createElement('td'));
+        colorCell.className = 'color-cells';
+        colorCell.dataset.colKey = '_color';
+        ['yellow', 'green', 'red'].forEach(color => {
+            const chip = colorCell.appendChild(document.createElement('span'));
+            chip.className = `color-chip color-${color}` + (rowColor === color ? ' active' : '');
+            chip.dataset.rowKey = row.row_key;
+            chip.dataset.color = color;
+            chip.title = {yellow: '注意', green: '确认', red: '警告'}[color];
+        });
+        const indexCell = tr.appendChild(document.createElement('td'));
+        indexCell.dataset.colKey = '_index';
+        indexCell.textContent = String(start + idx + 1);
         COLUMNS.forEach(col => {
             const val = row.row_data[col.col_key] ?? '';
-            const align = col.col_align || 'left';
-            cells += `<td class="cell-edit" style="text-align:${align};cursor:text;"
-                data-row-key="${row.row_key}" data-col-key="${col.col_key}"
-                onclick="startEdit(this)">${val}</td>`;
+            const cell = tr.appendChild(document.createElement('td'));
+            cell.className = 'cell-edit';
+            cell.style.textAlign = ['left', 'center', 'right'].includes(col.col_align) ? col.col_align : 'left';
+            cell.style.cursor = 'text';
+            cell.dataset.rowKey = row.row_key;
+            cell.dataset.colKey = col.col_key;
+            cell.textContent = String(val);
+            cell.addEventListener('click', () => startEdit(cell));
         });
-        return `<tr class="${rowClass}" data-row-key="${row.row_key}">${cells}</tr>`;
-    }).join('');
+        tbody.appendChild(tr);
+    });
     renderPagination();
 }
 

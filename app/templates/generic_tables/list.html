@@ -95,7 +95,7 @@
                                 <i class="bi bi-arrow-left-right"></i> 版本对比
                             </a></li>
                             <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item text-danger" href="#" onclick="deleteTable('{{ t.table_id }}')">
+                            <li><a class="dropdown-item text-danger delete-table" href="#" data-table-id="{{ t.table_id }}">
                                 <i class="bi bi-trash"></i> 删除表格
                             </a></li>
                         </ul>
@@ -105,7 +105,7 @@
                     <a href="{{ url_for('generic_tables.detail_page', table_id=t.table_id) }}" class="btn btn-outline-primary btn-sm">
                         <i class="bi bi-eye"></i> 查看数据
                     </a>
-                    <button class="btn btn-outline-secondary btn-sm" onclick="showVersionModal('{{ t.table_id }}')">
+                    <button class="btn btn-outline-secondary btn-sm show-versions" data-table-id="{{ t.table_id }}">
                         <i class="bi bi-clock-history"></i> 版本管理
                     </button>
                     <a href="{{ url_for('generic_tables.compare_page', table_id=t.table_id) }}" class="btn btn-outline-info btn-sm">
@@ -245,6 +245,10 @@ let currentVersions = [];
 document.addEventListener('DOMContentLoaded', () => {
     versionModal = new bootstrap.Modal(document.getElementById('versionModal'));
     importModal = new bootstrap.Modal(document.getElementById('importModal'));
+    document.querySelectorAll('.delete-table').forEach(element => element.addEventListener('click', event => {
+        event.preventDefault(); deleteTable(element.dataset.tableId);
+    }));
+    document.querySelectorAll('.show-versions').forEach(element => element.addEventListener('click', () => showVersionModal(element.dataset.tableId)));
 });
 
 async function showVersionModal(tableId) {
@@ -258,29 +262,44 @@ async function showVersionModal(tableId) {
 
 function renderVersionList() {
     const el = document.getElementById('versionList');
+    el.replaceChildren();
     if (!currentVersions.length) {
-        el.innerHTML = '<div class="text-muted text-center py-3">暂无版本</div>';
+        const empty = document.createElement('div');
+        empty.className = 'text-muted text-center py-3';
+        empty.textContent = '暂无版本';
+        el.appendChild(empty);
         return;
     }
-    el.innerHTML = currentVersions.map(v => `
-        <div class="border rounded p-3 mb-2">
-            <div class="d-flex justify-content-between align-items-center">
-                <div>
-                    <strong>${v.version_label || ('v'+v.version_number)}</strong>
-                    <span class="text-muted ms-2" style="font-size:12px;">${v.created_at || ''}</span>
-                    {% if session.get('user') %}
-                    <span class="text-muted ms-2" style="font-size:12px;">${v.creator || ''}</span>
-                    {% endif %}
-                    <span class="badge bg-secondary ms-2">${v.row_count || 0} 行</span>
-                    ${v.note ? `<div style="font-size:12px;color:#6c757d;">${v.note}</div>` : ''}
-                </div>
-                <div class="btn-group btn-group-sm">
-                    <a href="/tables/${v.table_id}?vid=${v.version_id}" class="btn btn-outline-primary">查看</a>
-                    <button class="btn btn-outline-danger" onclick="deleteVersion('${v.version_id}')">删除</button>
-                </div>
-            </div>
-        </div>
-    `).join('');
+    currentVersions.forEach(v => {
+        const card = document.createElement('div');
+        card.className = 'border rounded p-3 mb-2';
+        const line = card.appendChild(document.createElement('div'));
+        line.className = 'd-flex justify-content-between align-items-center';
+        const info = line.appendChild(document.createElement('div'));
+        const label = info.appendChild(document.createElement('strong'));
+        label.textContent = v.version_label || ('v' + v.version_number);
+        const created = info.appendChild(document.createElement('span'));
+        created.className = 'text-muted ms-2'; created.style.fontSize = '12px';
+        created.textContent = v.created_at || '';
+        const creator = info.appendChild(document.createElement('span'));
+        creator.className = 'text-muted ms-2'; creator.style.fontSize = '12px';
+        creator.textContent = v.creator || '';
+        const count = info.appendChild(document.createElement('span'));
+        count.className = 'badge bg-secondary ms-2'; count.textContent = `${v.row_count || 0} 行`;
+        if (v.note) {
+            const note = info.appendChild(document.createElement('div'));
+            note.style.cssText = 'font-size:12px;color:#6c757d;'; note.textContent = v.note;
+        }
+        const actions = line.appendChild(document.createElement('div'));
+        actions.className = 'btn-group btn-group-sm';
+        const view = actions.appendChild(document.createElement('a'));
+        view.className = 'btn btn-outline-primary'; view.textContent = '查看';
+        view.href = `/tables/${encodeURIComponent(v.table_id)}?vid=${encodeURIComponent(v.version_id)}`;
+        const remove = actions.appendChild(document.createElement('button'));
+        remove.className = 'btn btn-outline-danger'; remove.textContent = '删除';
+        remove.addEventListener('click', () => deleteVersion(v.version_id));
+        el.appendChild(card);
+    });
 }
 
 async function deleteVersion(versionId) {
