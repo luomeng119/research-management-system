@@ -564,8 +564,10 @@ def test_postgresql_expert_runtime_contract():
 def test_postgresql_expert_runtime_contract_reference_library_uses_runtime_metadata(tmp_path):
     """The T10 runner must exercise retained files outside doc_templates."""
     from app.repositories.files import FilesRepository
+    from app.repositories.audit import AuditRepository
     from app.repositories.reference_library import ReferenceLibraryRepository
     from app.services.files import FileService
+    from app.services.audit import AuditService
     from app.services.reference_library import ReferenceLibraryService
 
     engine = sa.create_engine(os.environ["T10_TEST_DATABASE_URL"])
@@ -580,30 +582,47 @@ def test_postgresql_expert_runtime_contract_reference_library_uses_runtime_metad
         ).returning(users.c.id)).scalar_one()
         before_schemas = connection.execute(sa.select(sa.func.count()).select_from(doc_templates)).scalar_one()
     try:
+        audit = AuditService(AuditRepository(engine), app_version="test-v1")
         service = ReferenceLibraryService(
-            ReferenceLibraryRepository(engine), AuditRecorder(),
-            FileService(FilesRepository(engine), AuditRecorder(), storage_root=tmp_path / "reference-files", max_bytes=1024 * 1024, preview_max_bytes=1024),
+            ReferenceLibraryRepository(engine), audit,
+            FileService(FilesRepository(engine), audit, storage_root=tmp_path / "reference-files", max_bytes=1024 * 1024, preview_max_bytes=1024),
         )
         standard = service.upload_standard(BytesIO(b"%PDF-1.4\npostgres"), "postgres.pdf", f"PG标准{suffix}", "国家标准", owner_id, f"req-pg-standard-{suffix}")
         template = service.upload_template(BytesIO(b"%PDF-1.4\npostgres-template"), "postgres-template.pdf", "财务模板", f"PG模板{suffix}.pdf", actor_user_id=owner_id, request_id=f"req-pg-template-{suffix}")
         assert service.open_standard_download(standard["docId"])["stream"].read().startswith(b"%PDF-")
         assert service.resolve_template_path(f"财务模板/PG模板{suffix}.pdf")["templateId"] == template["templateId"]
+        service.create_folder(f"PG目录{suffix}", "财务模板", actor_user_id=owner_id, request_id=f"req-pg-folder-{suffix}")
+        nested = service.upload_template(BytesIO(b"%PDF-1.4\npostgres-nested"), "nested.pdf", f"财务模板/PG目录{suffix}", f"嵌套{suffix}.pdf", actor_user_id=owner_id, request_id=f"req-pg-nested-{suffix}")
+        service.archive_folder(f"财务模板/PG目录{suffix}", actor_user_id=owner_id, request_id=f"req-pg-archive-{suffix}")
+        with pytest.raises(Exception) as archived_write:
+            service.file_service.add_version(nested["file"]["fileId"], BytesIO(b"%PDF-1.4\nnew"), original_name="nested.pdf", object_type="TEMPLATE", object_id=nested["templateId"], expected_version=1, actor_user_id=owner_id, request_id=f"req-pg-write-{suffix}")
+        assert getattr(archived_write.value, "code", None) == "OBJECT_READ_ONLY"
+        assert any(log["operation_type"] == "ARCHIVE_FOLDER" for log in service.list_logs("templates", operation="ARCHIVE_FOLDER"))
         with engine.connect() as connection:
             assert connection.execute(sa.select(sa.func.count()).select_from(doc_templates)).scalar_one() == before_schemas
     finally:
-        with engine.begin() as connection:
+        # The runtime role deliberately has INSERT/SELECT-only access to audit_events.
+        # Use the runner's migration owner for teardown; production code never gains
+        # DELETE access merely to make this test convenient.
+        cleanup_engine = sa.create_engine(os.environ.get("MIGRATION_DATABASE_URL", os.environ["T10_TEST_DATABASE_URL"]))
+        with cleanup_engine.begin() as connection:
             metadata = sa.MetaData()
-            links = sa.Table("object_files", metadata, autoload_with=engine)
-            versions = sa.Table("stored_file_versions", metadata, autoload_with=engine)
-            files = sa.Table("stored_files", metadata, autoload_with=engine)
-            items = sa.Table("reference_template_items", metadata, autoload_with=engine)
-            standards = sa.Table("standards", metadata, autoload_with=engine)
+            links = sa.Table("object_files", metadata, autoload_with=cleanup_engine)
+            versions = sa.Table("stored_file_versions", metadata, autoload_with=cleanup_engine)
+            files = sa.Table("stored_files", metadata, autoload_with=cleanup_engine)
+            items = sa.Table("reference_template_items", metadata, autoload_with=cleanup_engine)
+            folders = sa.Table("reference_template_folders", metadata, autoload_with=cleanup_engine)
+            standards = sa.Table("standards", metadata, autoload_with=cleanup_engine)
+            audit_events = sa.Table("audit_events", metadata, autoload_with=cleanup_engine)
+            connection.execute(audit_events.delete().where(audit_events.c.actor_user_id == owner_id))
             connection.execute(links.delete().where(links.c.created_by == owner_id))
             connection.execute(versions.delete().where(versions.c.created_by == owner_id))
             connection.execute(files.delete().where(files.c.created_by == owner_id))
             connection.execute(items.delete().where(items.c.created_by == owner_id))
+            connection.execute(folders.delete().where(folders.c.created_by == owner_id))
             connection.execute(standards.delete().where(standards.c.uploader == str(owner_id)))
             connection.execute(users.delete().where(users.c.id == owner_id))
+        cleanup_engine.dispose()
         engine.dispose()
 
 

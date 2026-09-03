@@ -204,6 +204,31 @@ var _previewCurrentName = '';
 var _previewCurrentType = '';
 var _previewCurrentDownloadUrl = '';
 
+function openControlledPreview(fileId, versionNo, objectType, objectId, fileName, downloadUrl) {
+    _previewCurrentPath = '';
+    _previewCurrentName = fileName;
+    _previewCurrentType = objectType;
+    _previewCurrentDownloadUrl = downloadUrl || '';
+    document.getElementById('previewFileName').textContent = fileName;
+    var dlBtn = document.getElementById('previewDownloadBtn');
+    dlBtn.href = downloadUrl || '#';
+    dlBtn.style.display = downloadUrl ? '' : 'none';
+    document.getElementById('previewPanelBody').innerHTML = '<div class="preview-loading"><div class="spinner-border text-primary" role="status"></div><p class="mt-2">正在加载预览...</p></div>';
+    document.getElementById('previewOverlay').classList.add('show');
+    document.getElementById('previewPanel').classList.add('open');
+    var params = new URLSearchParams({fileId: fileId, versionNo: String(versionNo), objectType: objectType, objectId: objectId});
+    fetch('/preview/file?' + params.toString(), {credentials: 'same-origin'})
+        .then(function(response) {
+            var contentType = response.headers.get('content-type') || '';
+            if (contentType.indexOf('application/json') !== -1) return response.json();
+            if (contentType.indexOf('application/pdf') !== -1) return {success: response.ok, type: 'pdf', url: response.url};
+            if (contentType.indexOf('image/') !== -1) return {success: response.ok, type: 'image', url: response.url};
+            return {success: false, message: '该文件类型暂不支持预览'};
+        })
+        .then(function(data) { if (data.success) renderPreviewContent(data); else { var body = document.getElementById('previewPanelBody'); body.textContent = data.message || '预览加载失败'; } })
+        .catch(function() { document.getElementById('previewPanelBody').textContent = '预览加载失败'; });
+}
+
 function openPreview(filePath, fileName, fileType, downloadUrl) {
     _previewCurrentPath = filePath;
     _previewCurrentName = fileName;

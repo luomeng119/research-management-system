@@ -77,6 +77,13 @@ def _schema(engine):
         sa.Column("created_by", sa.Integer), sa.Column("updated_by", sa.Integer),
         sa.Column("version", sa.Integer),
     )
+    sa.Table(
+        "audit_events", metadata,
+        sa.Column("id", sa.Text, primary_key=True), sa.Column("actor_user_id", sa.Integer),
+        sa.Column("action", sa.Text), sa.Column("object_type", sa.Text), sa.Column("object_id", sa.Text),
+        sa.Column("result", sa.Text), sa.Column("request_id", sa.Text), sa.Column("metadata", sa.JSON),
+        sa.Column("created_at", sa.DateTime(timezone=True)),
+    )
     metadata.create_all(engine)
     return metadata
 
@@ -284,3 +291,134 @@ def test_retained_routes_require_login_and_report_unready_service(reference_rout
         active_session.clear()
     assert reference_routes.get("/standards/").status_code == 302
     assert reference_routes.post("/templates/upload").status_code == 401
+
+
+def test_reference_tree_exposes_controlled_preview_reference(reference_service, reference_engine):
+    """Dropping file identity/version from list rows would reintroduce path preview."""
+    _seed_folder(reference_engine, "preview", "方案模板")
+    reference_service.upload_template(
+        _pdf(), "preview.pdf", "方案模板", "预览.pdf", actor_user_id=7, request_id="req-preview",
+    )
+    file_row = reference_service.build_template_tree()[0]["files"][0]
+    assert file_row["fileId"]
+    assert file_row["versionNo"] == 1
+    assert file_row["objectType"] == "TEMPLATE"
+
+
+def test_folder_archive_cascades_to_descendants_and_rejects_direct_file_write(reference_service, reference_engine):
+    """Archiving only the selected folder leaves ACTIVE unreachable template objects."""
+    _seed_folder(reference_engine, "root-archive", "其他模板")
+    reference_service.create_folder("子目录", "其他模板", actor_user_id=7, request_id="req-create")
+    uploaded = reference_service.upload_template(
+        _pdf(), "child.pdf", "其他模板/子目录", "子文件.pdf", actor_user_id=7, request_id="req-upload",
+    )
+    reference_service.archive_folder("其他模板", actor_user_id=7, request_id="req-archive")
+    with pytest.raises(Exception) as hidden:
+        reference_service.resolve_template_path("其他模板/子目录/子文件.pdf")
+    assert getattr(hidden.value, "code", None) == "TEMPLATE_NOT_FOUND"
+    with pytest.raises(Exception) as denied:
+        reference_service.file_service.add_version(
+            uploaded["file"]["fileId"], _pdf(b"v2"), original_name="child.pdf",
+            object_type="TEMPLATE", object_id=uploaded["templateId"], expected_version=1,
+            actor_user_id=7, request_id="req-direct-write",
+        )
+    assert getattr(denied.value, "code", None) == "OBJECT_READ_ONLY"
+
+
+def test_folder_rename_and_audit_failure_roll_back_business_change(reference_engine, tmp_path):
+    """Committing before the reference audit makes an audit outage silently mutate records."""
+    from app.repositories.files import FilesRepository
+    from app.repositories.reference_library import ReferenceLibraryRepository
+    from app.services.files import FileService
+    from app.services.reference_library import ReferenceLibraryService
+
+    _seed_folder(reference_engine, "rename-root", "其他模板")
+    service = ReferenceLibraryService(
+        ReferenceLibraryRepository(reference_engine), AuditRecorder(fail=True),
+        FileService(FilesRepository(reference_engine), AuditRecorder(), storage_root=tmp_path / "rename-files", max_bytes=1024 * 1024, preview_max_bytes=1024),
+    )
+    with pytest.raises(Exception) as failed:
+        service.create_folder("不应提交", "其他模板", actor_user_id=7, request_id="req-audit-fail")
+    assert getattr(failed.value, "code", None) == "REFERENCE_LIBRARY_OPERATION_FAILED"
+    assert service.build_template_tree()[0]["children"] == []
+
+
+def test_template_routes_preserve_nested_multipart_filename_and_reject_encoded_separator(reference_routes, reference_service, reference_engine):
+    """Browser webkitRelativePath must survive multipart while URI separators are never decoded."""
+    _seed_folder(reference_engine, "nested-root", "其他模板")
+    response = reference_routes.post("/templates/upload_folder", data={
+        "folder": "其他模板",
+        "files": [(BytesIO(b"%PDF-1.4\nnested"), "一级/二级/材料.pdf")],
+    }, content_type="multipart/form-data")
+    assert response.status_code == 200
+    tree = reference_service.build_template_tree()
+    assert tree[0]["children"][0]["children"][0]["files"][0]["name"].endswith(".pdf")
+    # A WSGI proxy may preserve the raw URI while Flask hands the view an
+    # already-decoded path.  The route must examine that boundary value.
+    assert reference_routes.get(
+        "/templates/download/safe.pdf",
+        environ_overrides={"RAW_URI": "/templates/download/%2fetc%2fpasswd"},
+    ).status_code == 400
+    assert reference_routes.get(
+        "/templates/download/safe.pdf",
+        environ_overrides={"RAW_URI": "/templates/download/%5cwindows%5csystem32"},
+    ).status_code == 400
+    assert reference_routes.get("/templates/download/%252fetc%252fpasswd").status_code == 400
+
+
+def test_real_audit_service_accepts_reference_taxonomy_and_logs_operation(reference_engine, tmp_path):
+    """A non-whitelisted event/object type previously made every real archive audit fail."""
+    from app.repositories.audit import AuditRepository
+    from app.repositories.files import FilesRepository
+    from app.repositories.reference_library import ReferenceLibraryRepository
+    from app.services.audit import AuditService
+    from app.services.files import FileService
+    from app.services.reference_library import ReferenceLibraryService
+
+    _seed_folder(reference_engine, "audit-root", "其他模板")
+    audit = AuditService(AuditRepository(reference_engine), app_version="test")
+    service = ReferenceLibraryService(
+        ReferenceLibraryRepository(reference_engine), audit,
+        FileService(FilesRepository(reference_engine), audit, storage_root=tmp_path / "audit-files", max_bytes=1024 * 1024, preview_max_bytes=1024),
+    )
+    service.create_folder("审计目录", "其他模板", actor_user_id=7, request_id="req-audit")
+    logs = service.list_logs("templates", operation="CREATE_FOLDER")
+    assert logs[0]["operation_type"] == "CREATE_FOLDER"
+
+
+def test_standards_page_keeps_stored_name_as_dom_data_not_inline_script(reference_routes, reference_service):
+    """Putting a stored standard name back in an onclick argument would execute markup on click."""
+    reference_service.upload_standard(
+        _pdf(), "safe.pdf", "<img src=x onerror=alert(1)>", "国家标准", 7, "req-standard-xss",
+    )
+    page = reference_routes.get("/standards/")
+    assert page.status_code == 200
+    assert b"onclick=\"openPreview" not in page.data
+    assert b"<img src=x onerror=alert(1)>" not in page.data
+    assert b"data-file-name=\"&lt;img src=x onerror=alert(1)&gt;\"" in page.data
+
+
+def test_controlled_preview_adapter_accepts_standard_and_template_references(reference_service, reference_engine):
+    """Preview must accept the four controlled references, never a stored path."""
+    from app.routes.preview import bp as preview_bp
+    from app.web.files import bp as files_bp
+
+    standard = reference_service.upload_standard(_pdf(), "preview-standard.pdf", "预览标准", "国家标准", 7, "req-preview-standard")
+    _seed_folder(reference_engine, "preview-template", "方案模板")
+    template = reference_service.upload_template(_pdf(), "preview-template.pdf", "方案模板", "预览模板.pdf", actor_user_id=7, request_id="req-preview-template")
+    app = Flask(__name__)
+    app.config.update(TESTING=True, SECRET_KEY="preview-test", SECURITY_AUTH_ENABLED=False)
+    app.extensions["file_service"] = reference_service.file_service
+    app.add_url_rule("/login", endpoint="auth.login", view_func=lambda: "")
+    app.register_blueprint(files_bp)
+    app.register_blueprint(preview_bp)
+    @app.before_request
+    def set_request_id():
+        request.request_id = "req-preview"
+    client = app.test_client()
+    with client.session_transaction() as active_session:
+        active_session.update(user_id=7, user="operator", name="operator", role="BUSINESS_USER", account_version=1)
+    for object_type, object_id, file_data in (("STANDARD", standard["docId"], standard["file"]), ("TEMPLATE", template["templateId"], template["file"])):
+        response = client.get("/preview/file", query_string={"fileId": file_data["fileId"], "versionNo": file_data["versionNo"], "objectType": object_type, "objectId": object_id}, follow_redirects=True)
+        assert response.status_code == 200
+        assert response.data.startswith(b"%PDF-")

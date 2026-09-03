@@ -23,6 +23,12 @@ class ReferenceLibraryRepository:
         return {key: value for key, value in values.items() if key in table.c}
 
     @staticmethod
+    def _bump(table: sa.Table, **values):
+        if "version" in table.c:
+            values["version"] = table.c.version + 1
+        return ReferenceLibraryRepository._values(table, **values)
+
+    @staticmethod
     def _mapping(row):
         return dict(row) if row is not None else None
 
@@ -60,12 +66,11 @@ class ReferenceLibraryRepository:
             created_by=actor_user_id, updated_by=actor_user_id, version=1,
         )))
 
-    def archive_standard(self, doc_id: str) -> bool:
-        with self.engine.begin() as connection:
-            result = connection.execute(self.standards.update().where(
-                self.standards.c.doc_id == doc_id,
-                self.standards.c.status == "ACTIVE",
-            ).values(**self._values(self.standards, status="ARCHIVED")))
+    def archive_standard(self, connection, doc_id: str, *, actor_user_id: int) -> bool:
+        result = connection.execute(self.standards.update().where(
+            self.standards.c.doc_id == doc_id,
+            self.standards.c.status == "ACTIVE",
+        ).values(**self._bump(self.standards, status="ARCHIVED", updated_by=actor_user_id)))
         return result.rowcount == 1
 
     def active_folders(self) -> list[dict]:
@@ -73,27 +78,59 @@ class ReferenceLibraryRepository:
         with self.engine.connect() as connection:
             return [dict(row) for row in connection.execute(statement).mappings()]
 
+    def all_folders(self) -> list[dict]:
+        with self.engine.connect() as connection:
+            return [dict(row) for row in connection.execute(sa.select(self.folders)).mappings()]
+
     def active_items(self) -> list[dict]:
         statement = sa.select(self.items).where(self.items.c.status == "ACTIVE").order_by(self.items.c.display_name)
         with self.engine.connect() as connection:
             return [dict(row) for row in connection.execute(statement).mappings()]
 
-    def create_folder(self, *, folder_id: str, parent_id: str | None, name: str, actor_user_id: int) -> None:
-        with self.engine.begin() as connection:
-            connection.execute(self.folders.insert().values(**self._values(
-                self.folders, id=folder_id, parent_id=parent_id, name=name, status="ACTIVE",
-                created_by=actor_user_id, updated_by=actor_user_id, version=1,
-            )))
+    def all_items(self) -> list[dict]:
+        with self.engine.connect() as connection:
+            return [dict(row) for row in connection.execute(sa.select(self.items)).mappings()]
 
-    def archive_folder(self, folder_id: str, *, actor_user_id: int) -> bool:
-        with self.engine.begin() as connection:
-            result = connection.execute(self.folders.update().where(
-                self.folders.c.id == folder_id, self.folders.c.status == "ACTIVE",
-            ).values(**self._values(
-                self.folders, status="ARCHIVED", updated_by=actor_user_id,
-                version=self.folders.c.version + 1,
-            )))
+    def create_folder(self, connection, *, folder_id: str, parent_id: str | None, name: str, actor_user_id: int) -> None:
+        connection.execute(self.folders.insert().values(**self._values(
+            self.folders, id=folder_id, parent_id=parent_id, name=name, status="ACTIVE",
+            created_by=actor_user_id, updated_by=actor_user_id, version=1,
+        )))
+
+    def rename_folder(self, connection, folder_id: str, *, name: str, actor_user_id: int) -> bool:
+        result = connection.execute(self.folders.update().where(
+            self.folders.c.id == folder_id, self.folders.c.status == "ACTIVE",
+        ).values(**self._bump(self.folders, name=name, updated_by=actor_user_id)))
         return result.rowcount == 1
+
+    def archive_folder_tree(self, connection, folder_id: str, *, actor_user_id: int) -> tuple[list[str], list[str]]:
+        statement = sa.select(self.folders.c.id, self.folders.c.parent_id, self.folders.c.status)
+        if connection.dialect.name == "postgresql":
+            statement = statement.with_for_update(of=self.folders)
+        rows = list(connection.execute(statement).mappings())
+        by_parent: dict[str, list[str]] = {}
+        status = {}
+        for row in rows:
+            status[str(row["id"])] = row["status"]
+            if row["parent_id"] is not None:
+                by_parent.setdefault(str(row["parent_id"]), []).append(str(row["id"]))
+        if status.get(folder_id) != "ACTIVE":
+            return [], []
+        folder_ids, pending = [], [folder_id]
+        while pending:
+            current = pending.pop()
+            folder_ids.append(current)
+            pending.extend(by_parent.get(current, ()))
+        connection.execute(self.folders.update().where(self.folders.c.id.in_(folder_ids)).values(**self._bump(
+            self.folders, status="ARCHIVED", updated_by=actor_user_id,
+        )))
+        item_rows = list(connection.execute(sa.select(self.items.c.template_id).where(
+            self.items.c.folder_id.in_(folder_ids), self.items.c.status == "ACTIVE",
+        )).scalars())
+        connection.execute(self.items.update().where(self.items.c.folder_id.in_(folder_ids), self.items.c.status == "ACTIVE").values(**self._bump(
+            self.items, status="ARCHIVED", updated_by=actor_user_id,
+        )))
+        return folder_ids, [str(value) for value in item_rows]
 
     def insert_template(self, writer, *, template_id: str, item_id: str, folder_id: str | None, display_name: str, actor_user_id: int) -> None:
         writer.execute(self.items.insert().values(**self._values(
@@ -102,24 +139,16 @@ class ReferenceLibraryRepository:
             updated_by=actor_user_id, version=1,
         )))
 
-    def update_template_name(self, template_id: str, *, display_name: str, actor_user_id: int) -> bool:
-        with self.engine.begin() as connection:
-            result = connection.execute(self.items.update().where(
-                self.items.c.template_id == template_id, self.items.c.status == "ACTIVE",
-            ).values(**self._values(
-                self.items, display_name=display_name, updated_by=actor_user_id,
-                version=self.items.c.version + 1,
-            )))
+    def update_template_name(self, connection, template_id: str, *, display_name: str, actor_user_id: int) -> bool:
+        result = connection.execute(self.items.update().where(
+            self.items.c.template_id == template_id, self.items.c.status == "ACTIVE",
+        ).values(**self._bump(self.items, display_name=display_name, updated_by=actor_user_id)))
         return result.rowcount == 1
 
-    def archive_template(self, template_id: str, *, actor_user_id: int) -> bool:
-        with self.engine.begin() as connection:
-            result = connection.execute(self.items.update().where(
-                self.items.c.template_id == template_id, self.items.c.status == "ACTIVE",
-            ).values(**self._values(
-                self.items, status="ARCHIVED", updated_by=actor_user_id,
-                version=self.items.c.version + 1,
-            )))
+    def archive_template(self, connection, template_id: str, *, actor_user_id: int) -> bool:
+        result = connection.execute(self.items.update().where(
+            self.items.c.template_id == template_id, self.items.c.status == "ACTIVE",
+        ).values(**self._bump(self.items, status="ARCHIVED", updated_by=actor_user_id)))
         return result.rowcount == 1
 
     @staticmethod

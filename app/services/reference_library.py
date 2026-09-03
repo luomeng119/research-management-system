@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import unquote
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import sqlalchemy as sa
 
@@ -52,7 +53,7 @@ class ReferenceLibraryService:
             if candidate == decoded:
                 break
             decoded = candidate
-        if decoded != raw or "\\" in decoded:
+        if decoded != raw or "\\" in decoded or "\x00" in decoded or (len(decoded) >= 2 and decoded[1] == ":"):
             raise ReferenceLibraryError("INVALID_TEMPLATE_PATH", "模板路径无效")
         parts = decoded.split("/")
         if any(not part or part in {".", ".."} for part in parts):
@@ -61,19 +62,83 @@ class ReferenceLibraryService:
             cls._name(part, kind="模板")
         return "/".join(parts)
 
-    def _audit(self, *, operation: str, actor_user_id: int, request_id: str, object_type: str, object_id: str) -> None:
+    def _audit(self, connection, *, operation: str, actor_user_id: int, request_id: str, object_type: str, object_id: str) -> None:
+        self.audit_service.record(
+            connection, event_name="reference_library_operation", user_id=actor_user_id,
+            object_type=object_type, object_id=object_id, result="SUCCESS",
+            request_id=request_id, duration_ms=0, properties={"operation": operation},
+        )
+
+    def _mutate(self, action):
         try:
             with self.repository.engine.begin() as connection:
-                self.audit_service.record(
-                    connection, event_name="reference_library_operation", user_id=actor_user_id,
-                    object_type=object_type, object_id=object_id, result="SUCCESS",
-                    request_id=request_id, duration_ms=0, properties={"operation": operation},
-                )
+                return action(connection)
+        except ReferenceLibraryError:
+            raise
+        except sa.exc.IntegrityError as exc:
+            raise ReferenceLibraryError("DUPLICATE_TEMPLATE_NAME", "名称已存在", 409) from exc
         except Exception as exc:
             raise ReferenceLibraryError("REFERENCE_LIBRARY_OPERATION_FAILED", "参考库操作失败", 500) from exc
 
     def list_standards(self, category: str | None = None) -> list[dict]:
-        return self.repository.list_standards(category=category or None)
+        result = []
+        for standard in self.repository.list_standards(category=category or None):
+            try:
+                file_row = self._first_file("STANDARD", str(standard["doc_id"]))
+            except ReferenceLibraryError:
+                continue
+            result.append({
+                **standard, "upload_time": standard.get("upload_time", ""),
+                "fileId": file_row["fileId"], "versionNo": file_row["versionNo"],
+                "objectType": "STANDARD", "objectId": str(standard["doc_id"]),
+            })
+        return result
+
+    def list_logs(self, module_name: str, *, operator: str | None = None, file_name: str | None = None, start_date: str | None = None, end_date: str | None = None, operation: str | None = None) -> list[dict]:
+        repository = getattr(self.audit_service, "repository", None)
+        table = getattr(repository, "table", None)
+        if table is None:
+            return []
+        try:
+            with self.repository.engine.connect() as connection:
+                metadata = sa.MetaData()
+                try:
+                    users = sa.Table("users", metadata, autoload_with=connection)
+                except sa.exc.NoSuchTableError:
+                    users = None
+                columns = [table]
+                statement = sa.select(*columns).where(table.c.action == "reference_library_operation")
+                if users is not None:
+                    statement = statement.add_columns(users.c.username.label("operator_name")).outerjoin(users, users.c.id == table.c.actor_user_id)
+                if start_date:
+                    statement = statement.where(table.c.created_at >= datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc))
+                if end_date:
+                    statement = statement.where(table.c.created_at < datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc) + timedelta(days=1))
+                rows = list(connection.execute(statement.order_by(table.c.created_at.desc()).limit(100)).mappings())
+        except Exception as exc:
+            raise ReferenceLibraryError("REFERENCE_LIBRARY_OPERATION_FAILED", "日志查询失败", 500) from exc
+        names = {str(row["doc_id"]): row["name"] for row in self.repository.list_standards(active_only=False)}
+        names.update({str(row["template_id"]): row["display_name"] for row in self.repository.all_items()})
+        names.update({str(row["id"]): row["name"] for row in self.repository.all_folders()})
+        logs = []
+        for row in rows:
+            object_type = row["object_type"]
+            if module_name == "standards" and object_type != "STANDARD":
+                continue
+            if module_name == "templates" and object_type != "TEMPLATE":
+                continue
+            metadata = row.get("metadata") or {}
+            operation_name = metadata.get("operation", row["action"])
+            visible_name = names.get(str(row.get("object_id")), str(row.get("object_id") or ""))
+            visible_operator = str(row.get("operator_name") or row.get("actor_user_id") or "")
+            if operator and operator.casefold() not in visible_operator.casefold():
+                continue
+            if file_name and file_name.casefold() not in visible_name.casefold():
+                continue
+            if operation and operation.casefold() not in operation_name.casefold():
+                continue
+            logs.append({"timestamp": row["created_at"], "operator": visible_operator, "operation_type": operation_name, "file_name": visible_name, "detail": ""})
+        return logs
 
     def upload_standard(self, stream, original_name: str, name: str, category: str, actor_user_id: int, request_id: str) -> dict:
         service = self._require_file_service()
@@ -96,9 +161,11 @@ class ReferenceLibraryService:
         return {"docId": doc_id, "name": name, "file": uploaded}
 
     def archive_standard(self, doc_id: str, *, actor_user_id: int, request_id: str) -> None:
-        if not self.repository.archive_standard(doc_id):
-            raise ReferenceLibraryError("STANDARD_NOT_FOUND", "标准不存在", 404)
-        self._audit(operation="ARCHIVE", actor_user_id=actor_user_id, request_id=request_id, object_type="STANDARD", object_id=doc_id)
+        def action(connection):
+            if not self.repository.archive_standard(connection, doc_id, actor_user_id=actor_user_id):
+                raise ReferenceLibraryError("STANDARD_NOT_FOUND", "标准不存在", 404)
+            self._audit(connection, operation="ARCHIVE", actor_user_id=actor_user_id, request_id=request_id, object_type="STANDARD", object_id=doc_id)
+        self._mutate(action)
 
     def _active_standard(self, doc_id: str) -> dict:
         standard = self.repository.get_standard(doc_id)
@@ -191,6 +258,8 @@ class ReferenceLibraryService:
             node["files"].append({
                 "name": item["display_name"], "path": f"{node['path']}/{item['display_name']}",
                 "size": int(file_row.get("sizeBytes", 0)), "templateId": str(item["template_id"]),
+                "fileId": file_row["fileId"], "versionNo": file_row["versionNo"],
+                "objectType": "TEMPLATE", "objectId": str(item["template_id"]),
             })
             node["fileCount"] += 1
         roots = [nodes[folder_id] for folder_id, row in folders.items() if folder_id in nodes and row.get("parent_id") is None]
@@ -207,19 +276,34 @@ class ReferenceLibraryService:
         parent_id = None
         if parent_path:
             parent_id = str(self._folder_by_path(parent_path)["id"])
-        try:
-            folder_id = self.repository.new_id()
-            self.repository.create_folder(folder_id=folder_id, parent_id=parent_id, name=name, actor_user_id=actor_user_id)
-        except sa.exc.IntegrityError as exc:
-            raise ReferenceLibraryError("DUPLICATE_TEMPLATE_NAME", "文件夹名称已存在", 409) from exc
-        self._audit(operation="CREATE_FOLDER", actor_user_id=actor_user_id, request_id=request_id, object_type="TEMPLATE_FOLDER", object_id=folder_id)
+        folder_id = self.repository.new_id()
+        def action(connection):
+            self.repository.create_folder(connection, folder_id=folder_id, parent_id=parent_id, name=name, actor_user_id=actor_user_id)
+            self._audit(connection, operation="CREATE_FOLDER", actor_user_id=actor_user_id, request_id=request_id, object_type="TEMPLATE", object_id=folder_id)
+        self._mutate(action)
         return {"folderId": folder_id, "name": name}
 
     def archive_folder(self, folder_path: str, *, actor_user_id: int, request_id: str) -> None:
         folder = self._folder_by_path(folder_path)
-        if not self.repository.archive_folder(str(folder["id"]), actor_user_id=actor_user_id):
-            raise ReferenceLibraryError("TEMPLATE_FOLDER_NOT_FOUND", "模板文件夹不存在", 404)
-        self._audit(operation="ARCHIVE_FOLDER", actor_user_id=actor_user_id, request_id=request_id, object_type="TEMPLATE_FOLDER", object_id=str(folder["id"]))
+        folder_id = str(folder["id"])
+        def action(connection):
+            folder_ids, item_ids = self.repository.archive_folder_tree(connection, folder_id, actor_user_id=actor_user_id)
+            if not folder_ids:
+                raise ReferenceLibraryError("TEMPLATE_FOLDER_NOT_FOUND", "模板文件夹不存在", 404)
+            self._audit(connection, operation="ARCHIVE_FOLDER", actor_user_id=actor_user_id, request_id=request_id, object_type="TEMPLATE", object_id=folder_id)
+        self._mutate(action)
+
+    def rename_folder(self, folder_path: str, new_name: str, *, actor_user_id: int, request_id: str) -> None:
+        folder = self._folder_by_path(folder_path)
+        name = self._name(new_name, kind="文件夹")
+        if "/" in name or "\\" in name or name in {".", ".."}:
+            raise ReferenceLibraryError("INVALID_REFERENCE_NAME", "文件夹名称无效")
+        folder_id = str(folder["id"])
+        def action(connection):
+            if not self.repository.rename_folder(connection, folder_id, name=name, actor_user_id=actor_user_id):
+                raise ReferenceLibraryError("TEMPLATE_FOLDER_NOT_FOUND", "模板文件夹不存在", 404)
+            self._audit(connection, operation="RENAME_FOLDER", actor_user_id=actor_user_id, request_id=request_id, object_type="TEMPLATE", object_id=folder_id)
+        self._mutate(action)
 
     def _has_active_item_name(self, folder_id: str, display_name: str) -> bool:
         return any(
@@ -282,15 +366,16 @@ class ReferenceLibraryService:
         name = self._name(new_name, kind="模板")
         if "/" in name or "\\" in name or name in {".", ".."}:
             raise ReferenceLibraryError("INVALID_REFERENCE_NAME", "模板名称无效")
-        try:
-            if not self.repository.update_template_name(item["templateId"], display_name=name, actor_user_id=actor_user_id):
+        def action(connection):
+            if not self.repository.update_template_name(connection, item["templateId"], display_name=name, actor_user_id=actor_user_id):
                 raise ReferenceLibraryError("TEMPLATE_NOT_FOUND", "模板文件不存在", 404)
-        except sa.exc.IntegrityError as exc:
-            raise ReferenceLibraryError("DUPLICATE_TEMPLATE_NAME", "模板名称已存在", 409) from exc
-        self._audit(operation="RENAME", actor_user_id=actor_user_id, request_id=request_id, object_type="TEMPLATE", object_id=item["templateId"])
+            self._audit(connection, operation="RENAME", actor_user_id=actor_user_id, request_id=request_id, object_type="TEMPLATE", object_id=item["templateId"])
+        self._mutate(action)
 
     def archive_template(self, filepath: str, *, actor_user_id: int, request_id: str) -> None:
         item = self.resolve_template_path(filepath)
-        if not self.repository.archive_template(item["templateId"], actor_user_id=actor_user_id):
-            raise ReferenceLibraryError("TEMPLATE_NOT_FOUND", "模板文件不存在", 404)
-        self._audit(operation="ARCHIVE", actor_user_id=actor_user_id, request_id=request_id, object_type="TEMPLATE", object_id=item["templateId"])
+        def action(connection):
+            if not self.repository.archive_template(connection, item["templateId"], actor_user_id=actor_user_id):
+                raise ReferenceLibraryError("TEMPLATE_NOT_FOUND", "模板文件不存在", 404)
+            self._audit(connection, operation="ARCHIVE", actor_user_id=actor_user_id, request_id=request_id, object_type="TEMPLATE", object_id=item["templateId"])
+        self._mutate(action)

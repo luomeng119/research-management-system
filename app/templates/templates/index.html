@@ -94,6 +94,10 @@
 <script>
 var folderData = {{ folder_tree|tojson|safe }};
 
+function encodeLogicalPath(path) {
+    return String(path).split('/').map(function(part) { return encodeURIComponent(part); }).join('/');
+}
+
 function renderTree(nodes, container) {
     container.replaceChildren();
     if (!nodes || nodes.length === 0) {
@@ -132,14 +136,16 @@ function buildNode(node) {
     var count = document.createElement('span'); count.className = 'badge bg-secondary me-2'; count.textContent = String(node.fileCount || 0); heading.appendChild(count);
     var uploader = document.createElement('input'); uploader.type = 'file'; uploader.multiple = true; uploader.className = 'form-control form-control-sm me-2'; uploader.dataset.folder = node.path; uploader.addEventListener('change', function() { uploadFiles(uploader); }); heading.appendChild(uploader);
     var add = document.createElement('button'); add.type = 'button'; add.className = 'btn btn-outline-primary btn-sm me-1'; add.textContent = '新建子目录'; add.addEventListener('click', function() { showCreateFolder(node.path); }); heading.appendChild(add);
+    var renameFolder = document.createElement('button'); renameFolder.type = 'button'; renameFolder.className = 'btn btn-outline-warning btn-sm me-1'; renameFolder.textContent = '重命名'; renameFolder.addEventListener('click', function() { var name = prompt('请输入文件夹名称:', node.name); if (name && name.trim() && name.trim() !== node.name) { var fd = new FormData(); fd.append('folder', node.path); fd.append('new_name', name.trim()); fetch('/templates/rename_folder', {method:'POST', body:fd}).then(function(r){ return r.json(); }).then(function(data){ if(data.success) location.reload(); else alert(data.message); }); } }); heading.appendChild(renameFolder);
     var archive = document.createElement('button'); archive.type = 'button'; archive.className = 'btn btn-outline-danger btn-sm'; archive.textContent = '归档'; archive.addEventListener('click', function() { if (confirm('确定归档此文件夹及其内容？')) { var fd = new FormData(); fd.append('folder', node.path); fetch('/templates/delete_folder', {method:'POST', body:fd}).then(function(r){return r.json();}).then(function(data){ if(data.success) location.reload(); else alert(data.message); }); } }); heading.appendChild(archive);
     item.appendChild(heading);
     (node.files || []).forEach(function(file) {
         var row = document.createElement('div'); row.className = 'd-flex align-items-center mb-1';
         var label = document.createElement('span'); label.className = 'me-2'; label.textContent = file.name; row.appendChild(label);
         var size = document.createElement('span'); size.className = 'text-muted me-2'; size.textContent = '(' + (file.size / 1024).toFixed(1) + ' KB)'; row.appendChild(size);
-        var preview = document.createElement('button'); preview.type = 'button'; preview.className = 'btn btn-outline-info btn-sm me-1'; preview.textContent = '预览'; preview.addEventListener('click', function() { openPreview(file.path, file.name, 'template', '/templates/download/' + encodeURIComponent(file.path)); }); row.appendChild(preview);
-        var link = document.createElement('a'); link.className = 'btn btn-outline-primary btn-sm me-1'; link.href = '/templates/download/' + encodeURIComponent(file.path); link.textContent = '下载'; row.appendChild(link);
+        var downloadUrl = '/templates/download/' + encodeLogicalPath(file.path);
+        var preview = document.createElement('button'); preview.type = 'button'; preview.className = 'btn btn-outline-info btn-sm me-1'; preview.textContent = '预览'; preview.addEventListener('click', function() { openControlledPreview(file.fileId, file.versionNo, file.objectType, file.objectId, file.name, downloadUrl); }); row.appendChild(preview);
+        var link = document.createElement('a'); link.className = 'btn btn-outline-primary btn-sm me-1'; link.href = downloadUrl; link.textContent = '下载'; row.appendChild(link);
         var rename = document.createElement('button'); rename.type = 'button'; rename.className = 'btn btn-outline-warning btn-sm me-1'; rename.textContent = '重命名'; rename.addEventListener('click', function(){ var value = prompt('请输入新文件名:', file.name); if (value && value.trim() && value.trim() !== file.name) { var fd = new FormData(); fd.append('filepath', file.path); fd.append('new_name', value.trim()); fetch('/templates/rename_file',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(data){if(data.success)location.reload();else alert(data.message);}); }}); row.appendChild(rename);
         var remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn btn-outline-danger btn-sm'; remove.textContent = '归档'; remove.addEventListener('click', function(){ if(confirm('确定归档此文件？')) { var fd = new FormData(); fd.append('filepath', file.path); fetch('/templates/delete_file',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(data){if(data.success)location.reload();else alert(data.message);}); }}); row.appendChild(remove);
         body.appendChild(row);
@@ -203,7 +209,7 @@ function submitUploadFolder() {
     
     // 添加所有文件（包括目录结构信息）
     Array.from(files).forEach(function(file) {
-        fd.append('files', file);
+        fd.append('files', file, file.webkitRelativePath || file.name);
     });
     
     fetch('/templates/upload_folder', {method:'POST', body:fd})

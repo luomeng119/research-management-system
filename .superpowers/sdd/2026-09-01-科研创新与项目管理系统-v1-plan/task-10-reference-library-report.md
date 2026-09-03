@@ -18,20 +18,26 @@
   archive、归档后写拒绝、控制下载、模板文件夹/文件 CRUD、plain/encoded traversal、
   inactive ancestor、stored XSS、旧 download URL、debug/test 路由移除、未登录和
   服务未就绪，以及 FileService 审计失败的首上传回滚。
+- 复核修复 RED → GREEN：新增受控预览引用、原始 URI 边界、真实嵌套 multipart、
+  文件夹级联归档、同事务 audit rollback、审计日志和 stored-XSS 页面探针后，
+  `pytest app/tests/test_reference_library.py -q` 为 `15 passed`。首轮 RED 是
+  缺失树节点 file/version 引用、归档后 direct TEMPLATE 写仍可通过、以及 audit
+  异常仍提交文件夹；三项均已转绿。
 - 影响面回归：
-  `pytest app/tests/test_reference_library.py app/tests/test_legacy_modules.py
-  app/tests/test_file_service.py app/tests/test_auth_audit.py
-  app/tests/test_baseline_security.py app/tests/test_db_contract.py -q`
-  为 `141 passed, 41 skipped`。
+  `pytest app/tests/test_file_service.py app/tests/test_auth_audit.py
+  app/tests/test_baseline_security.py app/tests/test_legacy_modules.py -q`
+  为 `111 passed, 9 skipped`；`compileall` 与 diff check 通过。
 - 隔离 PostgreSQL：
-  `scripts/test_postgres.sh postgresql://localhost/rm_v1_t07` 通过；新增 T10 runtime
-  contract 随 runner 得到 `2 passed, 20 deselected`。它实际写入标准和模板受控文件，
-  下载标准，并确认 `doc_templates` 行数不变。
+  `scripts/test_postgres.sh postgresql://contract_t02` 通过；新增 T10 runtime
+  contract 得到 `1 passed, 27 deselected`，并随后通过 legacy、db-contract 与 file
+  service 的 PostgreSQL slices。它实际写入标准/模板受控文件，验证下载、受控预览
+  引用、级联归档和归档后 direct TEMPLATE 写拒绝，确认 `doc_templates` 行数不变。
 - `python -m compileall -q app` 和 `git diff --check` 通过。
-- 全量 `pytest app/tests -x -q` 到达与本批无关的既有失败：
+- 全量 `pytest app/tests -x -q` 在本次修复实际停于：
   `app/tests/test_generic_tables_req020.py::test_req020_migrate_old_data`，
   SQLite fixture 中 `generic_tables` 为空（`150 passed, 41 skipped, 1 failed`）。
-  本批未改 generic tables，也未掩盖该基线问题。
+  这是 generic-tables fixture/data contract 的未满足前置条件，不在 T10 文件库范围；
+  本报告不将其归为已验证的“既有”问题，也未改动该模块。
 
 ## 改变与保留
 
@@ -47,6 +53,9 @@
   重命名或删除业务目录，不再 raw `send_file` 业务 OS 路径。
 - 模板页面保留单文件/文件夹上传、创建子目录、下载、预览、重命名、归档及安全
   展开/折叠。文件和目录名通过 DOM `textContent` 与事件监听器处理，不拼接为 HTML/JS。
+  标准列表同样只在 autoescaped data attributes 中保存文件名，事件监听器读取后调用
+  `openControlledPreview(fileId, versionNo, objectType, objectId, ...)`；共享预览组件以
+  四个受控引用参数请求 `/preview/file`。旧 `openPreview` 调用保留给未纳入本批的页面。
   无提交后端动作的旧 checkbox 仅曾传播勾选状态，现已移除其无效控件和死代码，并非移除
   批量业务能力。
 - `doc_templates` 未被本库写入，继续只承载 argumentation schema。
@@ -58,4 +67,5 @@
 - T04 已知的进程在物理 `os.replace` 后、数据库提交前被强制终止时的短暂孤儿文件窗口
   仍由后续 T12 对账处理，未在本批扩展为双阶段存储协议。
 - 历史日志页 URL 仍可进入，但不会读取旧 `OperationLogModel`；新文件行为由现有审计服务
-  记录。若需将历史日志迁移至新审计查询，应另行确认范围。
+  记录，并按旧 operator/file_name/date/operation 参数从 PostgreSQL `audit_events`
+  （加 users 与库元数据名称）查询。若需将历史日志迁移至新审计查询，应另行确认范围。

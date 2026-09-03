@@ -46,7 +46,7 @@
                         </thead>
                         <tbody>
                             {% for s in standards %}
-                            <tr>
+                            <tr class="standard-row" data-doc-id="{{ s['doc_id'] }}" data-file-id="{{ s['fileId'] }}" data-version-no="{{ s['versionNo'] }}" data-object-type="{{ s['objectType'] }}" data-object-id="{{ s['objectId'] }}" data-file-name="{{ s['name'] }}">
                                 <td>{{ s['doc_id'] }}</td>
                                 <td>{{ s['name'] }}</td>
                                 <td><span class="badge bg-info">{{ s['category'] }}</span></td>
@@ -54,13 +54,13 @@
                                 <td>{{ s['uploader'] }}</td>
                                 <td>{{ s['upload_time'] }}</td>
                                 <td>
-                                    <button class="btn btn-sm btn-outline-primary" onclick="openPreview('{{ s['file_path'] }}', '{{ s['name'] }}', 'standard', '/standards/download/{{ s['doc_id'] }}')" title="预览">
+                                    <button class="btn btn-sm btn-outline-primary standard-preview" title="预览">
                                         <i class="bi bi-eye"></i>
                                     </button>
                                     <a href="/standards/download/{{ s['doc_id'] }}" class="btn btn-sm btn-outline-success" title="下载">
                                         <i class="bi bi-download"></i>
                                     </a>
-                                    <button class="btn btn-sm btn-outline-danger" onclick="deleteStandard('{{ s['doc_id'] }}')">删除</button>
+                                    <button class="btn btn-sm btn-outline-danger standard-archive">归档</button>
                                 </td>
                             </tr>
                             {% endfor %}
@@ -123,12 +123,17 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
     });
 });
 
-function deleteStandard(docId) {
-    if (confirm('确定删除此标准？')) {
-        fetch('/standards/delete/' + docId, { method: 'POST' })
-        .then(r => r.json())
-        .then(data => { if (data.success) location.reload(); else alert(data.message); });
-    }
-}
+document.querySelectorAll('.standard-row').forEach(function(row) {
+    var downloadUrl = '/standards/download/' + encodeURIComponent(row.dataset.docId);
+    row.querySelector('.standard-preview').addEventListener('click', function() {
+        openControlledPreview(row.dataset.fileId, row.dataset.versionNo, row.dataset.objectType, row.dataset.objectId, row.dataset.fileName, downloadUrl);
+    });
+    row.querySelector('.standard-archive').addEventListener('click', function() {
+        if (!confirm('确定归档此标准？')) return;
+        fetch('/standards/delete/' + encodeURIComponent(row.dataset.docId), { method: 'POST' })
+        .then(function(response) { return response.json(); })
+        .then(function(data) { if (data.success) location.reload(); else alert(data.message); });
+    });
+});
 </script>
 {% endblock %}

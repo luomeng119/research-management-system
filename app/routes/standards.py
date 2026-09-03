@@ -27,6 +27,11 @@ def _error(error: ReferenceLibraryError):
     return jsonify({"success": False, "message": error.message, "code": error.code}), error.status_code
 
 
+@bp.errorhandler(Exception)
+def _unexpected_error(_error_value):
+    return _error(ReferenceLibraryError("REFERENCE_LIBRARY_OPERATION_FAILED", "标准库操作失败", 500))
+
+
 @bp.route("/")
 def index():
     if "user" not in session:
@@ -85,4 +90,8 @@ def logs(module_name):
     if "user" not in session:
         return redirect(url_for("auth.login"))
     module_names = {"equipment": "设备知识库", "standards": "标准法规库", "templates": "科研模板"}
-    return render_template("standards/logs.html", logs=[], standards=[], category_groups={}, module_name=module_name, module_title=module_names.get(module_name, "日志"))
+    try:
+        logs = _service().list_logs(module_name, operator=request.args.get("operator"), file_name=request.args.get("file_name"), start_date=request.args.get("start_date"), end_date=request.args.get("end_date"), operation=request.args.get("operation_type"))
+        return render_template("standards/logs.html", logs=logs, standards=_service().list_standards() if module_name == "standards" else [], category_groups={}, module_name=module_name, module_title=module_names.get(module_name, "日志"))
+    except ReferenceLibraryError as error:
+        return _error(error)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, send_file, session, url_for
 
@@ -27,6 +28,16 @@ def _actor() -> int:
 
 def _error(error: ReferenceLibraryError):
     return jsonify({"success": False, "message": error.message, "code": error.code}), error.status_code
+
+
+@bp.errorhandler(Exception)
+def _unexpected_error(_error_value):
+    return _error(ReferenceLibraryError("REFERENCE_LIBRARY_OPERATION_FAILED", "模板库操作失败", 500))
+
+
+def _raw_path_is_safe() -> bool:
+    raw_uri = request.environ.get("RAW_URI", request.full_path)
+    return re.search(r"%(?:25)*(?:2f|5c)", raw_uri, flags=re.IGNORECASE) is None
 
 
 def _dated_name(original_name: str) -> str:
@@ -85,7 +96,7 @@ def upload_folder():
                 except ReferenceLibraryError as error:
                     if error.code != "DUPLICATE_TEMPLATE_NAME":
                         raise
-            _service().upload_template(uploaded.stream, uploaded.filename, target_folder, _dated_name(segments[-1]), actor_user_id=_actor(), request_id=getattr(request, "request_id", "unknown"))
+            _service().upload_template(uploaded.stream, segments[-1], target_folder, _dated_name(segments[-1]), actor_user_id=_actor(), request_id=getattr(request, "request_id", "unknown"))
             count += 1
         return jsonify({"success": True, "message": f"上传成功 {count} 个文件"})
     except ReferenceLibraryError as error:
@@ -108,12 +119,16 @@ def download(filepath):
     if "user" not in session:
         return redirect(url_for("auth.login"))
     try:
+        if not _raw_path_is_safe():
+            raise ReferenceLibraryError("INVALID_TEMPLATE_PATH", "模板路径无效")
         opened = _service().open_template_download(filepath)
         response = send_file(opened["stream"], mimetype=opened["mediaType"], as_attachment=True, download_name=opened["originalName"], conditional=True, etag=opened["sha256"])
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
     except ReferenceLibraryError as error:
         return _error(error)
+    except Exception:
+        return _error(ReferenceLibraryError("REFERENCE_LIBRARY_OPERATION_FAILED", "模板文件操作失败", 500))
 
 
 @bp.route("/delete_file", methods=["POST"])
@@ -138,6 +153,19 @@ def delete_folder():
         return _error(error)
 
 
+@bp.route("/rename_folder", methods=["POST"])
+def rename_folder():
+    if "user" not in session:
+        return jsonify({"success": False, "message": "未登录"}), 401
+    try:
+        _service().rename_folder(request.form.get("folder", ""), request.form.get("new_name", ""), actor_user_id=_actor(), request_id=getattr(request, "request_id", "unknown"))
+        return jsonify({"success": True, "message": "重命名成功"})
+    except ReferenceLibraryError as error:
+        return _error(error)
+    except Exception:
+        return _error(ReferenceLibraryError("REFERENCE_LIBRARY_OPERATION_FAILED", "模板文件操作失败", 500))
+
+
 @bp.route("/rename_file", methods=["POST"])
 def rename_file():
     if "user" not in session:
@@ -154,4 +182,8 @@ def logs(module_name):
     if "user" not in session:
         return redirect(url_for("auth.login"))
     module_names = {"equipment": "设备知识库", "standards": "标准法规库", "templates": "科研模板"}
-    return render_template("templates/logs.html", logs=[], module_name=module_name, module_title=module_names.get(module_name, "日志"), show_templates_link=True)
+    try:
+        logs = _service().list_logs(module_name, operator=request.args.get("operator"), file_name=request.args.get("file_name"), start_date=request.args.get("start_date"), end_date=request.args.get("end_date"), operation=request.args.get("operation_type"))
+        return render_template("templates/logs.html", logs=logs, module_name=module_name, module_title=module_names.get(module_name, "日志"), show_templates_link=True)
+    except ReferenceLibraryError as error:
+        return _error(error)
