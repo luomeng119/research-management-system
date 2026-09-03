@@ -42,14 +42,15 @@
 - 导入有 20 MiB 压缩文件、100 MiB 解压总量、50 MiB 单条目、200 倍压缩比、200 列和 5000 新增行上限；空/仅表头文件也先校验可编辑目标。
 - 列表及搜索使用数据库 `limit/offset`。导出、比较、统计和删列遇到超过 5000 行时显式返回 `RESULT_TOO_LARGE`，不再静默截断或部分成功；`page_size=-1` 同样显式受该上限约束。
 - 版本比较包含 `row_color`；导出表头/值防公式注入，嵌套 JSON 稳定序列化；临时导出文件在响应迭代器先关闭后删除，兼容 Windows。未预期异常只返回稳定代码和非敏感文案。
+- 导出文件名会移除 CR/LF、控制字符和路径分隔符；`send_file` 响应构造失败时也立即清理临时文件。详情页 GET 遇到缺失 `current_version_id` 时稳定返回 409，不再自动写库修复。
 - 未修改 Alembic schema，未引入新一级模块、AI、会议、任务、复杂权限、向量库、RAG 或 Agent。
 
 ### 最终验证证据
 
-- 专项：`.venv/bin/python -m pytest app/tests/test_generic_tables_postgres.py app/tests/test_generic_tables_req020.py app/tests/test_generic_tables_versions.py -q` → `23 passed, 1 skipped`；跳过的是需要隔离 PostgreSQL 的并发项。
-- 受影响回归：通用表格专项 + `test_legacy_modules.py` + `test_project_establishment.py` 最终为 `70 passed, 4 skipped in 1.91s`；条件跳过项均由隔离 runner 覆盖。
+- 专项：`.venv/bin/python -m pytest app/tests/test_generic_tables_postgres.py app/tests/test_generic_tables_req020.py app/tests/test_generic_tables_versions.py -q` → `25 passed, 1 skipped in 1.16s`；跳过的是需要隔离 PostgreSQL 的并发项。
+- 受影响回归：通用表格专项 + `test_legacy_modules.py` + `test_project_establishment.py` 最终为 `72 passed, 4 skipped in 2.03s`；条件跳过项均由隔离 runner 覆盖。
 - 隔离 PostgreSQL：`scripts/test_postgres.sh postgresql://localhost/rm_v1_t10` 最终退出码 `0`；通用表格并发快照 `1 passed, 14 deselected`，迁移往返、ACL 失败回滚、最小运行角色、立项/生命周期/专家库/数据库合同回归均通过，临时集群已删除。
-- 全量：`.venv/bin/python -m pytest -q` → `338 passed, 48 skipped in 55.52s`，无失败。
+- 全量：`.venv/bin/python -m pytest -q` → `340 passed, 48 skipped in 56.37s`，无失败。
 - 静态：`.venv/bin/python -m compileall -q app`、`bash -n scripts/test_postgres.sh`、`git diff --check` 均退出 `0`；运行时目标文件搜索无 `sqlite3/DB_PATH/PRAGMA/ALTER TABLE/CREATE TABLE/init_db`。
 
 ### 提交
@@ -57,3 +58,4 @@
 - 初始迁移与加固：`1b15afc`、`7d8e484`。
 - 独立复核 10 项 Important 修复：`7ab9b6e fix: close generic table review findings`。
 - PostgreSQL runner 安全测试改用稳定完成标记：`479c139 test: use stable postgres runner completion marker`。
+- 导出异常清理与 GET 只读完整性修复：`f901151 fix: close generic export and read integrity gaps`。
