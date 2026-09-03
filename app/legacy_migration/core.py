@@ -98,7 +98,7 @@ REQUIRED_FIELDS = {
 TABLE_ORDER = (
     "users", "knowledge_subclasses", "host_device_categories", "research_units",
     "projects", "security_projects", "crypto_projects", "equipment", "standards",
-    "experts", "doc_templates", "llm_models", "expert_groups", "equipment_groups",
+    "experts", "llm_models", "expert_groups", "equipment_groups",
     "host_devices", "expert_group_members", "equipment_group_members",
     "device_host_relations", "project_documents", "document_versions",
     "generic_tables", "generic_table_versions", "generic_table_columns",
@@ -548,16 +548,30 @@ def _safe_relative(root: Path, raw: str) -> tuple[str, Path]:
     return relative, candidate
 
 
-def inventory_attachments(root: str | Path, references: Iterable[str | dict[str, str]]) -> dict[str, Any]:
+def inventory_attachments(
+    root: str | Path,
+    references: Iterable[str | dict[str, str]],
+    *,
+    tolerate_invalid: bool = False,
+) -> dict[str, Any]:
     root_path = Path(root)
     uploads = root_path / "uploads"
     if uploads.is_symlink() or (uploads.exists() and not uploads.is_dir()):
         raise SourceSafetyError("uploads root must be a real directory")
     normalized: list[tuple[str, Path, str]] = []
+    invalid_references: list[dict[str, Any]] = []
     for item in references:
         raw = item["path"] if isinstance(item, dict) else item
         source = item.get("source", "requested") if isinstance(item, dict) else "requested"
-        relative, path = _safe_relative(root_path, raw)
+        try:
+            relative, path = _safe_relative(root_path, raw)
+        except SourceSafetyError:
+            if not tolerate_invalid:
+                raise
+            invalid_references.append({
+                "source": source, "value": _safe_raw("file_path", raw)
+            })
+            continue
         normalized.append((relative, path, source))
     by_path: dict[str, tuple[Path, set[str]]] = {}
     for relative, path, source in normalized:
@@ -598,6 +612,9 @@ def inventory_attachments(root: str | Path, references: Iterable[str | dict[str,
         },
         "files": files,
         "unreferenced_files": unreferenced_entries,
+        "invalid_references": sorted(
+            invalid_references, key=lambda item: _canonical_json(item)
+        ),
     }
 
 
@@ -616,7 +633,7 @@ def build_manifest(
             "sha256": source.identity.sha256, "schema_sha256": schema_sha,
             "tables": tables,
         })
-    attachments = inventory_attachments(root, references)
+    attachments = inventory_attachments(root, references, tolerate_invalid=True)
     payload = {"databases": databases, "attachments": attachments}
     return {**payload, "sha256": _sha_bytes(_canonical_json(payload).encode())}
 
@@ -756,7 +773,9 @@ def _convert_row(table: str, row: dict[str, Any], target: sa.Table) -> dict[str,
     for field, value in row.items():
         if field not in target.c:
             continue
-        if table == "llm_models" and field == "file_path":
+        if field == "file_path" and table in {"llm_models", "standards", "doc_templates"}:
+            if table in {"standards", "doc_templates"}:
+                converted[field] = None
             continue
         try:
             if field in DECIMAL_FIELDS:
@@ -1091,7 +1110,7 @@ def _target_fingerprint(
 
 
 def _validate_report_and_target(
-    connection: sa.Connection, report: dict[str, Any]
+    connection: sa.Connection, report: dict[str, Any], *, storage_root: str | Path | None = None
 ) -> None:
     expected_report_sha = report.get("report_sha256")
     if not expected_report_sha or expected_report_sha != _report_sha256(report):
@@ -1107,6 +1126,8 @@ def _validate_report_and_target(
         raise BatchConflict("target drift evidence is missing")
     if _target_fingerprint(connection, target_projection, migration_keys) != expected_target:
         raise BatchConflict("target drift detected")
+    from .binaries import verify_binary_report
+    verify_binary_report(report, storage_root)
 
 
 def _verify_completed_snapshot(
@@ -1116,6 +1137,7 @@ def _verify_completed_snapshot(
     *,
     original_root: str | Path,
     baseline_manifest_sha256: str,
+    storage_root: str | Path | None = None,
     allow_test_sqlite: bool = False,
 ) -> dict[str, Any]:
     if engine.dialect.name != "postgresql" and not allow_test_sqlite:
@@ -1137,7 +1159,7 @@ def _verify_completed_snapshot(
         if existing["status"] not in {"completed", "completed_with_issues"}:
             raise BatchConflict("migration batch is not completed")
         report = _decode_summary(existing["summary"])
-        _validate_report_and_target(connection, report)
+        _validate_report_and_target(connection, report, storage_root=storage_root)
     _assert_sources_unchanged(sources)
     if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
         raise SourceSafetyError("legacy source or attachments changed during verification")
@@ -1149,12 +1171,14 @@ def verify_completed_batch(
     source_root: str | Path,
     batch_key: str,
     *,
+    storage_root: str | Path | None = None,
     allow_test_sqlite: bool = False,
 ) -> dict[str, Any]:
     with _prepared_snapshot(source_root) as (snapshot_root, manifest):
         return _verify_completed_snapshot(
             engine, snapshot_root, batch_key, original_root=source_root,
             baseline_manifest_sha256=manifest["sha256"],
+            storage_root=storage_root,
             allow_test_sqlite=allow_test_sqlite,
         )
 
@@ -1166,9 +1190,12 @@ def _migrate_snapshot(
     *,
     original_root: str | Path,
     baseline_manifest_sha256: str,
+    storage_root: str | Path | None = None,
+    max_file_bytes: int = 100 * 1024 * 1024,
     allow_test_sqlite: bool = False,
     fail_after_table: str | None = None,
     _before_final_source_check: Any = None,
+    _fail_after_binary: int | None = None,
 ) -> dict[str, Any]:
     if engine.dialect.name != "postgresql" and not allow_test_sqlite:
         raise SourceSafetyError("migration target must be PostgreSQL")
@@ -1186,6 +1213,9 @@ def _migrate_snapshot(
         "source_hashes": {item["name"]: item["sha256"] for item in manifest["databases"]},
         "recovery": "backup_restore_only",
         "same_manifest_reuse": "returns_existing_report_without_alias",
+        "domain_redirects": {
+            "research.db.doc_templates": "reference_template_items"
+        },
         "failure_record_boundary": "failed_business_transaction_leaves_no_batch_record",
         "claim": "migration_program_and_fixture_verified_real_sanitized_databases_pending_acceptance",
         "acceptance_status_zh": "迁移程序和夹具验证通过，真实脱敏三库迁移待验收",
@@ -1210,7 +1240,9 @@ def _migrate_snapshot(
             if existing["status"] not in {"completed", "completed_with_issues"}:
                 raise BatchConflict("batch key exists but is not completed")
             existing_report = _decode_summary(existing["summary"])
-            _validate_report_and_target(connection, existing_report)
+            _validate_report_and_target(
+                connection, existing_report, storage_root=storage_root
+            )
             _assert_sources_unchanged(sources)
             if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
                 raise SourceSafetyError("legacy source or attachments changed during batch reuse")
@@ -1226,11 +1258,26 @@ def _migrate_snapshot(
         ).mappings().first()
         if reusable:
             reusable_report = _decode_summary(reusable["summary"])
-            _validate_report_and_target(connection, reusable_report)
+            _validate_report_and_target(
+                connection, reusable_report, storage_root=storage_root
+            )
             _assert_sources_unchanged(sources)
             if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
                 raise SourceSafetyError("legacy source or attachments changed during batch reuse")
             return reusable_report
+        from .binaries import build_binary_plan, binary_issues
+        binary_plan = build_binary_plan(
+            connection, Path(source_root), manifest, max_bytes=max_file_bytes
+        )
+        if binary_plan["summary"]["planned"] and storage_root is None:
+            raise SourceSafetyError("controlled storage root is required for legacy binaries")
+        issue_rows.extend(binary_issues(binary_plan))
+        rejected_standard_ids = {
+            item["objectId"]
+            for item in binary_plan["items"]
+            if item["sourceTable"] == "standards"
+            and item["issueCode"] == "MULTIPLE_OBJECT_CANDIDATES"
+        }
         connection.execute(batches.insert().values(
             id=batch_id, batch_key=batch_key, source_manifest_sha256=manifest_sha,
             status="running", summary={},
@@ -1258,6 +1305,11 @@ def _migrate_snapshot(
                 raise BatchConflict(f"target table must be empty for first migration: {table_name}")
             for row in rows:
                 if table_name in SKIPPED_TABLES:
+                    continue
+                if table_name == "standards" and (
+                    not row.get("doc_id") or str(row.get("doc_id")) in rejected_standard_ids
+                ):
+                    stats["rejected"] += 1
                     continue
                 if table_name in PARENT_KEYS:
                     parent_table, child_field, parent_field = PARENT_KEYS[table_name]
@@ -1380,68 +1432,109 @@ def _migrate_snapshot(
                             "orphan current_version_id in generic_tables"
                         )
 
-        _create_project_registry(connection, report, expected_rows)
-        _verify_json_internal_ids(connection, report, issue_rows)
-        report["target_amounts"] = _verify_expected_rows(
-            connection, expected_rows, report["amounts"]
+        from .binaries import (
+            apply_binary_metadata,
+            cleanup_prepared,
+            finalize_binary_files,
+            physical_fingerprint,
+            prepare_binary_files,
         )
-        _sync_postgresql_sequences(connection, report["tables"].keys())
-
-        report["explicitly_skipped"] = {
-            "research.db": sorted(EXPLICIT_SKIPPED_TABLES["research.db"])
-        }
-
-        issue_rows.sort(key=lambda item: _canonical_json(item))
-        for index, issue in enumerate(issue_rows):
-            issue_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"legacy-issue:{batch_uuid}:{index}:{_canonical_json(issue)}")
-            issue_id = _uuid_value(connection, issue_uuid)
-            connection.execute(issues_target.insert().values(id=issue_id, batch_id=batch_id, **issue))
-        report["issues"] = issue_rows
-        report["counts"]["issues"] = len(issue_rows)
-        if _before_final_source_check is not None:
-            _before_final_source_check()
-        _assert_sources_unchanged(sources)
-        after_manifest = build_manifest(source_root, _sources=sources)
-        if after_manifest["sha256"] != manifest_sha:
-            raise SourceSafetyError("legacy source changed during migration")
-        if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
-            raise SourceSafetyError("legacy source or attachments changed during migration")
-        report["custody_verified"] = True
-        report["source_hashes_before"] = report.pop("source_hashes")
-        report["source_hashes_after"] = {
-            item["name"]: item["sha256"] for item in after_manifest["databases"]
-        }
-        report["attachment_manifest_sha256_before"] = _sha_bytes(_canonical_json(manifest["attachments"]).encode())
-        report["attachment_manifest_sha256_after"] = _sha_bytes(_canonical_json(after_manifest["attachments"]).encode())
-        report["status"] = "completed_with_issues" if issue_rows else "completed"
-        report["target_projection"] = {
-            table_name: table_report["target_columns"]
-            for table_name, table_report in sorted(report["tables"].items())
-        }
-        report["target_projection"]["legacy_migration_issues"] = [
-            "id", "batch_id", "source_table", "source_key", "field_name",
-            "reason", "raw_value"
-        ]
-        report["migration_keys"] = {
-            table_name: {
-                "fields": table_report["migration_key_fields"],
-                "values": table_report["migration_key_values"],
-            }
-            for table_name, table_report in sorted(report["tables"].items())
-        }
-        report["migration_keys"]["legacy_migration_issues"] = {
-            "fields": ["batch_id"], "values": [[str(batch_id)]]
-        }
-        report["target_tables"] = sorted(report["target_projection"])
-        report["target_fingerprint"] = _target_fingerprint(
-            connection, report["target_projection"], report["migration_keys"]
-        )
-        report["report_sha256"] = _report_sha256(report)
-        connection.execute(
-            batches.update().where(batches.c.id == batch_id).values(
-                status=report["status"], summary=report, completed_at=sa.func.now()
+        prepared: list[dict[str, Any]] = []
+        created_binary_files: list[Path] = []
+        try:
+            _create_project_registry(connection, report, expected_rows)
+            if binary_plan["summary"]["planned"]:
+                prepared = prepare_binary_files(
+                    Path(source_root), Path(storage_root), binary_plan
+                )
+                apply_binary_metadata(connection, prepared, report, expected_rows)
+            _verify_json_internal_ids(connection, report, issue_rows)
+            report["target_amounts"] = _verify_expected_rows(
+                connection, expected_rows, report["amounts"]
             )
-        )
+            _sync_postgresql_sequences(connection, report["tables"].keys())
+
+            report["explicitly_skipped"] = {
+                "research.db": sorted(EXPLICIT_SKIPPED_TABLES["research.db"])
+            }
+
+            issue_rows.sort(key=lambda item: _canonical_json(item))
+            for index, issue in enumerate(issue_rows):
+                issue_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"legacy-issue:{batch_uuid}:{index}:{_canonical_json(issue)}")
+                issue_id = _uuid_value(connection, issue_uuid)
+                connection.execute(issues_target.insert().values(id=issue_id, batch_id=batch_id, **issue))
+            report["issues"] = issue_rows
+            report["counts"]["issues"] = len(issue_rows)
+            if _before_final_source_check is not None:
+                _before_final_source_check()
+            _assert_sources_unchanged(sources)
+            after_manifest = build_manifest(source_root, _sources=sources)
+            if after_manifest["sha256"] != manifest_sha:
+                raise SourceSafetyError("legacy source changed during migration")
+            if _fresh_bound_manifest(original_root)["sha256"] != baseline_manifest_sha256:
+                raise SourceSafetyError("legacy source or attachments changed during migration")
+            report["custody_verified"] = True
+            report["source_hashes_before"] = report.pop("source_hashes")
+            report["source_hashes_after"] = {
+                item["name"]: item["sha256"] for item in after_manifest["databases"]
+            }
+            report["attachment_manifest_sha256_before"] = _sha_bytes(_canonical_json(manifest["attachments"]).encode())
+            report["attachment_manifest_sha256_after"] = _sha_bytes(_canonical_json(after_manifest["attachments"]).encode())
+            planned_items = [
+                {key: value for key, value in item.items() if key != "stagePath"}
+                for item in prepared
+            ]
+            if prepared:
+                created_binary_files = finalize_binary_files(
+                    Path(storage_root), prepared, fail_after=_fail_after_binary
+                )
+                physical = physical_fingerprint(Path(storage_root), planned_items)
+            else:
+                physical = {"files": [], "sha256": _sha_bytes(b'{"files":[]}')}
+            report["binaries"] = {
+                "plan_sha256": binary_plan["sha256"],
+                "summary": binary_plan["summary"],
+                "items": planned_items,
+                "issues": [
+                    item for item in binary_plan["items"] if item["issueCode"] is not None
+                ],
+                "physical_files": physical,
+                "physical_files_sha256": physical["sha256"],
+            }
+            report["status"] = "completed_with_issues" if issue_rows else "completed"
+            report["target_projection"] = {
+                table_name: table_report["target_columns"]
+                for table_name, table_report in sorted(report["tables"].items())
+            }
+            report["target_projection"]["legacy_migration_issues"] = [
+                "id", "batch_id", "source_table", "source_key", "field_name",
+                "reason", "raw_value"
+            ]
+            report["migration_keys"] = {
+                table_name: {
+                    "fields": table_report["migration_key_fields"],
+                    "values": table_report["migration_key_values"],
+                }
+                for table_name, table_report in sorted(report["tables"].items())
+            }
+            report["migration_keys"]["legacy_migration_issues"] = {
+                "fields": ["batch_id"], "values": [[str(batch_id)]]
+            }
+            report["target_tables"] = sorted(report["target_projection"])
+            report["target_fingerprint"] = _target_fingerprint(
+                connection, report["target_projection"], report["migration_keys"]
+            )
+            report["report_sha256"] = _report_sha256(report)
+            connection.execute(
+                batches.update().where(batches.c.id == batch_id).values(
+                    status=report["status"], summary=report, completed_at=sa.func.now()
+                )
+            )
+        except Exception:
+            cleanup_prepared(prepared)
+            for path in reversed(created_binary_files):
+                path.unlink(missing_ok=True)
+            raise
     return report
 
 
@@ -1450,15 +1543,24 @@ def migrate_legacy(
     source_root: str | Path,
     batch_key: str,
     *,
+    storage_root: str | Path | None = None,
+    max_file_bytes: int = 100 * 1024 * 1024,
     allow_test_sqlite: bool = False,
     fail_after_table: str | None = None,
     _before_final_source_check: Any = None,
+    _fail_after_binary: int | None = None,
 ) -> dict[str, Any]:
+    if storage_root is not None:
+        from .binaries import _validate_storage_root
+        _validate_storage_root(Path(source_root), Path(storage_root), create=False)
     with _prepared_snapshot(source_root) as (snapshot_root, manifest):
         return _migrate_snapshot(
             engine, snapshot_root, batch_key, original_root=source_root,
             baseline_manifest_sha256=manifest["sha256"],
+            storage_root=storage_root,
+            max_file_bytes=max_file_bytes,
             allow_test_sqlite=allow_test_sqlite,
             fail_after_table=fail_after_table,
             _before_final_source_check=_before_final_source_check,
+            _fail_after_binary=_fail_after_binary,
         )

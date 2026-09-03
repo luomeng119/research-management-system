@@ -164,6 +164,106 @@ class _StagedFile:
     sha256: str
 
 
+def validate_file_name(original_name: str) -> tuple[str, str]:
+    """Validate an untrusted leaf filename using the runtime upload policy."""
+    if not isinstance(original_name, str) or not original_name.strip():
+        raise FileServiceError("INVALID_FILENAME", "文件名无效")
+    name = original_name.strip()
+    if (
+        any(marker in name for marker in ("/", "\\"))
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
+        or Path(name).name != name
+    ):
+        raise FileServiceError("INVALID_FILENAME", "文件名无效")
+    suffixes = [suffix.lower() for suffix in Path(name).suffixes]
+    if not suffixes or suffixes[-1] not in ALLOWED_EXTENSIONS:
+        raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "不支持该文件类型", 415)
+    if any(
+        suffix in DANGEROUS_SUFFIXES or suffix in ALLOWED_EXTENSIONS
+        for suffix in suffixes[:-1]
+    ):
+        raise FileServiceError("INVALID_FILENAME", "不允许双重扩展名")
+    return name, suffixes[-1]
+
+
+def validate_file_content(path: Path, extension: str) -> str:
+    """Validate a regular staged file's bytes using the runtime upload policy."""
+    with path.open("rb") as source:
+        prefix = source.read(8192)
+    valid = False
+    if extension == ".pdf":
+        valid = prefix.startswith(b"%PDF-")
+    elif extension in {".jpg", ".jpeg"}:
+        valid = prefix.startswith(b"\xff\xd8\xff")
+    elif extension == ".png":
+        valid = prefix.startswith(b"\x89PNG\r\n\x1a\n")
+    elif extension == ".gif":
+        valid = prefix.startswith((b"GIF87a", b"GIF89a"))
+    elif extension == ".bmp":
+        valid = prefix.startswith(b"BM")
+    elif extension == ".webp":
+        valid = prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP"
+    elif extension == ".rar":
+        valid = prefix.startswith((b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00"))
+    elif extension in {".zip", ".docx", ".xlsx", ".pptx"}:
+        try:
+            valid = office_archive_is_safe(path)
+            with zipfile.ZipFile(path) as archive:
+                required = {
+                    ".docx": "word/document.xml",
+                    ".xlsx": "xl/workbook.xml",
+                    ".pptx": "ppt/presentation.xml",
+                }.get(extension)
+                if required:
+                    valid = valid and any(
+                        info.filename == required for info in archive.infolist()
+                    )
+        except (OSError, zipfile.BadZipFile):
+            valid = False
+    elif extension in TEXT_EXTENSIONS:
+        try:
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            valid = True
+            with path.open("rb") as source:
+                while True:
+                    raw = source.read(64 * 1024)
+                    if not raw:
+                        break
+                    if b"\x00" in raw:
+                        valid = False
+                        break
+                    decoder.decode(raw)
+                decoder.decode(b"", final=True)
+        except UnicodeDecodeError:
+            valid = False
+    if not valid:
+        raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "文件内容与类型不匹配", 415)
+    return mimetypes.guess_type("file" + extension)[0] or "application/octet-stream"
+
+
+def validate_file_candidate(
+    path: Path, original_name: str, *, max_bytes: int
+) -> tuple[str, str, str, int, str]:
+    """Pure shared policy entry for runtime staging and legacy migration."""
+    name, extension = validate_file_name(original_name)
+    try:
+        details = path.stat()
+    except OSError as exc:
+        raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404) from exc
+    if not stat.S_ISREG(details.st_mode):
+        raise FileServiceError("INVALID_FILE", "文件无效")
+    if details.st_size == 0:
+        raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "空文件不允许上传", 415)
+    if details.st_size > int(max_bytes):
+        raise FileServiceError("FILE_TOO_LARGE", "文件超过大小限制", 413)
+    media_type = validate_file_content(path, extension)
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return name, extension, media_type, details.st_size, digest.hexdigest()
+
+
 class _MetadataWriter:
     """Restricted view of the active connection for first-object metadata writes."""
 
@@ -257,73 +357,11 @@ class FileService:
 
     @staticmethod
     def _validate_name(original_name: str) -> tuple[str, str]:
-        if not isinstance(original_name, str) or not original_name.strip():
-            raise FileServiceError("INVALID_FILENAME", "文件名无效")
-        name = original_name.strip()
-        if (
-            any(marker in name for marker in ("/", "\\"))
-            or any(ord(character) < 32 or ord(character) == 127 for character in name)
-            or Path(name).name != name
-        ):
-            raise FileServiceError("INVALID_FILENAME", "文件名无效")
-        suffixes = [suffix.lower() for suffix in Path(name).suffixes]
-        if not suffixes or suffixes[-1] not in ALLOWED_EXTENSIONS:
-            raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "不支持该文件类型", 415)
-        if any(suffix in DANGEROUS_SUFFIXES or suffix in ALLOWED_EXTENSIONS for suffix in suffixes[:-1]):
-            raise FileServiceError("INVALID_FILENAME", "不允许双重扩展名")
-        return name, suffixes[-1]
+        return validate_file_name(original_name)
 
     @staticmethod
     def _validate_content(path: Path, extension: str) -> str:
-        with path.open("rb") as source:
-            prefix = source.read(8192)
-        valid = False
-        if extension == ".pdf":
-            valid = prefix.startswith(b"%PDF-")
-        elif extension in {".jpg", ".jpeg"}:
-            valid = prefix.startswith(b"\xff\xd8\xff")
-        elif extension == ".png":
-            valid = prefix.startswith(b"\x89PNG\r\n\x1a\n")
-        elif extension == ".gif":
-            valid = prefix.startswith((b"GIF87a", b"GIF89a"))
-        elif extension == ".bmp":
-            valid = prefix.startswith(b"BM")
-        elif extension == ".webp":
-            valid = prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP"
-        elif extension == ".rar":
-            valid = prefix.startswith((b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00"))
-        elif extension in {".zip", ".docx", ".xlsx", ".pptx"}:
-            try:
-                valid = office_archive_is_safe(path)
-                with zipfile.ZipFile(path) as archive:
-                    required = {
-                    ".docx": "word/document.xml",
-                    ".xlsx": "xl/workbook.xml",
-                    ".pptx": "ppt/presentation.xml",
-                }.get(extension)
-                    if required:
-                        valid = valid and any(info.filename == required for info in archive.infolist())
-            except (OSError, zipfile.BadZipFile):
-                valid = False
-        elif extension in TEXT_EXTENSIONS:
-            try:
-                decoder = codecs.getincrementaldecoder("utf-8")()
-                valid = True
-                with path.open("rb") as source:
-                    while True:
-                        raw = source.read(64 * 1024)
-                        if not raw:
-                            break
-                        if b"\x00" in raw:
-                            valid = False
-                            break
-                        decoder.decode(raw)
-                    decoder.decode(b"", final=True)
-            except UnicodeDecodeError:
-                valid = False
-        if not valid:
-            raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "文件内容与类型不匹配", 415)
-        return mimetypes.guess_type("file" + extension)[0] or "application/octet-stream"
+        return validate_file_content(path, extension)
 
     def _stage(self, stream, original_name: str) -> _StagedFile:
         name, extension = self._validate_name(original_name)
@@ -347,10 +385,12 @@ class FileService:
                     destination.write(chunk)
                 destination.flush()
                 os.fsync(destination.fileno())
-            if size == 0:
-                raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "空文件不允许上传", 415)
-            media_type = self._validate_content(stage_path, extension)
-            return _StagedFile(stage_path, name, extension, media_type, size, digest.hexdigest())
+            name, extension, media_type, validated_size, validated_sha = validate_file_candidate(
+                stage_path, name, max_bytes=self.max_bytes
+            )
+            return _StagedFile(
+                stage_path, name, extension, media_type, validated_size, validated_sha
+            )
         except Exception:
             stage_path.unlink(missing_ok=True)
             raise

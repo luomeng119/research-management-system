@@ -16,11 +16,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Verify a completed legacy migration batch")
     parser.add_argument("source_root")
     parser.add_argument("batch_key")
+    parser.add_argument("--storage-root", required=True)
     args = parser.parse_args()
     engine = create_runtime_engine(get_migration_database_url())
     try:
         check_schema_version(engine)
-        report = verify_completed_batch(engine, args.source_root, args.batch_key)
+        report = verify_completed_batch(
+            engine, args.source_root, args.batch_key,
+            storage_root=args.storage_root,
+        )
     finally:
         engine.dispose()
     print(json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":")))

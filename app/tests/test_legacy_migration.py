@@ -26,9 +26,12 @@ from app.legacy_migration import (
     discover_sources,
     inventory_attachments,
     migrate_legacy,
+    plan_legacy_binaries,
     verify_completed_batch,
 )
 from app.legacy_migration.core import StructuralMigrationError
+from app.repositories.files import FilesRepository
+from app.services.files import FileService
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "legacy"
@@ -134,7 +137,38 @@ def _target_engine() -> sa.Engine:
     sa.Table("expense_payment", metadata, sa.Column("id", sa.Integer, primary_key=True), sa.Column("reimbursement_id", sa.Integer), sa.Column("payment_no", sa.String), sa.Column("amount", sa.Numeric), sa.Column("pay_date", sa.Date), sa.Column("file_path", sa.String), sa.Column("matched_invoice_ids", sa.JSON), sa.Column("created_at", sa.DateTime(timezone=True)))
     sa.Table("expense_invoice_item", metadata, sa.Column("id", sa.Integer, primary_key=True), sa.Column("invoice_id", sa.Integer), sa.Column("seq", sa.Integer), sa.Column("name", sa.String), sa.Column("quantity", sa.Numeric), sa.Column("unit_price", sa.Numeric), sa.Column("amount", sa.Numeric), sa.Column("tax_amount", sa.Numeric))
     sa.Table("project_registry", metadata, sa.Column("id", sa.String, primary_key=True), sa.Column("category", sa.String), sa.Column("business_id", sa.String), sa.Column("status", sa.String))
+    common = lambda: (
+        sa.Column("created_by", sa.Integer), sa.Column("updated_by", sa.Integer),
+        sa.Column("version", sa.Integer, nullable=False, server_default="1"),
+    )
+    sa.Table("reference_template_folders", metadata,
+        sa.Column("id", sa.String, primary_key=True), sa.Column("parent_id", sa.String),
+        sa.Column("name", sa.String, nullable=False), sa.Column("status", sa.String, nullable=False),
+        *common())
+    sa.Table("reference_template_items", metadata,
+        sa.Column("id", sa.String, primary_key=True), sa.Column("template_id", sa.String, unique=True, nullable=False),
+        sa.Column("folder_id", sa.String), sa.Column("display_name", sa.String, nullable=False),
+        sa.Column("status", sa.String, nullable=False), *common())
+    sa.Table("stored_files", metadata,
+        sa.Column("id", sa.String, primary_key=True), sa.Column("business_id", sa.String, unique=True, nullable=False),
+        sa.Column("original_name", sa.String, nullable=False), sa.Column("media_type", sa.String, nullable=False),
+        sa.Column("status", sa.String, nullable=False), *common())
+    sa.Table("stored_file_versions", metadata,
+        sa.Column("id", sa.String, primary_key=True), sa.Column("file_id", sa.String, nullable=False),
+        sa.Column("version_no", sa.Integer, nullable=False), sa.Column("storage_path", sa.String, nullable=False),
+        sa.Column("sha256", sa.String(64), nullable=False), sa.Column("size_bytes", sa.BigInteger, nullable=False),
+        sa.Column("media_type", sa.String, nullable=False), *common())
+    sa.Table("object_files", metadata,
+        sa.Column("id", sa.String, primary_key=True), sa.Column("object_type", sa.String, nullable=False),
+        sa.Column("object_id", sa.String, nullable=False), sa.Column("file_id", sa.String, nullable=False),
+        sa.Column("purpose", sa.String), *common())
     metadata.create_all(engine)
+    folders = metadata.tables["reference_template_folders"]
+    with engine.begin() as connection:
+        connection.execute(folders.insert(), [
+            {"id": f"folder-{index}", "name": name, "status": "ACTIVE", "version": 1}
+            for index, name in enumerate(("财务模板", "会务模板", "公文模板", "方案模板", "其他模板"), 1)
+        ])
     return engine
 
 
@@ -235,7 +269,7 @@ def test_migration_is_transactional_idempotent_and_reports_issues(tmp_path):
     second = migrate_legacy(engine, root, "fixture-v1", allow_test_sqlite=True)
     assert first == second
     assert first["status"] == "completed_with_issues"
-    assert first["counts"]["inserted"] == 19
+    assert first["counts"]["inserted"] == 18
     assert first["counts"]["rejected"] == 4
     assert first["counts"]["issues"] >= 2
     assert len(first["report_sha256"]) == 64
@@ -568,24 +602,267 @@ def test_bound_snapshot_rejects_replaced_source_root_ancestor(tmp_path, monkeypa
 )
 def test_postgresql_concurrent_same_batch_and_identity_sequence(tmp_path):
     root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    storage = tmp_path / "controlled-files"
+    storage.mkdir(mode=0o700)
     url = os.environ["T05_TEST_DATABASE_URL"]
     first_engine = sa.create_engine(url, pool_pre_ping=True)
     second_engine = sa.create_engine(url, pool_pre_ping=True)
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [
-                pool.submit(migrate_legacy, engine, root, "concurrent-v1")
+                pool.submit(
+                    migrate_legacy, engine, root, "concurrent-v1",
+                    storage_root=storage, max_file_bytes=1024,
+                )
                 for engine in (first_engine, second_engine)
             ]
             reports = [future.result(timeout=30) for future in futures]
         assert reports[0] == reports[1]
+        service = FileService(
+            FilesRepository(first_engine), _NoAudit(), storage_root=storage,
+            max_bytes=1024, preview_max_bytes=1024,
+        )
+        opened = service.open_version_stream(
+            reports[0]["binaries"]["items"][0]["fileId"], 1,
+            object_type=reports[0]["binaries"]["items"][0]["objectType"],
+            object_id=reports[0]["binaries"]["items"][0]["objectId"],
+        )
+        try:
+            assert opened["stream"].read() == b"same invoice"
+        finally:
+            opened["stream"].close()
         with first_engine.begin() as connection:
             assert connection.scalar(sa.text("select count(*) from legacy_migration_batches")) == 1
             assert connection.scalar(sa.text("select count(*) from projects")) == 1
+            assert connection.scalar(sa.text("select count(*) from stored_files")) == 2
+            assert connection.scalar(sa.text("select count(*) from reference_template_items")) == 1
             inserted_id = connection.scalar(sa.text(
                 "insert into projects(project_id,name) values ('P-NEXT','Next') returning id"
             ))
             assert inserted_id == 12
+            connection.execute(sa.text("delete from object_files"))
+            connection.execute(sa.text("delete from stored_file_versions"))
+            connection.execute(sa.text("delete from stored_files"))
+            connection.execute(sa.text("delete from reference_template_items"))
     finally:
         first_engine.dispose()
         second_engine.dispose()
+
+
+class _NoAudit:
+    def record(self, _connection, **_event):
+        raise AssertionError("legacy binary migration must not write user upload audit")
+
+
+def _add_legacy_binary_references(root: Path, *, category: str = "财务模板") -> None:
+    with sqlite3.connect(root / "research.db") as db:
+        db.execute(
+            "update standards set file_path='uploads/invoice-copy.txt' where doc_id='STD-001'"
+        )
+        db.execute(
+            "update doc_templates set category=?, file_path='uploads/invoice-a.txt' "
+            "where template_id='TPL-001'",
+            (category,),
+        )
+
+
+def test_binary_dry_run_is_deterministic_and_has_zero_writes(tmp_path):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    storage = tmp_path / "controlled-files"
+
+    first = plan_legacy_binaries(
+        engine, root, storage, max_bytes=1024, allow_test_sqlite=True
+    )
+    second = plan_legacy_binaries(
+        engine, root, storage, max_bytes=1024, allow_test_sqlite=True
+    )
+
+    assert first == second
+    assert first["summary"] == {
+        "referenced": 2, "eligible": 2, "planned": 2, "issues": 0,
+        "totalBytes": len(b"same invoice") * 2,
+    }
+    assert {item["objectType"] for item in first["items"]} == {"STANDARD", "TEMPLATE"}
+    assert all(item["storagePath"].startswith("legacy/") for item in first["items"])
+    assert all(str(root) not in json.dumps(item, ensure_ascii=False) for item in first["items"])
+    assert not storage.exists()
+    with engine.connect() as connection:
+        for table in (
+            "legacy_migration_batches", "stored_files", "stored_file_versions",
+            "object_files", "reference_template_items",
+        ):
+            assert connection.scalar(sa.text(f"select count(*) from {table}")) == 0
+
+
+def test_binary_migration_uses_controlled_storage_and_template_domain(tmp_path):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    storage = tmp_path / "controlled-files"
+    storage.mkdir(mode=0o700)
+
+    report = migrate_legacy(
+        engine, root, "binary-v1", storage_root=storage,
+        max_file_bytes=1024, allow_test_sqlite=True,
+    )
+    repeated = migrate_legacy(
+        engine, root, "binary-v1", storage_root=storage,
+        max_file_bytes=1024, allow_test_sqlite=True,
+    )
+    assert repeated == report
+    assert report["binaries"]["summary"]["planned"] == 2
+    assert report["binaries"]["physical_files_sha256"]
+
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text("select file_path from standards where doc_id='STD-001'")) is None
+        assert connection.scalar(sa.text("select count(*) from doc_templates")) == 0
+        assert connection.scalar(sa.text("select count(*) from reference_template_items")) == 1
+        assert connection.scalar(sa.text("select count(*) from stored_files")) == 2
+        assert connection.scalar(sa.text("select count(*) from stored_file_versions")) == 2
+        assert connection.scalar(sa.text("select count(*) from object_files")) == 2
+
+    service = FileService(
+        FilesRepository(engine), _NoAudit(), storage_root=storage,
+        max_bytes=1024, preview_max_bytes=1024,
+    )
+    for item in report["binaries"]["items"]:
+        opened = service.open_version_stream(
+            item["fileId"], 1,
+            object_type=item["objectType"], object_id=item["objectId"],
+        )
+        try:
+            assert opened["stream"].read() == b"same invoice"
+        finally:
+            opened["stream"].close()
+
+
+@pytest.mark.parametrize(
+    ("raw_path", "category", "issue_code"),
+    [
+        ("../secret.txt", "财务模板", "INVALID_SOURCE_PATH"),
+        ("/private/secret.txt", "财务模板", "INVALID_SOURCE_PATH"),
+        (r"\\server\share\secret.txt", "财务模板", "INVALID_SOURCE_PATH"),
+        ("uploads/invoice-a.exe", "财务模板", "UNSUPPORTED_MEDIA_TYPE"),
+        ("uploads/invoice-a.txt", "project", "TEMPLATE_CATEGORY_UNRESOLVED"),
+    ],
+)
+def test_binary_plan_reports_private_item_issues(
+    tmp_path, raw_path, category, issue_code
+):
+    root = _make_sources(tmp_path)
+    with sqlite3.connect(root / "research.db") as db:
+        db.execute(
+            "update doc_templates set category=?, file_path=? where template_id='TPL-001'",
+            (category, raw_path),
+        )
+    engine = _target_engine()
+    report = plan_legacy_binaries(
+        engine, root, tmp_path / "storage", max_bytes=1024,
+        allow_test_sqlite=True,
+    )
+    assert issue_code in {item["issueCode"] for item in report["items"]}
+    rendered = json.dumps(report, ensure_ascii=False, sort_keys=True)
+    if raw_path.startswith(("/", "..", "\\")):
+        assert raw_path not in rendered
+
+
+def test_completed_binary_batch_rejects_missing_or_tampered_file(tmp_path):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o700)
+    report = migrate_legacy(
+        engine, root, "binary-v1", storage_root=storage,
+        max_file_bytes=1024, allow_test_sqlite=True,
+    )
+    first = report["binaries"]["items"][0]
+    path = storage / first["storagePath"]
+    path.write_bytes(b"tampered")
+    with pytest.raises(BatchConflict, match="physical file"):
+        verify_completed_batch(
+            engine, root, "binary-v1", storage_root=storage,
+            allow_test_sqlite=True,
+        )
+    with pytest.raises(BatchConflict, match="physical file"):
+        migrate_legacy(
+            engine, root, "binary-v1", storage_root=storage,
+            max_file_bytes=1024, allow_test_sqlite=True,
+        )
+
+
+def test_binary_migration_failure_removes_database_and_filesystem_residue(tmp_path):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o700)
+
+    with pytest.raises(RuntimeError, match="binary failure"):
+        migrate_legacy(
+            engine, root, "binary-fail", storage_root=storage,
+            max_file_bytes=1024, allow_test_sqlite=True,
+            _fail_after_binary=1,
+        )
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text("select count(*) from legacy_migration_batches")) == 0
+        assert connection.scalar(sa.text("select count(*) from stored_files")) == 0
+        assert connection.scalar(sa.text("select count(*) from reference_template_items")) == 0
+    assert [path for path in storage.rglob("*") if path.is_file()] == []
+
+
+def test_binary_plan_reports_missing_bad_content_and_oversize(tmp_path):
+    root = _make_sources(tmp_path)
+    engine = _target_engine()
+    storage = tmp_path / "storage"
+
+    with sqlite3.connect(root / "research.db") as db:
+        db.execute(
+            "update standards set file_path='uploads/missing.txt' where doc_id='STD-001'"
+        )
+    missing = plan_legacy_binaries(
+        engine, root, storage, max_bytes=1024, allow_test_sqlite=True
+    )
+    assert missing["items"][0]["issueCode"] == "SOURCE_FILE_MISSING"
+
+    (root / "uploads" / "bad.pdf").write_bytes(b"not-pdf")
+    with sqlite3.connect(root / "research.db") as db:
+        db.execute(
+            "update standards set file_path='uploads/bad.pdf' where doc_id='STD-001'"
+        )
+    bad = plan_legacy_binaries(
+        engine, root, storage, max_bytes=1024, allow_test_sqlite=True
+    )
+    assert bad["items"][0]["issueCode"] == "UNSUPPORTED_MEDIA_TYPE"
+
+    (root / "uploads" / "large.txt").write_bytes(b"x" * 8)
+    with sqlite3.connect(root / "research.db") as db:
+        db.execute(
+            "update standards set file_path='uploads/large.txt' where doc_id='STD-001'"
+        )
+    large = plan_legacy_binaries(
+        engine, root, storage, max_bytes=4, allow_test_sqlite=True
+    )
+    assert large["items"][0]["issueCode"] == "FILE_TOO_LARGE"
+
+
+def test_binary_storage_root_boundaries_are_enforced(tmp_path):
+    root = _make_sources(tmp_path)
+    _add_legacy_binary_references(root)
+    engine = _target_engine()
+    with pytest.raises(SourceSafetyError, match="contain"):
+        plan_legacy_binaries(
+            engine, root, root / "files", max_bytes=1024,
+            allow_test_sqlite=True,
+        )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "linked-storage"
+    linked.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(SourceSafetyError, match="storage"):
+        plan_legacy_binaries(
+            engine, root, linked, max_bytes=1024, allow_test_sqlite=True,
+        )

@@ -11,11 +11,11 @@ CREATE TABLE crypto_projects (id INTEGER PRIMARY KEY, project_id TEXT, name TEXT
 CREATE TABLE equipment (id INTEGER PRIMARY KEY, equipment_id TEXT, name TEXT, category TEXT, price TEXT, related_files TEXT, created_at TEXT);
 INSERT INTO equipment VALUES (13, 'EQ-001', 'Valid equipment', 'instrument', '120.50', '["uploads/invoice-a.txt"]', '2026-09-01 10:00:00');
 CREATE TABLE standards (id INTEGER PRIMARY KEY, doc_id TEXT, name TEXT, category TEXT, file_path TEXT, upload_time TEXT);
-INSERT INTO standards VALUES (14, 'STD-001', 'Valid standard', 'standard', 'uploads/invoice-copy.txt', '2026-09-01 10:00:00');
+INSERT INTO standards VALUES (14, 'STD-001', 'Valid standard', 'standard', NULL, '2026-09-01 10:00:00');
 CREATE TABLE experts (id INTEGER PRIMARY KEY, expert_id TEXT, name TEXT, unit TEXT, created_at TEXT, updated_at TEXT);
 INSERT INTO experts VALUES (15, 'EX-001', 'Valid expert', 'Institute', '2026-09-01 10:00:00', '2026-09-01 10:00:00');
 CREATE TABLE doc_templates (id INTEGER PRIMARY KEY, template_id TEXT, name TEXT, category TEXT, file_path TEXT, uploader TEXT, created_at TEXT);
-INSERT INTO doc_templates VALUES (16, 'TPL-001', 'Valid template', 'project', 'uploads/invoice-a.txt', 'hashed', '2026-09-01 10:00:00');
+INSERT INTO doc_templates VALUES (16, 'TPL-001', 'Valid template', '财务模板', NULL, 'hashed', '2026-09-01 10:00:00');
 CREATE TABLE project_documents (id INTEGER PRIMARY KEY, doc_id TEXT, project_id TEXT, name TEXT, file_path TEXT);
 CREATE TABLE document_versions (id INTEGER PRIMARY KEY, version_id TEXT, doc_id TEXT, version_number TEXT, file_path TEXT);
 CREATE TABLE expert_groups (id INTEGER PRIMARY KEY, group_id TEXT, meeting_name TEXT, creator TEXT, created_at TEXT, updated_at TEXT);

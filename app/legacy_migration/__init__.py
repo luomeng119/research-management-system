@@ -16,10 +16,11 @@ from .core import (
     migrate_legacy,
     verify_completed_batch,
 )
+from .binaries import plan_legacy_binaries
 
 __all__ = [
     "BatchConflict", "ConversionIssue", "SourceSafetyError", "build_manifest",
     "convert_bool", "convert_date", "convert_datetime", "convert_decimal",
     "convert_json", "discover_sources", "inventory_attachments", "migrate_legacy",
-    "StructuralMigrationError", "verify_completed_batch",
+    "plan_legacy_binaries", "StructuralMigrationError", "verify_completed_batch",
 ]
