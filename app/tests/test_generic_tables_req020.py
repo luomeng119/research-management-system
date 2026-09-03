@@ -168,6 +168,20 @@ def test_export_sanitizes_crlf_name_and_cleans_if_response_build_fails(tmp_path,
     assert not second.exists()
 
 
+def test_export_cleans_temp_if_post_export_table_lookup_fails(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    table_id = client.post("/api/generic-tables", json={"name": "科研台账"}).get_json()["table_id"]
+    version = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"][0]["version_id"]
+    exported = tmp_path / "lookup-failure.xlsx"
+    exported.write_bytes(b"xlsx")
+    service = client.application.extensions["generic_tables_service"]
+    monkeypatch.setattr(service, "export_to_excel", lambda _version_id: str(exported))
+    monkeypatch.setattr(service, "get_by_id", lambda _table_id: (_ for _ in ()).throw(RuntimeError("lookup failed")))
+    with pytest.raises(RuntimeError, match="lookup failed"):
+        client.get(f"/api/generic-tables/versions/{version}/export")
+    assert not exported.exists()
+
+
 def test_detail_get_does_not_repair_missing_current_pointer(tmp_path):
     client = _client(tmp_path)
     table_id = client.post("/api/generic-tables", json={"name": "科研台账"}).get_json()["table_id"]

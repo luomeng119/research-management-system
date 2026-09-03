@@ -532,18 +532,18 @@ def api_export(version_id):
     if not version:
         return jsonify({'error': '版本不存在'}), 404
     filepath = model.export_to_excel(version_id)
-    table = model.get_by_id(version['table_id'])
-    raw_name = f"{table['name'] if table else '导出'}_{version.get('version_label', version.get('version_number', ''))}"
-    safe_name = re.sub(r'[\x00-\x1f\x7f/\\]+', '_', str(raw_name)).strip(' ._')[:120] or '导出'
-    filename = f"{safe_name}.xlsx"
     try:
+        table = model.get_by_id(version['table_id'])
+        raw_name = f"{table['name'] if table else '导出'}_{version.get('version_label', version.get('version_number', ''))}"
+        safe_name = re.sub(r'[\x00-\x1f\x7f/\\]+', '_', str(raw_name)).strip(' ._')[:120] or '导出'
+        filename = f"{safe_name}.xlsx"
         response = send_file(filepath, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        # Hand cleanup ownership to the response only after every preceding
+        # operation has succeeded.
+        response.response = ClosingIterator(response.response, [lambda: Path(filepath).unlink(missing_ok=True)])
     except Exception:
         Path(filepath).unlink(missing_ok=True)
         raise
-    # ClosingIterator closes send_file's file wrapper first, then unlinks. This
-    # ordering also works on Windows where an open file cannot be removed.
-    response.response = ClosingIterator(response.response, [lambda: Path(filepath).unlink(missing_ok=True)])
     return response
 
 
