@@ -709,7 +709,7 @@ def test_postgresql_concurrent_same_batch_and_identity_sequence(tmp_path):
     root = _make_sources(tmp_path)
     _add_stale_unlocked_generic_table(root)
     _add_legacy_binary_references(root)
-    _add_legacy_finance_binary_references(root)
+    _add_legacy_finance_binary_references(root, zero_ids=True)
     storage = tmp_path / "controlled-files"
     storage.mkdir(mode=0o700)
     url = os.environ["T05_TEST_DATABASE_URL"]
@@ -744,7 +744,7 @@ def test_postgresql_concurrent_same_batch_and_identity_sequence(tmp_path):
             if item["objectType"] in {"INVOICE", "PAYMENT"}
         ]
         assert {(item["objectType"], item["objectId"]) for item in finance_items} == {
-            ("INVOICE", "40"), ("PAYMENT", "50")
+            ("INVOICE", "0"), ("PAYMENT", "0")
         }
         for item in finance_items:
             opened = service.open_version_stream(
@@ -809,6 +809,12 @@ def test_postgresql_concurrent_same_batch_and_identity_sequence(tmp_path):
                 "insert into projects(project_id,name) values ('P-NEXT','Next') returning id"
             ))
             assert inserted_id == 12
+            assert connection.scalar(sa.text(
+                "insert into expense_invoice default values returning id"
+            )) == 1
+            assert connection.scalar(sa.text(
+                "insert into expense_payment default values returning id"
+            )) == 1
             connection.execute(sa.text("delete from object_files"))
             connection.execute(sa.text("delete from stored_file_versions"))
             connection.execute(sa.text("delete from stored_files"))
@@ -836,22 +842,29 @@ def _add_legacy_binary_references(root: Path, *, category: str = "财务模板")
 
 
 def _add_legacy_finance_binary_references(
-    root: Path, *, same_object_id: bool = False
+    root: Path, *, same_object_id: bool = False, zero_ids: bool = False
 ) -> None:
     with sqlite3.connect(root / "expense.db") as db:
-        if same_object_id:
+        if zero_ids:
+            db.execute("update expense_invoice set id=0 where id=40")
+            db.execute("update expense_payment set id=0 where id=50")
+            db.execute("update expense_invoice_item set invoice_id=0 where invoice_id=40")
+            db.execute("update expense_invoice set matched_payment_ids='[0]' where id=0")
+            db.execute("update expense_payment set matched_invoice_ids='[0]' where id=0")
+        elif same_object_id:
             db.execute("update expense_payment set id=40 where id=50")
             db.execute(
                 "update expense_invoice set matched_payment_ids='[40]' where id=40"
             )
+        invoice_id = 0 if zero_ids else 40
+        payment_id = 0 if zero_ids else (40 if same_object_id else 50)
         db.execute(
-            "update expense_invoice set file_path='uploads/invoice-copy.txt' "
-            "where id=40"
+            "update expense_invoice set file_path='uploads/invoice-copy.txt' where id=?",
+            (invoice_id,),
         )
         db.execute(
-            "update expense_payment set file_path='uploads/invoice-a.txt' "
-            "where id=40" if same_object_id else
-            "update expense_payment set file_path='uploads/invoice-a.txt' where id=50"
+            "update expense_payment set file_path='uploads/invoice-a.txt' where id=?",
+            (payment_id,),
         )
 
 
@@ -869,6 +882,36 @@ def test_finance_binaries_migrate_by_type_and_preserve_documents_json(tmp_path):
     report = migrate_legacy(
         engine, root, "finance-binaries", storage_root=storage,
         max_file_bytes=1024, allow_test_sqlite=True,
+    )
+
+    def normalized_report_hash(row):
+        encoded = json.dumps(
+            row, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            default=str,
+        ).encode()
+        row_hash = hashlib.sha256(encoded).hexdigest()
+        aggregate = json.dumps(
+            [row_hash], ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode()
+        return hashlib.sha256(aggregate).hexdigest()
+
+    assert report["tables"]["expense_invoice"]["normalized_sha256"] == (
+        normalized_report_hash({
+            "id": 40, "reimbursement_id": 30, "invoice_no": "INV-OK",
+            "date": "2026-09-01", "amount": Decimal("120.20"),
+            "tax_amount": Decimal("10.00"),
+            "price_ex_tax": Decimal("110.20"), "file_path": None,
+            "matched_payment_ids": [40],
+            "created_at": "2026-09-01 10:00:00+08:00",
+        })
+    )
+    assert report["tables"]["expense_payment"]["normalized_sha256"] == (
+        normalized_report_hash({
+            "id": 40, "reimbursement_id": 30, "payment_no": "PAY-OK",
+            "amount": Decimal("120.20"), "pay_date": "2026-09-02",
+            "file_path": None, "matched_invoice_ids": [40],
+            "created_at": "2026-09-01 10:00:00+08:00",
+        })
     )
     repeated = migrate_legacy(
         engine, root, "finance-binaries", storage_root=storage,
@@ -947,21 +990,82 @@ def test_finance_binary_failure_rolls_back_database_and_files(tmp_path):
         ("uploads/invoice-a.exe", "UNSUPPORTED_MEDIA_TYPE"),
     ],
 )
-def test_finance_binary_plan_reports_path_issues(tmp_path, raw_path, issue_code):
+def test_finance_binary_path_issue_preserves_legacy_reference(
+    tmp_path, raw_path, issue_code
+):
     root = _make_sources(tmp_path)
     with sqlite3.connect(root / "expense.db") as db:
         db.execute(
             "update expense_invoice set file_path=? where id=40", (raw_path,)
         )
-    report = plan_legacy_binaries(
-        _target_engine(), root, tmp_path / "storage", max_bytes=1024,
+    engine = _target_engine()
+    report = migrate_legacy(
+        engine, root, f"finance-{issue_code.lower()}", max_file_bytes=1024,
         allow_test_sqlite=True,
     )
     item = next(
-        item for item in report["items"]
+        item for item in report["binaries"]["issues"]
         if item["sourceTable"] == "expense_invoice"
     )
     assert item["issueCode"] == issue_code
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text(
+            "select file_path from expense_invoice where id=40"
+        )) == raw_path
+        for table in ("stored_files", "stored_file_versions", "object_files"):
+            assert connection.scalar(sa.text(f"select count(*) from {table}")) == 0
+
+
+def test_finance_binary_zero_ids_are_migrated_deterministically(tmp_path):
+    root = _make_sources(tmp_path)
+    _add_legacy_finance_binary_references(root, zero_ids=True)
+    engine = _target_engine()
+    storage = tmp_path / "finance-files"
+    storage.mkdir(mode=0o700)
+
+    report = migrate_legacy(
+        engine, root, "finance-zero-ids", storage_root=storage,
+        max_file_bytes=1024, allow_test_sqlite=True,
+    )
+    assert migrate_legacy(
+        engine, root, "finance-zero-ids", storage_root=storage,
+        max_file_bytes=1024, allow_test_sqlite=True,
+    ) == report
+    items = report["binaries"]["items"]
+    assert {(item["objectType"], item["objectId"]) for item in items} == {
+        ("INVOICE", "0"), ("PAYMENT", "0")
+    }
+    assert len({item["fileId"] for item in items}) == 2
+    assert all(item["issueCode"] is None for item in items)
+    service = FileService(
+        FilesRepository(engine), _NoAudit(), storage_root=storage,
+        max_bytes=1024, preview_max_bytes=1024,
+    )
+    for item in items:
+        opened = service.open_version_stream(
+            item["fileId"], 1, object_type=item["objectType"], object_id="0",
+        )
+        try:
+            assert opened["stream"].read() == b"same invoice"
+        finally:
+            opened["stream"].close()
+
+
+def test_finance_zero_id_conversion_issue_keeps_source_key(tmp_path):
+    root = _make_sources(tmp_path)
+    with sqlite3.connect(root / "expense.db") as db:
+        db.execute("update expense_invoice set id=0, amount='bad' where id=40")
+        db.execute("delete from expense_invoice_item where invoice_id=40")
+        db.execute("update expense_payment set matched_invoice_ids='[]' where id=50")
+    report = migrate_legacy(
+        _target_engine(), root, "finance-zero-id-issue", allow_test_sqlite=True,
+    )
+    issue = next(
+        item for item in report["issues"]
+        if item["source_table"] == "expense_invoice"
+        and item["reason"] == "invalid decimal"
+    )
+    assert issue["source_key"] == "0"
 
 
 def test_finance_binary_reports_object_rejected_by_business_migration(tmp_path):

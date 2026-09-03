@@ -880,7 +880,6 @@ def _convert_row(table: str, row: dict[str, Any], target: sa.Table) -> dict[str,
             continue
         if field == "file_path" and table in {
             "llm_models", "standards", "doc_templates",
-            "expense_invoice", "expense_payment",
         }:
             if table != "llm_models":
                 converted[field] = None
@@ -929,7 +928,12 @@ def _source_for_table(sources: tuple[LegacySource, ...], table: str) -> LegacySo
 
 
 def _record_issue(issues: list[dict[str, Any]], table: str, row: dict[str, Any], field: str | None, reason: str, value: Any = None) -> None:
-    key = row.get("id") or next((row.get(k) for k in NATURAL_KEYS.get(table, ()) if row.get(k) is not None), None)
+    key = row.get("id")
+    if key is None or key == "":
+        key = next((
+            row.get(name) for name in NATURAL_KEYS.get(table, ())
+            if row.get(name) is not None and row.get(name) != ""
+        ), None)
     issues.append({
         "source_table": table, "source_key": str(key) if key is not None else None,
         "field_name": field, "reason": reason,
@@ -1102,9 +1106,23 @@ def _sync_postgresql_sequences(connection: sa.Connection, tables: Iterable[str])
         )
         maximum = connection.scalar(sa.select(sa.func.max(table.c.id)))
         if sequence and maximum is not None:
+            minimum = connection.scalar(
+                sa.text(
+                    "SELECT seqmin FROM pg_sequence "
+                    "WHERE seqrelid = CAST(:sequence AS regclass)"
+                ),
+                {"sequence": sequence},
+            )
+            value = maximum if minimum is None or maximum >= minimum else minimum
+            is_called = minimum is None or maximum >= minimum
             connection.execute(
-                sa.text("SELECT setval(CAST(:sequence AS regclass), :value, true)"),
-                {"sequence": sequence, "value": maximum},
+                sa.text(
+                    "SELECT setval(CAST(:sequence AS regclass), :value, :is_called)"
+                ),
+                {
+                    "sequence": sequence, "value": value,
+                    "is_called": is_called,
+                },
             )
 
 

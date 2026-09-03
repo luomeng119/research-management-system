@@ -10,14 +10,14 @@
 - 文件先复制到私有 `.staging` 并复核，再在既有 PostgreSQL advisory-lock 事务内写受控元数据和确定性最终路径；普通失败回滚 DB 并清理本次 staging/最终文件，同 hash 强杀孤儿可复用，异 hash 硬失败。
 - 报告和 target fingerprint 覆盖 `reference_template_items`、三张受控文件表及物理文件清单；已提交文件缺失/篡改时 verify 和重跑都返回 `BatchConflict`。
 - 通用表格 current 必须指向本表已迁入版本；存在未锁版本时始终选择 `(version_number desc, version_id desc)` 的最新项，不保留过时 current，也不额外生成 working。仅当全部版本已锁定时，确定性复制最新版本中成功迁入的列和行为新的未锁定 working 版本，原历史不变；所有版本 `row_count` 按目标表实际行数重算并纳入对账指纹。
-- `expense_invoice.file_path` 与 `expense_payment.file_path` 按 `INVOICE/<id>` 和 `PAYMENT/<id>` 迁入同一受控文件链；两类对象数值 ID 相同时仍独立生成确定性文件记录。只有目标财务对象成功迁入才建立关联；对象被业务转换拒绝时生成脱敏 issue。`expense_reimbursement.documents` 仅作为业务 JSON 保留，不进入文件路径解析。
+- `expense_invoice.file_path` 与 `expense_payment.file_path` 按 `INVOICE/<id>` 和 `PAYMENT/<id>` 迁入同一受控文件链；两类对象数值 ID 相同时仍独立生成确定性文件记录，合法数值 ID `0` 也参与对象校验、确定性 UUID 和受控读取。只有目标财务对象成功迁入并写完三张文件链元数据后才清空旧 `file_path`；缺失、非法路径、格式不支持或对象迁入失败时保留原值并生成脱敏 issue。`expense_reimbursement.documents` 仅作为业务 JSON 保留，不进入文件路径解析。
 
 ## TDD 与验证证据
 
-- RED：新增二进制迁移行为测试后，因 `plan_legacy_binaries` 尚未实现在 collection 阶段按预期失败。通用表格补充 RED 证实旧流程会把已锁定 `GTV-001` 直接设为 current，且在坏 JSON 行被拒绝后仍保留了虚假 `row_count=2`。财务附件补充 RED 证实原算法未盘点发票/支付 `file_path`，也未生成 `INVOICE`/`PAYMENT` 受控关联。
+- RED：新增二进制迁移行为测试后，因 `plan_legacy_binaries` 尚未实现在 collection 阶段按预期失败。通用表格补充 RED 证实旧流程会把已锁定 `GTV-001` 直接设为 current，且在坏 JSON 行被拒绝后仍保留了虚假 `row_count=2`。财务附件补充 RED 证实原算法未盘点发票/支付 `file_path`，也未生成 `INVOICE`/`PAYMENT` 受控关联；独立复核的 RED 进一步证实 missing/invalid/unsupported 三类失败会错误清空旧路径，ID `0` 的两类合法财务对象会被误判为空并跳过，PostgreSQL 序列会拒绝 `setval(..., 0, true)`，且 ID `0` 转换 issue 会丢失来源键。
 - 独立复核修复：补齐同内容 root/DB/附件身份替换阻断、commit 异常的外层文件清理、storage 全链 no-follow/dir-fd 操作，并将受控表默认生成的审计列纳入指纹。最终一致性复核在同一批 fd 绑定句柄上同时比对身份与 SHA-256，并在事务体末尾和 SQLAlchemy commit 事件边界各复核一次。失败清理按原绑定目录 fd 与 dev/inode/type 精确删除；本次文件被改名时在绑定目录内按 inode 找回，不删除后来占用原名的对象。
-- focused + 受影响回归：`134 passed, 10 skipped`（legacy migration、FileService、reference library、legacy modules）。
-- 隔离 PostgreSQL head schema runner：同 batch 双连接并发、标准+模板+发票+支付物理迁移、`FileService.open_version_stream`、回滚、Alembic/ACL 和完整 DB contract 通过。
+- focused：`51 passed, 1 skipped`；受影响回归：`136 passed, 10 skipped`（legacy migration、FileService、reference library、legacy modules）。
+- 隔离 PostgreSQL head schema runner：同 batch 双连接并发、标准+模板+ID `0` 发票及支付物理迁移、`FileService.open_version_stream`、同批重跑、后续 Identity 从 `1` 开始、回滚、Alembic/ACL 和完整 DB contract 通过；成功财务行以 `file_path=NULL` 重算 normalized hash 并与报告字段直接比对。
 - 交付包现存 `app/expense.db` 以 SQLite `mode=ro&immutable=1` 对账：`expense_reimbursement=0`、`expense_invoice=0`、`expense_payment=0`，SHA-256 为 `0e2b491225540a80af467029352d40ac7c624cb5a94ac46e89668badb5c1ba7f`。因真实源为空，本次只证明程序、合成夹具和空库对账，不声称已迁移真实历史财务附件。
 - `compileall`、两个 CLI `--help` 和 `git diff --check` 通过。
 

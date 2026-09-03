@@ -22,6 +22,7 @@ from .core import (
     StructuralMigrationError,
     _canonical_json,
     _prepared_snapshot,
+    _refresh_expected_table_report,
     _reflect_table,
     _safe_raw,
     _sha_bytes,
@@ -180,16 +181,26 @@ def _empty_item(table: str, row: dict[str, Any], raw: Any) -> dict[str, Any]:
         "standards": "STANDARD", "doc_templates": "TEMPLATE",
         "expense_invoice": "INVOICE", "expense_payment": "PAYMENT",
     }[table]
+    object_id_value = row.get(key_name)
+    source_key_value = object_id_value
+    if source_key_value is None or source_key_value == "":
+        source_key_value = row.get("id")
     return {
         "sourceTable": table,
-        "sourceKey": str(row.get(key_name) or row.get("id") or "") or None,
+        "sourceKey": (
+            None if source_key_value is None or source_key_value == ""
+            else str(source_key_value)
+        ),
         "fieldName": "file_path",
         "sourceLogicalPath": _safe_raw("file_path", raw),
         "exists": False,
         "sizeBytes": None,
         "sha256": None,
         "objectType": object_type,
-        "objectId": str(row.get(key_name) or "") or None,
+        "objectId": (
+            None if object_id_value is None or object_id_value == ""
+            else str(object_id_value)
+        ),
         "fileId": None,
         "versionId": None,
         "linkId": None,
@@ -519,6 +530,7 @@ def apply_binary_metadata(
         "reference_template_items": [], "stored_files": [],
         "stored_file_versions": [], "object_files": [],
     }
+    updated_legacy_tables: set[str] = set()
     for item in prepared:
         if item["objectType"] == "TEMPLATE":
             template_uuid = uuid.uuid5(
@@ -571,6 +583,12 @@ def apply_binary_metadata(
                     legacy_table.c[key_name] == key_value
                 ).values(file_path=None)
             )
+            for expected in expected_rows.get(item["sourceTable"], []):
+                if expected.get(key_name) == key_value:
+                    expected["file_path"] = None
+            updated_legacy_tables.add(item["sourceTable"])
+    for table_name in sorted(updated_legacy_tables):
+        _refresh_expected_table_report(table_name, report, expected_rows)
     for table_name, rows in inserted.items():
         if not rows:
             continue
