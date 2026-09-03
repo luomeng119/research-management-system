@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
 
 
-HEAD_REVISION = "0005_expert_import_batches"
+HEAD_REVISION = "0006_reference_library"
 
 CORE_TABLES = {
     "users",
@@ -419,6 +419,138 @@ def test_schema_contains_confirmed_core_and_legacy_tables(migration_engine):
     inspector = sa.inspect(migration_engine)
     actual = set(inspector.get_table_names())
     assert CORE_TABLES | LEGACY_TABLES <= actual
+
+
+def test_reference_library_schema_separates_file_metadata_from_argumentation_schemas(
+    migration_engine,
+):
+    inspector = sa.inspect(migration_engine)
+    assert {"reference_template_folders", "reference_template_items"} <= set(
+        inspector.get_table_names()
+    )
+
+    standards = {
+        column["name"]: column
+        for column in inspector.get_columns("standards")
+    }
+    assert standards["status"]["nullable"] is False
+    assert any(
+        index["name"] == "uq_standards_doc_id"
+        and index["unique"]
+        and index["dialect_options"]["postgresql_where"] == "(doc_id IS NOT NULL)"
+        for index in inspector.get_indexes("standards")
+    )
+
+    folder_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("reference_template_folders")
+    }
+    assert {
+        "id", "parent_id", "name", "status", "created_by", "updated_by",
+        "created_at", "updated_at", "version",
+    } <= folder_columns.keys()
+    assert isinstance(folder_columns["id"]["type"], sa.dialects.postgresql.UUID)
+    assert folder_columns["created_at"]["type"].timezone is True
+    assert folder_columns["updated_at"]["type"].timezone is True
+    assert any(
+        foreign_key["constrained_columns"] == ["parent_id"]
+        and foreign_key["referred_table"] == "reference_template_folders"
+        for foreign_key in inspector.get_foreign_keys("reference_template_folders")
+    )
+
+    item_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("reference_template_items")
+    }
+    assert {
+        "id", "template_id", "folder_id", "display_name", "status",
+        "created_by", "updated_by", "created_at", "updated_at", "version",
+    } <= item_columns.keys()
+    assert "file_path" not in item_columns
+    assert not {"folder_id", "template_kind"} & {
+        column["name"] for column in inspector.get_columns("doc_templates")
+    }
+
+    expected_indexes = {
+        "uq_reference_template_folders_root_name",
+        "uq_reference_template_folders_parent_name",
+        "uq_reference_template_items_root_display_name",
+        "uq_reference_template_items_folder_display_name",
+    }
+    actual_indexes = {
+        index["name"]
+        for table_name in ("reference_template_folders", "reference_template_items")
+        for index in inspector.get_indexes(table_name)
+    }
+    assert expected_indexes <= actual_indexes
+
+
+def test_reference_library_enforces_active_names_and_retained_categories(runtime_engine):
+    metadata = sa.MetaData()
+    folders = sa.Table(
+        "reference_template_folders", metadata, autoload_with=runtime_engine
+    )
+    items = sa.Table(
+        "reference_template_items", metadata, autoload_with=runtime_engine
+    )
+    marker = str(uuid.uuid4())
+
+    with runtime_engine.connect() as connection:
+        retained = set(connection.scalars(
+            sa.select(folders.c.name).where(
+                folders.c.parent_id.is_(None), folders.c.status == "ACTIVE"
+            )
+        ))
+    assert {"财务模板", "会务模板", "公文模板", "方案模板", "其他模板"} <= retained
+
+    with runtime_engine.begin() as connection:
+        root_id = connection.scalar(
+            folders.insert().values(name=f"Root {marker}").returning(folders.c.id)
+        )
+        nested_id = connection.scalar(
+            folders.insert().values(
+                parent_id=root_id, name=f"Nested {marker}"
+            ).returning(folders.c.id)
+        )
+        connection.execute(
+            items.insert().values(
+                template_id=f"ROOT-{marker}", display_name=f"Root file {marker}"
+            )
+        )
+        connection.execute(
+            items.insert().values(
+                template_id=f"NESTED-{marker}", folder_id=nested_id,
+                display_name=f"Nested file {marker}",
+            )
+        )
+        connection.execute(
+            folders.insert().values(name=f"Root {marker}", status="ARCHIVED")
+        )
+        connection.execute(
+            items.insert().values(
+                template_id=f"ARCHIVED-{marker}", display_name=f"Root file {marker}",
+                status="ARCHIVED",
+            )
+        )
+
+    duplicate_statements = (
+        folders.insert().values(name=f"root {marker}"),
+        folders.insert().values(parent_id=root_id, name=f"nested {marker}"),
+        items.insert().values(
+            template_id=f"ROOT-DUPLICATE-{marker}", display_name=f"root file {marker}"
+        ),
+        items.insert().values(
+            template_id=f"NESTED-DUPLICATE-{marker}", folder_id=nested_id,
+            display_name=f"nested file {marker}",
+        ),
+        items.insert().values(
+            template_id=f"ROOT-{marker}", display_name=f"Different {marker}"
+        ),
+    )
+    for statement in duplicate_statements:
+        with pytest.raises(DBAPIError):
+            with runtime_engine.begin() as connection:
+                connection.execute(statement)
 
 
 def test_mainline_tables_use_uuid_timestamptz_audit_and_version(migration_engine):
