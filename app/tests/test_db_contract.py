@@ -13,7 +13,7 @@ from alembic.config import Config
 from sqlalchemy.exc import DBAPIError
 
 
-HEAD_REVISION = "0008_resource_dictionary_keys"
+HEAD_REVISION = "0009_equipment_import_batches"
 
 CORE_TABLES = {
     "users",
@@ -35,6 +35,7 @@ CORE_TABLES = {
     "audit_events",
     "legacy_migration_batches",
     "legacy_migration_issues",
+    "equipment_import_batches",
 }
 
 LEGACY_TABLES = {
@@ -421,6 +422,88 @@ def test_schema_contains_confirmed_core_and_legacy_tables(migration_engine):
     inspector = sa.inspect(migration_engine)
     actual = set(inspector.get_table_names())
     assert CORE_TABLES | LEGACY_TABLES <= actual
+
+
+def test_equipment_import_batch_schema_enforces_owner_shape_and_bound(migration_engine):
+    inspector = sa.inspect(migration_engine)
+    foreign_keys = inspector.get_foreign_keys("equipment_import_batches")
+    assert any(
+        key["referred_table"] == "users"
+        and key["constrained_columns"] == ["owner_user_id"]
+        for key in foreign_keys
+    )
+    indexes = inspector.get_indexes("equipment_import_batches")
+    assert any(
+        index["name"] == "ix_equipment_import_batches_owner_status_created"
+        and index["column_names"] == ["owner_user_id", "status", "created_at"]
+        for index in indexes
+    )
+    checks = {item["name"] for item in inspector.get_check_constraints(
+        "equipment_import_batches"
+    )}
+    assert {
+        "ck_equipment_import_batches_status",
+        "ck_equipment_import_batches_rows",
+        "ck_equipment_import_batches_statistics",
+        "ck_equipment_import_batches_version",
+    } <= checks
+
+    marker = uuid.uuid4().hex
+    with migration_engine.begin() as connection:
+        owner_id = connection.scalar(sa.text(
+            "INSERT INTO users (username, password, role) "
+            "VALUES (:username, 'test-password', 'BUSINESS_USER') RETURNING id"
+        ), {"username": f"equipment-import-contract-{marker}"})
+    statement = sa.text(
+        "INSERT INTO equipment_import_batches "
+        "(owner_user_id, source_name, source_sha256, status, rows, statistics) "
+        "VALUES (:owner, 'test.xlsx', :sha, 'PREVIEW', CAST(:rows AS jsonb), '{}'::jsonb)"
+    )
+    try:
+        with pytest.raises(DBAPIError):
+            with migration_engine.begin() as rejected:
+                rejected.execute(statement, {
+                    "owner": owner_id, "sha": "0" * 64,
+                    "rows": "{}",
+                })
+        with pytest.raises(DBAPIError):
+            with migration_engine.begin() as rejected:
+                rejected.execute(statement, {
+                    "owner": owner_id, "sha": "0" * 64,
+                    "rows": "[null" + ",null" * 1000 + "]",
+                })
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM users WHERE id = :owner"), {"owner": owner_id}
+            )
+
+
+def test_equipment_import_batch_downgrade_rejects_populated_table(migration_engine):
+    marker = uuid.uuid4().hex
+    with migration_engine.begin() as connection:
+        owner_id = connection.scalar(sa.text(
+            "INSERT INTO users (username, password, role) "
+            "VALUES (:username, 'test-password', 'BUSINESS_USER') RETURNING id"
+        ), {"username": f"equipment-import-downgrade-{marker}"})
+        batch_id = connection.scalar(sa.text(
+            "INSERT INTO equipment_import_batches "
+            "(owner_user_id, source_name, source_sha256, status) "
+            "VALUES (:owner, 'test.xlsx', :sha, 'PREVIEW') RETURNING id"
+        ), {"owner": owner_id, "sha": "0" * 64})
+    try:
+        with pytest.raises(RuntimeError, match="equipment_import_batches contains data"):
+            _run_database_migration("0008_resource_dictionary_keys", upgrade=False)
+        assert _database_revision(migration_engine) == HEAD_REVISION
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM equipment_import_batches WHERE id = :batch"),
+                {"batch": batch_id},
+            )
+            connection.execute(
+                sa.text("DELETE FROM users WHERE id = :owner"), {"owner": owner_id}
+            )
 
 
 def _run_database_migration(revision: str, *, upgrade: bool) -> None:
