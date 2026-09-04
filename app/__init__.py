@@ -372,8 +372,15 @@ def create_app(test_config=None):
     @app.route("/")
     def index():
         from flask import render_template
+        from app.dashboard import build_dashboard_context
         from app.models import DIRECTORIES
 
-        return render_template("index.html", visible_directories=DIRECTORIES)
+        dashboard = build_dashboard_context(
+            app.extensions.get("proposal_service"),
+            app.extensions.get("project_service"),
+        )
+        return render_template(
+            "index.html", visible_directories=DIRECTORIES, dashboard=dashboard
+        )
 
     return app

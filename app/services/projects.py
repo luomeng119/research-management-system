@@ -111,6 +111,7 @@ def _project_ref(registry: dict, project: dict) -> dict:
         "leader": project.get("leader"),
         "plannedEndDate": _serialize(project.get("planned_end_date")),
         "status": registry["status"],
+        "updatedAt": _serialize(registry.get("updated_at")),
         "sourceProposalId": _serialize(registry.get("proposal_id")),
         "version": registry.get("version", 1),
     }

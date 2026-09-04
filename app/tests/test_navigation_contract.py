@@ -106,7 +106,11 @@ def test_dashboard_is_operational_workspace_not_marketing_hero():
     assert "新建科研提案" in source
     assert "常用资源" in source
     assert "待我推进" in source
+    assert "最近更新" in source
+    assert "dashboard.summary" in source
     assert "hero-bg" not in source
     assert "animation: gridMove" not in source
     for href in ("/proposals/new", "/projects", "/experts", "/equipment", "/utils"):
         assert f'href="{href}"' in source
+    assert 'href="/projects?status=执行中"' in source
+    assert 'href="/projects?status=结题上报"' in source

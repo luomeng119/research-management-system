@@ -6,15 +6,27 @@
         <div><p class="eyebrow">科研工作台</p><h1 id="dashboardTitle">从想法开始，推进科研提案与项目</h1><p>集中进入当前工作，原有功能仍可从左侧功能目录访问。</p></div>
         <a class="workspace-button workspace-button-primary" href="/proposals/new"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#plus"></use></svg>新建科研提案</a>
     </div>
+    <div class="summary-strip" aria-label="科研工作摘要">
+        <a href="/proposals?status=DRAFT"><span>待继续提案</span><strong>{{ dashboard.summary.draftProposals if dashboard.summary.draftProposals is not none else '—' }}</strong><small>{{ '草稿' if dashboard.summary.draftProposals is not none else '暂不可用' }}</small></a>
+        <a href="/proposals?status=ARGUMENTATION"><span>论证中</span><strong>{{ dashboard.summary.argumentationProposals if dashboard.summary.argumentationProposals is not none else '—' }}</strong><small>{{ '待记录结论' if dashboard.summary.argumentationProposals is not none else '暂不可用' }}</small></a>
+        <a href="/projects?status=执行中"><span>执行中项目</span><strong>{{ dashboard.summary.activeProjects if dashboard.summary.activeProjects is not none else '—' }}</strong><small>{{ '持续记录进展' if dashboard.summary.activeProjects is not none else '暂不可用' }}</small></a>
+        <a href="/projects?status=结题上报"><span>结题中</span><strong>{{ dashboard.summary.closingProjects if dashboard.summary.closingProjects is not none else '—' }}</strong><small>{{ '待完善结题记录' if dashboard.summary.closingProjects is not none else '暂不可用' }}</small></a>
+    </div>
     <div class="dashboard-grid">
         <section class="workspace-panel dashboard-focus" aria-labelledby="focusTitle">
             <div class="workspace-panel-heading"><div><h2 id="focusTitle">待我推进</h2><p>从已登记的提案或项目继续工作</p></div></div>
-            <div class="dashboard-empty" role="status"><span class="dashboard-empty-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#folder-kanban"></use></svg></span><div><strong>暂无可在工作台直接展示的汇总数据</strong><p>可从提案列表或项目列表查看实际记录。</p></div></div>
+            {% if dashboard.workItems %}
+            <div class="dashboard-work-list">
+                {% for item in dashboard.workItems %}<a class="dashboard-work-row" href="{{ item.url }}"><span class="dashboard-kind">{{ item.kind }}</span><span class="dashboard-work-main"><strong>{{ item.name }}</strong><small>{{ item.businessId }}{% if item.updatedAt %} · {{ item.updatedAt[:16]|replace('T', ' ') }}{% endif %}</small></span><span class="dashboard-status dashboard-status-{{ item.status|lower }}">{{ item.statusLabel }}</span><span class="dashboard-next">{{ item.action }}<svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></span></a>{% endfor %}
+            </div>
+            {% else %}
+            <div class="dashboard-empty" role="status"><span class="dashboard-empty-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#folder-kanban"></use></svg></span><div><strong>{{ '工作台汇总暂时不可用' if dashboard.unavailable else '当前没有待推进记录' }}</strong><p>核心业务不受影响，可从提案列表或项目列表继续。</p></div></div>
+            {% endif %}
             <div class="dashboard-actions"><a class="workspace-button workspace-button-secondary" href="/proposals">查看科研提案<svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></a><a class="workspace-button workspace-button-secondary" href="/projects">查看科研项目<svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></a></div>
         </section>
-        <aside class="workspace-panel dashboard-start" aria-labelledby="startTitle">
-            <div class="workspace-panel-heading"><div><h2 id="startTitle">快捷开始</h2><p>常用业务入口</p></div></div>
-            <nav class="start-links" aria-label="快捷开始"><a href="/proposals/new"><span><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#lightbulb"></use></svg></span><strong>登记一个想法</strong><small>形成可继续完善的科研提案</small></a><a href="/projects"><span><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#folder-kanban"></use></svg></span><strong>进入科研项目</strong><small>查看项目记录与文件</small></a></nav>
+        <aside class="workspace-panel dashboard-updates" aria-labelledby="updatesTitle">
+            <div class="workspace-panel-heading"><div><h2 id="updatesTitle">最近更新</h2><p>提案与项目的最新变化</p></div></div>
+            {% if dashboard.recentUpdates %}<ol class="dashboard-timeline">{% for item in dashboard.recentUpdates %}<li><i aria-hidden="true"></i><a href="{{ item.url }}"><strong>{{ item.name }}</strong><span>{{ item.businessId }}{% if item.updatedAt %} · {{ item.updatedAt[:16]|replace('T', ' ') }}{% endif %}</span></a></li>{% endfor %}</ol>{% else %}<p class="dashboard-updates-empty">暂无更新记录</p>{% endif %}
         </aside>
     </div>
     <section class="workspace-panel quick-panel" aria-labelledby="resourcesTitle">
