@@ -106,6 +106,16 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE: $Executable" }
 }
 
+function Get-PostgresRuntimeState {
+    param([string]$Executable, [string]$DataRoot)
+    & $Executable @("status", "-D", $DataRoot) *> $null
+    switch ($LASTEXITCODE) {
+        0 { return "RUNNING" }
+        3 { return "STOPPED" }
+        default { return "UNKNOWN" }
+    }
+}
+
 function Get-VerifiedProcess {
     param([Parameter(Mandatory = $true)]$State, [string]$Description)
     try {
@@ -152,6 +162,14 @@ try {
     $LogDirectory = Join-Path $DataRoot "logs"
     New-Item -ItemType Directory -Path $RunDirectory -Force | Out-Null
     New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
+    $UpgradeStatePath = Join-Path $RunDirectory "upgrade-state.json"
+    if (Test-Path -LiteralPath $UpgradeStatePath -PathType Leaf) {
+        try { $UpgradeState = Get-Content -LiteralPath $UpgradeStatePath -Raw | ConvertFrom-Json }
+        catch { throw "Upgrade state is invalid; refusing startup." }
+        if ([string]$UpgradeState.status -ne "COMPLETED") {
+            throw "An incomplete upgrade state exists; recovery must be resolved before startup."
+        }
+    }
     $PostgresPidState = Join-Path $RunDirectory "postgresql.pid.json"
     $PostmasterPid = Join-Path $PostgresData "postmaster.pid"
     $RecordedPostgres = $null
@@ -312,13 +330,25 @@ try {
 catch {
     $OriginalError = $_.Exception.Message
     if ($null -ne $ServerProcess) { Stop-Process -Id $ServerProcess.Id -ErrorAction SilentlyContinue }
+    $PostgresCleanupError = $null
     if ($PostgresStartedByThisRun -and $null -ne $PgCtlExe -and $null -ne $PostgresData) {
-        try { & $PgCtlExe @("stop", "-D", $PostgresData, "-m", "fast", "-w") | Out-Null } catch {}
-        if ($null -ne $PostgresPidState -and (Test-Path -LiteralPath $PostgresPidState)) {
-            Remove-Item -LiteralPath $PostgresPidState -Force -ErrorAction SilentlyContinue
+        try {
+            & $PgCtlExe @("stop", "-D", $PostgresData, "-m", "fast", "-w") | Out-Null
+            $StopExitCode = $LASTEXITCODE
+            $PostgresState = Get-PostgresRuntimeState -Executable $PgCtlExe -DataRoot $PostgresData
+            if ($StopExitCode -eq 0 -and $PostgresState -eq "STOPPED") {
+                if ($null -ne $PostgresPidState -and (Test-Path -LiteralPath $PostgresPidState)) {
+                    Remove-Item -LiteralPath $PostgresPidState -Force
+                }
+            }
+            else {
+                $PostgresCleanupError = "PostgreSQL cleanup was not confirmed (stopExit=$StopExitCode state=$PostgresState); PID evidence was retained."
+            }
         }
+        catch { $PostgresCleanupError = "PostgreSQL cleanup was not confirmed; PID evidence was retained: $($_.Exception.Message)" }
     }
     [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")
+    if ($null -ne $PostgresCleanupError) { [Console]::Error.WriteLine("POSTGRES CLEANUP ERROR: {0}", $PostgresCleanupError) }
     [Console]::Error.WriteLine("ERROR: {0}", $OriginalError)
     exit 1
 }

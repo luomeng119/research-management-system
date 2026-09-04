@@ -71,6 +71,21 @@ def test_pid_and_logs_are_kept_under_data_root():
     assert '"server.err.log"' in START_SCRIPT
 
 
+def test_start_failure_removes_postgres_pid_only_after_confirmed_stop():
+    assert "function Get-PostgresRuntimeState" in START_SCRIPT
+    helper = START_SCRIPT.split("function Get-PostgresRuntimeState", 1)[1].split("function ", 1)[0]
+    assert '0 { return "RUNNING" }' in helper
+    assert '3 { return "STOPPED" }' in helper
+    assert 'default { return "UNKNOWN" }' in helper
+    catch_body = START_SCRIPT.split("\ncatch {\n    $OriginalError", 1)[1]
+    stop = catch_body.index('"stop", "-D", $PostgresData')
+    status = catch_body.index("Get-PostgresRuntimeState", stop)
+    confirmed = catch_body.index('$StopExitCode -eq 0 -and $PostgresState -eq "STOPPED"', status)
+    remove = catch_body.index("Remove-Item -LiteralPath $PostgresPidState", confirmed)
+    assert stop < status < confirmed < remove
+    assert "PostgreSQL cleanup was not confirmed" in catch_body
+
+
 def test_stop_targets_only_verified_recorded_pid():
     assert "$DataRoot = Assert-LocalNoReparsePath" in STOP_SCRIPT
     assert "$env:APP_DATA_ROOT = $DataRoot" in STOP_SCRIPT

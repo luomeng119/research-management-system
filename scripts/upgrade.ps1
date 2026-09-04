@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$OfflineRoot = (Join-Path $PSScriptRoot "..\offline"),
-    [string]$VirtualEnvironment = (Join-Path $PSScriptRoot "..\.venv")
+    [string]$VirtualEnvironment = (Join-Path $PSScriptRoot "..\.venv"),
+    [ValidateSet("", "AFTER_BACKUP", "AFTER_SCHEMA", "AFTER_VENV_SWITCH")]
+    [string]$FaultInjectionPoint = ""
 )
 
 Set-StrictMode -Version 2.0
@@ -11,6 +13,15 @@ $PreviousEnvironment = $null
 $PostgresStarted = $false
 $PgCtlExe = $null
 $PostgresData = $null
+$BackupCompleted = $false
+$SchemaMayBeCommitted = $false
+$VenvSwitched = $false
+$PreUpgradeBackup = $null
+$UpgradeStatePath = $null
+$MayWriteUpgradeState = $false
+$OldRevision = $null
+$ExpectedHead = $null
+$RecoveryRequired = $false
 
 function Assert-LocalNoReparsePath {
     param([string]$Path, [switch]$InspectTree)
@@ -85,6 +96,129 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) {
         throw "Command failed with exit code $LASTEXITCODE: $Executable"
     }
+}
+
+function Invoke-Captured {
+    param(
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+    $Output = @(& $Executable @Arguments 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE: $Executable" }
+    return (($Output | ForEach-Object { [string]$_ }) -join "`n").Trim()
+}
+
+function Get-PostgresRuntimeState {
+    param([string]$Executable, [string]$DataRoot)
+    & $Executable @("status", "-D", $DataRoot) *> $null
+    switch ($LASTEXITCODE) {
+        0 { return "RUNNING" }
+        3 { return "STOPPED" }
+        default { return "UNKNOWN" }
+    }
+}
+
+function Invoke-UpgradeFault {
+    param([Parameter(Mandatory = $true)][string]$Point)
+    if ($FaultInjectionPoint -eq $Point) { throw "Injected upgrade failure at $Point." }
+}
+
+function Write-UpgradeState {
+    param([Parameter(Mandatory = $true)][string]$Status)
+    if ([string]::IsNullOrWhiteSpace($UpgradeStatePath) -or -not $MayWriteUpgradeState) { return }
+    $Payload = [ordered]@{
+        schemaVersion = 1
+        status = $Status
+        backupCompleted = $BackupCompleted
+        schemaMayBeCommitted = $SchemaMayBeCommitted
+        venvSwitched = $VenvSwitched
+        backupPath = $PreUpgradeBackup
+        stagingEnvironment = $StagingEnvironment
+        previousEnvironment = $PreviousEnvironment
+        oldRevision = $OldRevision
+        expectedHead = $ExpectedHead
+        recoveryRequired = $RecoveryRequired
+        updatedAtUtc = [DateTime]::UtcNow.ToString("o")
+    }
+    $TemporaryState = "$UpgradeStatePath.tmp-$([Guid]::NewGuid().ToString('N'))"
+    $Payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $TemporaryState -Encoding UTF8
+    Move-Item -LiteralPath $TemporaryState -Destination $UpgradeStatePath -Force
+}
+
+function Get-PostgresVersion {
+    param([Parameter(Mandatory = $true)][string]$Executable)
+    if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { throw "PostgreSQL executable is missing: $Executable" }
+    $Output = Invoke-Captured -Executable $Executable -Arguments @("--version")
+    if ($Output -notmatch '(?i)PostgreSQL\)?\s+([0-9]+(?:\.[0-9]+){1,2})') {
+        throw "Could not parse PostgreSQL version from $Executable."
+    }
+    return $Matches[1]
+}
+
+function Assert-PostgresRuntimeVersionMatch {
+    param($Manifest, [string]$InstalledRuntime, [string]$BundleRoot)
+    $Declared = [string]$Manifest.target.postgresqlServerVersion
+    if ([string]::IsNullOrWhiteSpace($Declared)) { throw "Manifest PostgreSQL version is missing." }
+    $InstalledExe = Join-Path $InstalledRuntime "bin\postgres.exe"
+    $BundledExe = Join-Path $BundleRoot "runtime\postgresql\bin\postgres.exe"
+    $InstalledVersion = Get-PostgresVersion -Executable $InstalledExe
+    $BundledVersion = Get-PostgresVersion -Executable $BundledExe
+    if ($InstalledVersion -ne $Declared -or $BundledVersion -ne $Declared -or $InstalledVersion -ne $BundledVersion) {
+        throw "PostgreSQL runtime upgrades are not supported; installed, bundle, and manifest versions must match exactly."
+    }
+}
+
+function Assert-PostgresDataMajor {
+    param([string]$DataRoot, [string]$PostgresExecutable)
+    $VersionFile = Join-Path $DataRoot "PG_VERSION"
+    if (-not (Test-Path -LiteralPath $VersionFile -PathType Leaf)) { throw "PostgreSQL data PG_VERSION is missing." }
+    $DataMajor = (Get-Content -LiteralPath $VersionFile -Raw).Trim()
+    if ($DataMajor -notmatch '^[0-9]+$') { throw "PostgreSQL data PG_VERSION is invalid." }
+    $BinaryVersion = Get-PostgresVersion -Executable $PostgresExecutable
+    $BinaryMajor = $BinaryVersion.Split('.')[0]
+    if ($DataMajor -ne $BinaryMajor) {
+        throw "PostgreSQL data major version $DataMajor does not match binary version $BinaryVersion."
+    }
+}
+
+function Invoke-PreUpgradeBackup {
+    param([string]$DataRoot)
+    $BackupDirectory = Join-Path $DataRoot "backups"
+    New-Item -ItemType Directory -Path $BackupDirectory -Force | Out-Null
+    $script:PreUpgradeBackup = Join-Path $BackupDirectory (
+        "pre-upgrade-{0}-{1}.zip" -f [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ"), [Guid]::NewGuid().ToString("N")
+    )
+    $BackupScript = Join-Path $PSScriptRoot "backup.ps1"
+    $PowerShellExe = (Get-Process -Id $PID).Path
+    Invoke-Checked -Executable $PowerShellExe -Arguments @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $BackupScript,
+        "-OutputPath", $script:PreUpgradeBackup, "-ConfirmMaintenanceWindow"
+    )
+    if (-not (Test-Path -LiteralPath $script:PreUpgradeBackup -PathType Leaf)) {
+        throw "Pre-upgrade backup did not publish a verified archive."
+    }
+    $script:BackupCompleted = $true
+    Write-UpgradeState -Status "BACKUP_VERIFIED"
+}
+
+function Get-AlembicHead {
+    param([string]$Python)
+    $Output = Invoke-Captured -Executable $Python -Arguments @("-m", "alembic", "heads")
+    $MatchesFound = @([Regex]::Matches($Output, '(?m)^([A-Za-z0-9_.-]+)\s+\(head\)\s*$'))
+    if ($MatchesFound.Count -ne 1) { throw "Upgrade package must contain exactly one Alembic head." }
+    return $MatchesFound[0].Groups[1].Value
+}
+
+function Get-DatabaseRevision {
+    param([string]$Python)
+    $Code = "from sqlalchemy import create_engine,text; import os; e=create_engine(os.environ['MIGRATION_DATABASE_URL']); c=e.connect(); rows=c.execute(text('SELECT version_num FROM alembic_version')).scalars().all(); c.close(); e.dispose(); assert len(rows)==1; print(rows[0])"
+    return (Invoke-Captured -Executable $Python -Arguments @("-c", $Code)).Trim()
+}
+
+function Assert-DatabaseRevision {
+    param([string]$Python, [string]$Expected)
+    $Actual = Get-DatabaseRevision -Python $Python
+    if ($Actual -ne $Expected) { throw "Database revision $Actual does not match the new unique head $Expected." }
 }
 
 function Get-SafeBundleFiles {
@@ -214,20 +348,18 @@ function Assert-OfflineManifest {
             throw "Manifest contains a path absent from the offline root: $ManifestPathEntry"
         }
     }
+    return $Manifest
 }
 
 try {
     $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
     [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")
     [Environment]::SetEnvironmentVariable("DATABASE_URL", $null, "Process")
-    [Environment]::SetEnvironmentVariable("FLASK_SECRET_KEY", $null, "Process")
-    foreach ($PostgresVariable in @("PGPASSWORD", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER")) {
-        [Environment]::SetEnvironmentVariable($PostgresVariable, $null, "Process")
+    foreach ($SensitiveName in @("MIGRATION_DATABASE_URL", "DATABASE_URL", "FLASK_SECRET_KEY", "PGPASSWORD", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER")) {
+        [Environment]::SetEnvironmentVariable($SensitiveName, $null, "Process")
     }
     $ConfiguredDataRoot = Get-RequiredEnvironmentValue "APP_DATA_ROOT"
-    if (-not (Test-Path -LiteralPath $ConfiguredDataRoot -PathType Container)) {
-        throw "APP_DATA_ROOT must reference an existing directory."
-    }
+    if (-not (Test-Path -LiteralPath $ConfiguredDataRoot -PathType Container)) { throw "APP_DATA_ROOT must reference an existing directory." }
     $DataRoot = Assert-LocalNoReparsePath -Path (Resolve-Path -LiteralPath $ConfiguredDataRoot).Path -InspectTree
     $Deployment = Read-ValidatedDeployment -DataRoot $DataRoot
     $PostgresData = (Resolve-Path -LiteralPath ([string]$Deployment.postgresData)).Path
@@ -237,131 +369,156 @@ try {
     & $PgCtlExe @("status", "-D", $PostgresData) *> $null
     if ($LASTEXITCODE -eq 0) { throw "PostgreSQL cluster must be stopped before upgrading." }
     $PostgresPidState = Join-Path (Join-Path $DataRoot "run") "postgresql.pid.json"
-    if (Test-Path -LiteralPath $PostgresPidState -PathType Leaf) {
-        throw "PostgreSQL PID state exists; resolve it before upgrading."
-    }
-    $OwnerPassword = Unprotect-Secret ([string]$Deployment.ownerPasswordProtected)
-    $MigrationDatabaseUrl = New-DatabaseUrl `
-        -Role ([string]$Deployment.ownerRole) `
-        -Password $OwnerPassword `
-        -Database ([string]$Deployment.databaseName) `
-        -Port ([int]$Deployment.databasePort)
+    if (Test-Path -LiteralPath $PostgresPidState -PathType Leaf) { throw "PostgreSQL PID state exists; resolve it before upgrading." }
+
     $PidFile = Join-Path (Join-Path $DataRoot "run") "research-management.pid.json"
     if (Test-Path -LiteralPath $PidFile -PathType Leaf) {
         try {
             $PidState = Get-Content -LiteralPath $PidFile -Raw | ConvertFrom-Json
             $RecordedProcess = Get-Process -Id ([int]$PidState.pid) -ErrorAction SilentlyContinue
         }
-        catch {
-            throw "PID file is invalid; refusing to upgrade."
-        }
-        if ($null -ne $RecordedProcess) {
-            throw "Stop the application before upgrading."
-        }
+        catch { throw "PID file is invalid; refusing to upgrade." }
+        if ($null -ne $RecordedProcess) { throw "Stop the application before upgrading." }
         throw "A stale PID file exists; run stop.ps1 and resolve it before upgrading."
     }
-
     $BindHost = $env:APP_BIND_HOST
-    if ([string]::IsNullOrWhiteSpace($BindHost) -or $BindHost -eq "0.0.0.0") {
-        $BindHost = "127.0.0.1"
-    }
+    if ([string]::IsNullOrWhiteSpace($BindHost) -or $BindHost -eq "0.0.0.0") { $BindHost = "127.0.0.1" }
     $Port = 5001
     if (-not [string]::IsNullOrWhiteSpace($env:APP_PORT)) {
-        if (-not [int]::TryParse($env:APP_PORT, [ref]$Port) -or $Port -lt 1 -or $Port -gt 65535) {
-            throw "APP_PORT must be an integer between 1 and 65535."
-        }
+        if (-not [int]::TryParse($env:APP_PORT, [ref]$Port) -or $Port -lt 1 -or $Port -gt 65535) { throw "APP_PORT must be an integer between 1 and 65535." }
     }
-    if (Test-TcpPortInUse -HostName $BindHost -Port $Port) {
-        throw "The configured application port is active; refusing a hot upgrade."
-    }
+    if (Test-TcpPortInUse -HostName $BindHost -Port $Port) { throw "The configured application port is active; refusing a hot upgrade." }
     $WaitressProcesses = @(Get-CimInstance Win32_Process | Where-Object {
-        -not [string]::IsNullOrWhiteSpace($_.CommandLine) -and
-        $_.CommandLine -match "waitress" -and
-        $_.CommandLine -match "app:create_app"
+        -not [string]::IsNullOrWhiteSpace($_.CommandLine) -and $_.CommandLine -match "waitress" -and $_.CommandLine -match "app:create_app"
     })
-    if ($WaitressProcesses.Count -gt 0) {
-        throw "A Waitress application process is active; refusing a hot upgrade."
-    }
+    if ($WaitressProcesses.Count -gt 0) { throw "A Waitress application process is active; refusing a hot upgrade." }
 
-    if (-not (Test-Path -LiteralPath $OfflineRoot -PathType Container)) {
-        throw "Offline root does not exist: $OfflineRoot"
-    }
+    if (-not (Test-Path -LiteralPath $OfflineRoot -PathType Container)) { throw "Offline root does not exist: $OfflineRoot" }
     $OfflineRoot = (Resolve-Path -LiteralPath $OfflineRoot).Path
-    Assert-OfflineManifest -Root $OfflineRoot
+    $Manifest = Assert-OfflineManifest -Root $OfflineRoot
+    Assert-PostgresRuntimeVersionMatch -Manifest $Manifest -InstalledRuntime $PostgresRuntime -BundleRoot $OfflineRoot
+    Assert-PostgresDataMajor -DataRoot $PostgresData -PostgresExecutable (Join-Path $PostgresRuntime "bin\postgres.exe")
     $Wheelhouse = Join-Path $OfflineRoot "wheelhouse"
     $Requirements = Join-Path $OfflineRoot "requirements.txt"
     $RuntimePython = Join-Path $OfflineRoot "runtime\python\python.exe"
     $VirtualEnvironment = [IO.Path]::GetFullPath($VirtualEnvironment)
     $VenvPython = Join-Path $VirtualEnvironment "Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
-        throw "Installed virtual environment was not found; run install.ps1 first."
+    if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) { throw "Installed virtual environment was not found; run install.ps1 first." }
+
+    $UpgradeStatePath = Join-Path (Join-Path $DataRoot "run") "upgrade-state.json"
+    if (Test-Path -LiteralPath $UpgradeStatePath -PathType Leaf) {
+        try { $ExistingUpgradeState = Get-Content -LiteralPath $UpgradeStatePath -Raw | ConvertFrom-Json }
+        catch { throw "Existing upgrade state is invalid; refusing to overwrite it." }
+        if ([string]$ExistingUpgradeState.status -ne "COMPLETED") {
+            throw "An incomplete upgrade state exists; recovery must be resolved before another upgrade."
+        }
     }
+    $MayWriteUpgradeState = $true
+    Write-UpgradeState -Status "PREPARING_BACKUP"
+    Invoke-Checked -Executable $PgCtlExe -Arguments @(
+        "start", "-D", $PostgresData, "-l", (Join-Path (Join-Path $DataRoot "logs") "postgresql.log"),
+        "-w", "-o", "-h 127.0.0.1 -p $([int]$Deployment.databasePort)"
+    )
+    $PostgresStarted = $true
+    $env:PYTHON_EXE = $VenvPython
+    Invoke-PreUpgradeBackup -DataRoot $DataRoot
+    [Environment]::SetEnvironmentVariable("PYTHON_EXE", $null, "Process")
+    Invoke-UpgradeFault -Point "AFTER_BACKUP"
+
     $EnvironmentParent = Split-Path -Parent $VirtualEnvironment
     $EnvironmentName = Split-Path -Leaf $VirtualEnvironment
-    $StagingEnvironment = Join-Path $EnvironmentParent (
-        $EnvironmentName + ".upgrading-" + [Guid]::NewGuid().ToString("N")
-    )
+    $StagingEnvironment = Join-Path $EnvironmentParent ($EnvironmentName + ".upgrading-" + [Guid]::NewGuid().ToString("N"))
     $PreviousEnvironment = Join-Path $EnvironmentParent (
-        $EnvironmentName + ".previous-" + [DateTime]::UtcNow.ToString("yyyyMMddHHmmss") +
-        "-" + [Guid]::NewGuid().ToString("N")
+        $EnvironmentName + ".previous-" + [DateTime]::UtcNow.ToString("yyyyMMddHHmmss") + "-" + [Guid]::NewGuid().ToString("N")
     )
+    Write-UpgradeState -Status "BUILDING_STAGING_VENV"
     Invoke-Checked -Executable $RuntimePython -Arguments @("-m", "venv", $StagingEnvironment)
     $StagingPython = Join-Path $StagingEnvironment "Scripts\python.exe"
     Invoke-Checked -Executable $StagingPython -Arguments @(
-        "-m", "pip", "install", "--only-binary=:all:", "--no-index", "--find-links", $Wheelhouse,
-        "--requirement", $Requirements
+        "-m", "pip", "install", "--only-binary=:all:", "--no-index", "--find-links", $Wheelhouse, "--requirement", $Requirements
     )
+
+    $OwnerPassword = Unprotect-Secret ([string]$Deployment.ownerPasswordProtected)
+    $MigrationDatabaseUrl = New-DatabaseUrl -Role ([string]$Deployment.ownerRole) -Password $OwnerPassword -Database ([string]$Deployment.databaseName) -Port ([int]$Deployment.databasePort)
+    $env:MIGRATION_DATABASE_URL = $MigrationDatabaseUrl
+    Push-Location $ProjectRoot
+    try {
+        $ExpectedHead = Get-AlembicHead -Python $StagingPython
+        $OldRevision = Get-DatabaseRevision -Python $StagingPython
+        $SchemaMayBeCommitted = $true
+        Write-UpgradeState -Status "SCHEMA_MIGRATION_STARTED"
+        Invoke-Checked -Executable $StagingPython -Arguments @("-m", "alembic", "upgrade", "head")
+        $Provisioner = Join-Path $PSScriptRoot "provision_postgres.py"
+        Invoke-Checked -Executable $StagingPython -Arguments @(
+            $Provisioner, "--runtime-role", ([string]$Deployment.runtimeRole)
+        )
+        Assert-DatabaseRevision -Python $StagingPython -Expected $ExpectedHead
+        Write-UpgradeState -Status "SCHEMA_AT_NEW_HEAD"
+        Invoke-UpgradeFault -Point "AFTER_SCHEMA"
+    }
+    finally { Pop-Location }
 
     Move-Item -LiteralPath $VirtualEnvironment -Destination $PreviousEnvironment
     Move-Item -LiteralPath $StagingEnvironment -Destination $VirtualEnvironment
     $StagingEnvironment = $null
-    $VenvPython = Join-Path $VirtualEnvironment "Scripts\python.exe"
-    Invoke-Checked -Executable $VenvPython -Arguments @(
-        "-m", "pip", "install", "--force-reinstall", "--only-binary=:all:", "--no-index", "--find-links",
-        $Wheelhouse, "--requirement", $Requirements
-    )
-    Push-Location $ProjectRoot
-    try {
-        Invoke-Checked -Executable $PgCtlExe -Arguments @(
-            "start", "-D", $PostgresData, "-l", (Join-Path (Join-Path $DataRoot "logs") "postgresql.log"),
-            "-w", "-o", "-h 127.0.0.1 -p $([int]$Deployment.databasePort)"
-        )
-        $PostgresStarted = $true
-        $env:MIGRATION_DATABASE_URL = $MigrationDatabaseUrl
-        Invoke-Checked -Executable $VenvPython -Arguments @("-m", "alembic", "upgrade", "head")
-        Invoke-Checked -Executable $PgCtlExe -Arguments @("stop", "-D", $PostgresData, "-m", "fast", "-w")
-        $PostgresStarted = $false
-    }
-    finally {
-        [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")
-        Pop-Location
-    }
-
+    $VenvSwitched = $true
+    Write-UpgradeState -Status "VENV_SWITCHED"
+    Invoke-UpgradeFault -Point "AFTER_VENV_SWITCH"
+    [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")
+    Invoke-Checked -Executable $PgCtlExe -Arguments @("stop", "-D", $PostgresData, "-m", "fast", "-w")
+    $PostgresStarted = $false
+    Write-UpgradeState -Status "COMPLETED"
     Write-Host "Offline dependency and schema upgrade completed."
-    Write-Host "Previous virtual environment retained for recovery: $PreviousEnvironment"
+    Write-Host "Previous virtual environment retained for manual recovery only: $PreviousEnvironment"
+    Write-Host "Pre-upgrade backup: $PreUpgradeBackup"
     exit 0
 }
 catch {
     $OriginalError = $_.Exception.Message
+    $StopError = $null
     [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")
-    try {
-        if ($PostgresStarted -and $null -ne $PgCtlExe -and $null -ne $PostgresData) {
-            & $PgCtlExe @("stop", "-D", $PostgresData, "-m", "fast", "-w") | Out-Null
+    [Environment]::SetEnvironmentVariable("DATABASE_URL", $null, "Process")
+    if ($PostgresStarted -and $null -ne $PgCtlExe -and $null -ne $PostgresData) {
+        try {
+            Invoke-Checked -Executable $PgCtlExe -Arguments @("stop", "-D", $PostgresData, "-m", "fast", "-w")
             $PostgresStarted = $false
         }
-        if ($null -ne $StagingEnvironment -and (Test-Path -LiteralPath $StagingEnvironment)) {
-            Remove-Item -LiteralPath $StagingEnvironment -Recurse -Force
-        }
-        if ($null -ne $PreviousEnvironment -and (Test-Path -LiteralPath $PreviousEnvironment)) {
-            if (Test-Path -LiteralPath $VirtualEnvironment) {
-                Remove-Item -LiteralPath $VirtualEnvironment -Recurse -Force
-            }
-            Move-Item -LiteralPath $PreviousEnvironment -Destination $VirtualEnvironment
-        }
+        catch { $StopError = $_.Exception.Message }
     }
-    catch {
-        [Console]::Error.WriteLine("ROLLBACK ERROR: {0}", $_.Exception.Message)
+    $PostgresStateAfterFailure = "UNKNOWN"
+    if ($null -ne $PgCtlExe -and $null -ne $PostgresData) {
+        try { $PostgresStateAfterFailure = Get-PostgresRuntimeState -Executable $PgCtlExe -DataRoot $PostgresData }
+        catch { $PostgresStateAfterFailure = "UNKNOWN" }
     }
+    if ($PostgresStateAfterFailure -eq "STOPPED") { $PostgresStarted = $false }
+    $RecoveryRequired = $true
+    $FailureStatus = if ($PostgresStateAfterFailure -eq "STOPPED") {
+        "FAILED_STOPPED"
+    }
+    elseif ($PostgresStateAfterFailure -eq "RUNNING") {
+        "FAILED_POSTGRES_RUNNING"
+    }
+    else {
+        "FAILED_POSTGRES_STATE_UNKNOWN"
+    }
+    try { Write-UpgradeState -Status $FailureStatus } catch { [Console]::Error.WriteLine("STATE ERROR: {0}", $_.Exception.Message) }
+    if ($SchemaMayBeCommitted) {
+        [Console]::Error.WriteLine("Automatic rollback is disabled because the schema may have committed. The application remains stopped.")
+    }
+    elseif (-not $VenvSwitched) {
+        [Console]::Error.WriteLine("The database revision was not marked changed and the active virtual environment was not switched.")
+    }
+    if ($BackupCompleted) { [Console]::Error.WriteLine("Pre-upgrade backup: {0}", $PreUpgradeBackup) }
+    if ($null -ne $StopError) { [Console]::Error.WriteLine("POSTGRES STOP ERROR: {0}", $StopError) }
     [Console]::Error.WriteLine("ERROR: {0}", $OriginalError)
     exit 1
+}
+finally {
+    $OwnerPassword = $null
+    $MigrationDatabaseUrl = $null
+    [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")
+    [Environment]::SetEnvironmentVariable("DATABASE_URL", $null, "Process")
+    foreach ($SensitiveName in @("MIGRATION_DATABASE_URL", "DATABASE_URL", "PYTHON_EXE", "PGPASSWORD", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER")) {
+        [Environment]::SetEnvironmentVariable($SensitiveName, $null, "Process")
+    }
 }

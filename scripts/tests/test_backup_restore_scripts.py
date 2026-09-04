@@ -20,6 +20,62 @@ def test_backup_requires_maintenance_window_and_uses_custom_postgres_dump():
     assert "pg_dump" in BACKUP_SCRIPT.lower()
 
 
+def test_backup_uses_validated_deployment_dpapi_and_only_bundled_pg_dump():
+    assert '"deployment.json"' in BACKUP_SCRIPT
+    assert "Read-ValidatedDeployment" in BACKUP_SCRIPT
+    assert "runtimePasswordProtected" in BACKUP_SCRIPT
+    assert "ConvertTo-SecureString" in BACKUP_SCRIPT
+    assert 'Get-RequiredEnvironmentValue "DATABASE_URL"' not in BACKUP_SCRIPT
+    assert 'Join-Path ([string]$Deployment.postgresRuntime) "bin\\pg_dump.exe"' in BACKUP_SCRIPT
+    assert "$env:PG_DUMP_EXE" not in BACKUP_SCRIPT
+    assert 'FallbackName "pg_dump.exe"' not in BACKUP_SCRIPT
+    assert 'databaseHost -ne "127.0.0.1"' in BACKUP_SCRIPT
+    assert "must match the validated local deployment" in BACKUP_SCRIPT
+    assert "must not use UNC or network storage" in BACKUP_SCRIPT
+    assert "DriveType]::Network" in BACKUP_SCRIPT
+
+
+def test_backup_always_clears_database_and_postgres_credentials():
+    finally_body = BACKUP_SCRIPT.rsplit("finally {", 1)[1]
+    for name in (
+        "DATABASE_URL",
+        "MIGRATION_DATABASE_URL",
+        "PGPASSWORD",
+        "PGHOST",
+        "PGPORT",
+        "PGDATABASE",
+        "PGUSER",
+    ):
+        assert f'[Environment]::SetEnvironmentVariable("{name}", $null, "Process")' in finally_body
+
+
+def test_backup_exposes_runtime_database_url_only_to_snapshot_process_environment():
+    snapshot = BACKUP_SCRIPT.index('"snapshot"')
+    set_url = BACKUP_SCRIPT.rindex("$env:DATABASE_URL = $DatabaseUrl", 0, snapshot)
+    assert set_url < snapshot
+    assert '"--database-url"' not in BACKUP_SCRIPT
+    assert '"--dbname=$DatabaseUrl"' not in BACKUP_SCRIPT
+
+
+def test_backup_cleanup_requires_run_bound_canonical_ownership_markers():
+    assert "$RunToken = [Guid]::NewGuid().ToString(\"N\")" in BACKUP_SCRIPT
+    assert "New-OwnershipMarker" in BACKUP_SCRIPT
+    assert "Assert-OwnershipMarker" in BACKUP_SCRIPT
+    assert "canonicalTarget" in BACKUP_SCRIPT
+    assert "runToken" in BACKUP_SCRIPT
+    assert "Remove-OwnedDirectory" in BACKUP_SCRIPT
+    assert "Remove-OwnedFile" in BACKUP_SCRIPT
+    assert "$StageRootOwned = $true" in BACKUP_SCRIPT
+    assert "$ValidationRootOwned = $true" in BACKUP_SCRIPT
+    create_zip = BACKUP_SCRIPT.index("CreateFromDirectory")
+    partial_owned = BACKUP_SCRIPT.index("$TemporaryOutputOwned = $true", create_zip)
+    assert create_zip < partial_owned
+    finally_body = BACKUP_SCRIPT.rsplit("finally {", 1)[1]
+    assert "Remove-OwnedDirectory -Target $StageRoot -Marker $StageMarker -Token $RunToken" in finally_body
+    assert "Remove-OwnedDirectory -Target $ValidationRoot -Marker $ValidationMarker -Token $RunToken" in finally_body
+    assert "Remove-OwnedFile -Target $TemporaryOutputPath -Marker $TemporaryOutputMarker -Token $RunToken" in finally_body
+
+
 def test_backup_copies_only_the_three_business_file_roots_and_seals_sha256_manifest():
     """Catches omitting legacy attachments or recursively copying the backup directory."""
     for relative in ('"data\\files"', '"uploads"', '"documents"', '"data\\documents"', '"data\\templates"'):
@@ -174,7 +230,7 @@ def test_final_zip_is_reextracted_and_verified_and_partial_output_is_removed():
     success = BACKUP_SCRIPT.index("Verified maintenance-window backup created")
     assert create < extract < verify < publish < success
     assert "[IO.File]::Delete($OutputPath)" not in BACKUP_SCRIPT
-    assert "[IO.File]::Delete($TemporaryOutputPath)" in BACKUP_SCRIPT
+    assert "Remove-OwnedFile -Target $TemporaryOutputPath" in BACKUP_SCRIPT
     assert '".partial-{0}.zip"' in BACKUP_SCRIPT
-    created_guard = BACKUP_SCRIPT.index("$TemporaryOutputCreated = $true")
-    assert created_guard < create
+    created_guard = BACKUP_SCRIPT.index("$TemporaryOutputOwned = $true")
+    assert create < created_guard

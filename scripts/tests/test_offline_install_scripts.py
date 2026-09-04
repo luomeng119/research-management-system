@@ -176,15 +176,92 @@ def test_upgrade_refuses_to_run_while_recorded_server_is_active():
     assert '".upgrading-"' in script
     assert '".previous-"' in script
     assert "Move-Item -LiteralPath $VirtualEnvironment -Destination $PreviousEnvironment" in script
-    assert "Move-Item -LiteralPath $PreviousEnvironment -Destination $VirtualEnvironment" in script
+    catch_body = script.split("catch {", 1)[1]
+    assert "Move-Item -LiteralPath $PreviousEnvironment -Destination $VirtualEnvironment" not in catch_body
     assert 'Get-RequiredEnvironmentValue "MIGRATION_DATABASE_URL"' not in script
     assert "ownerPasswordProtected" in script
     assert "ConvertTo-SecureString" in script
     assert "PostgreSQL cluster must be stopped before upgrading" in script
     assert '"--no-index"' in script
-    assert script.count('"--only-binary=:all:"') == 2
+    assert script.count('"--only-binary=:all:"') == 1
     assert '"-m", "alembic", "upgrade", "head"' in script
     assert "start.ps1" not in script
+
+
+def test_upgrade_is_backup_first_staged_and_fail_safe_after_schema_change():
+    script = _text("upgrade.ps1")
+
+    backup = script.rindex("Invoke-PreUpgradeBackup -DataRoot")
+    staging = script.index('"-m", "venv", $StagingEnvironment', backup)
+    schema_flag = script.index("$SchemaMayBeCommitted = $true", staging)
+    migration = script.index('"-m", "alembic", "upgrade", "head"', schema_flag)
+    revision_check = script.index("Assert-DatabaseRevision", migration)
+    switch_old = script.index("Move-Item -LiteralPath $VirtualEnvironment -Destination $PreviousEnvironment", revision_check)
+    switch_new = script.index("Move-Item -LiteralPath $StagingEnvironment -Destination $VirtualEnvironment", switch_old)
+    assert backup < staging < schema_flag < migration < revision_check < switch_old < switch_new
+    assert "-Executable $StagingPython" in script
+    assert "[A-Za-z0-9_.-]+" in script
+    assert "$BackupCompleted" in script
+    assert "$SchemaMayBeCommitted" in script
+    assert "$VenvSwitched" in script
+    assert '"upgrade-state.json"' in script
+    assert '"AFTER_BACKUP", "AFTER_SCHEMA", "AFTER_VENV_SWITCH"' in script
+    assert "Automatic rollback is disabled" in script
+    assert "Pre-upgrade backup:" in script
+    assert "oldRevision = $OldRevision" in script
+    assert "expectedHead = $ExpectedHead" in script
+    assert "recoveryRequired = $RecoveryRequired" in script
+    assert '"FAILED_POSTGRES_RUNNING"' in script
+    assert '"FAILED_POSTGRES_STATE_UNKNOWN"' in script
+    assert '"FAILED_STOPPED"' in script
+    catch_body = script.split("\ncatch {\n    $OriginalError", 1)[1]
+    assert "Old active virtual environment quarantined" not in catch_body
+    assert "Move-Item -LiteralPath $VirtualEnvironment" not in catch_body
+
+
+def test_upgrade_failure_distinguishes_pg_ctl_status_exit_codes():
+    script = _text("upgrade.ps1")
+    helper = script.split("function Get-PostgresRuntimeState", 1)[1].split("function ", 1)[0]
+    assert '0 { return "RUNNING" }' in helper
+    assert '3 { return "STOPPED" }' in helper
+    assert 'default { return "UNKNOWN" }' in helper
+    catch_body = script.split("\ncatch {\n    $OriginalError", 1)[1]
+    assert '$PostgresStateAfterFailure -eq "STOPPED"' in catch_body
+    assert '$PostgresStateAfterFailure -eq "RUNNING"' in catch_body
+    assert '"FAILED_POSTGRES_STATE_UNKNOWN"' in catch_body
+
+
+def test_upgrade_and_start_refuse_incomplete_upgrade_state():
+    upgrade = _text("upgrade.ps1")
+    start = _text("start.ps1")
+    for script in (upgrade, start):
+        assert '"upgrade-state.json"' in script
+        assert 'status -ne "COMPLETED"' in script
+        assert "incomplete upgrade state" in script.lower()
+
+
+def test_upgrade_checks_pgdata_major_and_reprovisions_acl_before_final_revision_check():
+    script = _text("upgrade.ps1")
+    assert '"PG_VERSION"' in script
+    assert "PostgreSQL data major version" in script
+    migration = script.index('"-m", "alembic", "upgrade", "head"')
+    provision = script.index('"provision_postgres.py"', migration)
+    revision = script.index("Assert-DatabaseRevision", provision)
+    assert migration < provision < revision
+    assert '"--runtime-role", ([string]$Deployment.runtimeRole)' in script
+    assert '"--migration-url"' not in script
+
+
+def test_upgrade_rejects_any_postgresql_runtime_version_change_before_backup():
+    script = _text("upgrade.ps1")
+
+    version_check = script.rindex("Assert-PostgresRuntimeVersionMatch -Manifest")
+    backup = script.rindex("Invoke-PreUpgradeBackup -DataRoot")
+    assert version_check < backup
+    assert "$Manifest.target.postgresqlServerVersion" in script
+    assert 'Join-Path $InstalledRuntime "bin\\postgres.exe"' in script
+    assert 'Join-Path $BundleRoot "runtime\\postgresql\\bin\\postgres.exe"' in script
+    assert "PostgreSQL runtime upgrades are not supported" in script
 
 
 def test_bundle_builder_rejects_missing_runtime(tmp_path: Path):
