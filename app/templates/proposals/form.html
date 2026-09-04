@@ -1,49 +1,73 @@
 {% extends "base.html" %}
 {% block title %}{{ '编辑科研提案' if proposal else '新建科研提案' }}{% endblock %}
+{% block extra_css %}<link href="/static/css/proposal-workflow.css" rel="stylesheet">{% endblock %}
 {% block content %}
 {% set source_labels = {'IDEA':'想法','CREATIVE':'创意','MEETING_CONCLUSION':'会议结论','FINISHED_MATERIAL':'成品材料','OTHER':'其他'} %}
 {% set status_labels = {'DRAFT':'草稿','ARGUMENTATION':'论证中','ESTABLISHED':'已立项','DEFERRED':'已暂缓','REJECTED':'不立项'} %}
-<div class="container-fluid py-3" style="max-width: 1080px;">
-  <div class="d-flex justify-content-between align-items-center mb-3">
-    <div><a href="{{ url_for('proposals.list_page') }}" class="text-decoration-none">‹ 返回提案列表</a><h2 class="mt-2 mb-0">{{ '编辑科研提案' if proposal else '新建科研提案' }}</h2></div>
-    <span class="badge text-bg-secondary">{{ status_labels.get(proposal.status, proposal.status) if proposal else '草稿' }}</span>
+{% set status_classes = {'DRAFT':'draft','ARGUMENTATION':'argumentation','ESTABLISHED':'established','DEFERRED':'deferred','REJECTED':'rejected'} %}
+<div class="proposal-page proposal-page-form">
+  <div class="proposal-topline">
+    <a href="{{ url_for('proposals.list_page') }}" class="proposal-back"><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-left"></use></svg>返回提案列表</a>
+    <div class="proposal-toolbar"><button class="proposal-button proposal-button-primary proposal-save-action" type="submit" form="proposal-form"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#check"></use></svg><span>保存草稿</span></button></div>
   </div>
-  <div class="row g-3 align-items-start">
-  <div class="{{ 'col-xl-8' if proposal else 'col-12' }}">
-  <form method="post" novalidate id="proposal-form">
-    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-    {% if proposal %}<input type="hidden" name="version" value="{{ proposal.version }}">{% endif %}
-    <div class="card p-4">
-      <h5 class="mb-3"><i class="bi bi-lightbulb me-2"></i>原始依据</h5>
-      {% set fields = [
-        ('title','提案名称','text'),
-        ('sourceSummary','原始依据摘要','textarea'),
-        ('researchProblem','拟解决的研究问题','textarea'),
-        ('objectives','研究目标','textarea'),
-        ('researchContent','主要研究内容','textarea'),
-        ('expectedOutcomes','预期成果','textarea')
-      ] %}
-      <div class="mb-3">
-        <label class="form-label" for="sourceType">来源类型 *</label>
-        <select class="form-select {{ 'is-invalid' if errors.get('sourceType') }}" id="sourceType" name="sourceType">
-          <option value="">请选择</option>
-          {% for value in source_types %}<option value="{{ value }}" {{ 'selected' if form.get('sourceType') == value }}>{{ source_labels.get(value, value) }}</option>{% endfor %}
-        </select>
-        {% if errors.get('sourceType') %}<div class="invalid-feedback">{{ errors.sourceType }}</div>{% endif %}
-      </div>
-      {% for name, label, kind in fields %}
-      <div class="mb-3">
-        <label class="form-label" for="{{ name }}">{{ label }} *</label>
-        {% if kind == 'textarea' %}<textarea class="form-control {{ 'is-invalid' if errors.get(name) }}" id="{{ name }}" name="{{ name }}" rows="3">{{ form.get(name, '') }}</textarea>{% else %}<input class="form-control {{ 'is-invalid' if errors.get(name) }}" id="{{ name }}" name="{{ name }}" value="{{ form.get(name, '') }}">{% endif %}
-        {% if errors.get(name) %}<div class="invalid-feedback">{{ errors[name] }}</div>{% endif %}
-      </div>
-      {% endfor %}
-      <p class="text-muted small"><i class="bi bi-paperclip me-1"></i>提案保存后可在详情页上传依据附件。会议结论仅作为来源，系统不建立会议对象。</p>
-      <div class="text-end"><button class="btn btn-primary" type="submit"><i class="bi bi-save me-1"></i>保存草稿</button></div>
-    </div>
-  </form>
-  </div>
-  {% if proposal %}<div class="col-xl-4">{% include 'proposals/_assistant.html' %}</div>{% endif %}
+  <header class="proposal-heading">
+    <div><p class="proposal-eyebrow">科研提案 · {{ proposal.businessId if proposal else '新建' }}</p><h1>{{ '编辑科研提案' if proposal else '形成一份科研提案' }}</h1><p>先说明依据和研究问题，再逐步完善目标、内容与预期成果。</p></div>
+    <span class="proposal-status proposal-status-{{ status_classes.get(proposal.status, 'draft') if proposal else 'draft' }}">{{ status_labels.get(proposal.status, proposal.status) if proposal else '草稿' }}</span>
+  </header>
+
+  <div class="proposal-form-layout {{ 'proposal-form-layout-single' if not proposal }}">
+    <form method="post" novalidate id="proposal-form" class="proposal-form-main">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      {% if proposal %}<input type="hidden" name="version" value="{{ proposal.version }}">{% endif %}
+
+      <section class="proposal-panel proposal-form-section" aria-labelledby="proposal-source-heading">
+        <div class="proposal-section-heading"><span class="proposal-section-number">01</span><div><h2 id="proposal-source-heading">原始依据</h2><p>记录想法从哪里来；会议结论仅作为来源，不创建会议对象。</p></div></div>
+        <div class="proposal-form-grid">
+          <label class="proposal-field proposal-field-wide" for="title"><span>提案名称 <b class="proposal-required">*</b></span><input class="{{ 'is-invalid' if errors.get('title') }}" id="title" name="title" value="{{ form.get('title', '') }}" maxlength="200" placeholder="例如：便携式保障设备适配研究" required>{% if errors.get('title') %}<span class="invalid-feedback">{{ errors.title }}</span>{% endif %}</label>
+          <label class="proposal-field" for="sourceType"><span>来源类型 <b class="proposal-required">*</b></span><select class="{{ 'is-invalid' if errors.get('sourceType') }}" id="sourceType" name="sourceType" required><option value="">请选择</option>{% for value in source_types %}<option value="{{ value }}" {{ 'selected' if form.get('sourceType') == value or (request.method == 'GET' and not proposal and not form and value == 'IDEA') }}>{{ source_labels.get(value, value) }}</option>{% endfor %}</select>{% if errors.get('sourceType') %}<span class="invalid-feedback">{{ errors.sourceType }}</span>{% endif %}</label>
+          <label class="proposal-field proposal-field-wide" for="sourceSummary"><span>原始依据摘要 <b class="proposal-required">*</b></span><textarea class="{{ 'is-invalid' if errors.get('sourceSummary') }}" id="sourceSummary" name="sourceSummary" rows="5" placeholder="描述当前问题、观察或已有材料中的主要结论" required>{{ form.get('sourceSummary', '') }}</textarea>{% if errors.get('sourceSummary') %}<span class="invalid-feedback">{{ errors.sourceSummary }}</span>{% endif %}</label>
+        </div>
+        <p class="proposal-form-note"><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#upload"></use></svg><span>保存提案后，可在详情页上传依据附件；同名文件按现有规则保留版本。</span></p>
+      </section>
+
+      <section class="proposal-panel proposal-form-section" aria-labelledby="proposal-content-heading">
+        <div class="proposal-section-heading"><span class="proposal-section-number">02</span><div><h2 id="proposal-content-heading">研究内容</h2><p>所有内容由用户确认，AI 建议不会自动覆盖。</p></div></div>
+        {% set fields = [('researchProblem','拟解决的研究问题',4),('objectives','研究目标',4),('researchContent','主要研究内容',5),('expectedOutcomes','预期成果',4)] %}
+        <div class="proposal-form-grid">{% for name, label, rows in fields %}<label class="proposal-field proposal-field-wide" for="{{ name }}"><span>{{ label }} <b class="proposal-required">*</b></span><textarea class="{{ 'is-invalid' if errors.get(name) }}" id="{{ name }}" name="{{ name }}" rows="{{ rows }}" required>{{ form.get(name, '') }}</textarea>{% if errors.get(name) %}<span class="invalid-feedback">{{ errors[name] }}</span>{% endif %}</label>{% endfor %}</div>
+      </section>
+
+      <div class="proposal-form-actions"><button class="proposal-button proposal-button-primary proposal-save-action" type="submit"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#check"></use></svg><span>保存草稿</span></button></div>
+    </form>
+    {% if proposal %}{% include 'proposals/_assistant.html' %}{% endif %}
   </div>
 </div>
+{% endblock %}
+{% block extra_js %}
+<script>
+(() => {
+  const form = document.getElementById('proposal-form');
+  if (!form) return;
+  form.addEventListener('submit', event => {
+    if (!form.checkValidity()) return;
+    if (form.dataset.submitting === 'true') {
+      event.preventDefault();
+      return;
+    }
+    form.dataset.submitting = 'true';
+    document.querySelectorAll('.proposal-save-action').forEach(button => {
+      button.disabled = true;
+      const label = button.querySelector('span');
+      if (label) label.textContent = '保存中…';
+    });
+  });
+  window.addEventListener('pageshow', () => {
+    delete form.dataset.submitting;
+    document.querySelectorAll('.proposal-save-action').forEach(button => {
+      button.disabled = false;
+      const label = button.querySelector('span');
+      if (label) label.textContent = '保存草稿';
+    });
+  });
+})();
+</script>
 {% endblock %}

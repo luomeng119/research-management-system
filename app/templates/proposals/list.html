@@ -1,29 +1,53 @@
 {% extends "base.html" %}
 {% block title %}科研提案{% endblock %}
+{% block extra_css %}<link href="/static/css/proposal-workflow.css" rel="stylesheet">{% endblock %}
 {% block content %}
 {% set source_labels = {'IDEA':'想法','CREATIVE':'创意','MEETING_CONCLUSION':'会议结论','FINISHED_MATERIAL':'成品材料','OTHER':'其他'} %}
 {% set status_labels = {'DRAFT':'草稿','ARGUMENTATION':'论证中','ESTABLISHED':'已立项','DEFERRED':'已暂缓','REJECTED':'不立项'} %}
-<div class="container-fluid py-3">
-  <div class="d-flex justify-content-between align-items-center mb-3">
-    <div><h2 class="mb-1">科研提案</h2><p class="text-muted mb-0">把想法、创意或已有材料整理为可论证的科研提案</p></div>
-    <a class="btn btn-primary" href="{{ url_for('proposals.new_page') }}"><i class="bi bi-plus-lg me-1"></i>新建提案</a>
-  </div>
-  {% if page_error %}<div class="alert alert-danger">{{ page_error }}</div>{% endif %}
-  <div class="card p-3">
+{% set status_classes = {'DRAFT':'draft','ARGUMENTATION':'argumentation','ESTABLISHED':'established','DEFERRED':'deferred','REJECTED':'rejected'} %}
+<div class="proposal-page">
+  <header class="proposal-heading">
+    <div><p class="proposal-eyebrow">科研主线</p><h1>科研提案</h1><p>把想法、创意或已有材料整理为可论证的科研提案。</p></div>
+    <a class="proposal-button proposal-button-primary" href="{{ url_for('proposals.new_page') }}"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#plus"></use></svg>新建提案</a>
+  </header>
+
+  {% if page_error %}<div class="proposal-alert proposal-alert-danger" role="alert"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#circle-alert"></use></svg><span>{{ page_error }}</span></div>{% endif %}
+
+  <section class="proposal-panel proposal-list-panel" aria-label="科研提案列表">
+    <form class="proposal-filter" method="get" action="{{ url_for('proposals.list_page') }}">
+      <label class="proposal-filter-field">
+        <span class="visually-hidden">提案名称或编号</span>
+        <span class="proposal-search"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#search"></use></svg><input type="search" name="keyword" value="{{ request.args.get('keyword', '') }}" placeholder="提案名称或编号" aria-label="提案名称或编号"></span>
+      </label>
+      <label class="proposal-filter-field"><span>状态</span><select name="status"><option value="">全部</option>{% for value in statuses %}<option value="{{ value }}" {{ 'selected' if request.args.get('status') == value }}>{{ status_labels.get(value, value) }}</option>{% endfor %}</select></label>
+      <label class="proposal-filter-field"><span>来源</span><select name="sourceType"><option value="">全部</option>{% for value, label in source_labels.items() %}<option value="{{ value }}" {{ 'selected' if request.args.get('sourceType') == value }}>{{ label }}</option>{% endfor %}</select></label>
+      <label class="proposal-filter-field"><span>更新日期起</span><input type="date" name="updatedAfter" value="{{ request.args.get('updatedAfter', '') }}"></label>
+      <button class="proposal-button proposal-button-secondary proposal-button-sm" type="submit">查询</button>
+      {% if request.args.get('keyword') or request.args.get('status') or request.args.get('sourceType') or request.args.get('updatedAfter') %}<a class="proposal-button proposal-button-secondary proposal-button-sm" href="{{ url_for('proposals.list_page') }}">清除</a>{% endif %}
+    </form>
+
     {% if result['items'] %}
-    <div class="table-responsive"><table class="table align-middle"><thead><tr><th>提案编号</th><th>提案名称</th><th>来源</th><th>状态</th><th>更新时间</th></tr></thead><tbody>
-      {% for item in result['items'] %}<tr><td>{{ item.businessId }}</td><td><a href="{{ url_for('proposals.detail_page', business_id=item.businessId) }}">{{ item.title }}</a></td><td>{{ source_labels.get(item.sourceType, item.sourceType) }}</td><td><span class="badge text-bg-light border">{{ status_labels.get(item.status, item.status) }}</span></td><td>{{ item.updatedAt }}</td></tr>{% endfor %}
-    </tbody></table></div>
-    <div class="d-flex justify-content-between align-items-center">
-      <div class="text-muted small">共 {{ result.total }} 条</div>
-      {% if result.page > 1 or result.page * result.pageSize < result.total %}
-      <nav class="d-flex gap-2" aria-label="提案列表分页">
-        {% if result.page > 1 %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('proposals.list_page', page=result.page - 1, pageSize=result.pageSize, status=request.args.get('status'), sourceType=request.args.get('sourceType'), keyword=request.args.get('keyword'), updatedAfter=request.args.get('updatedAfter')) }}">上一页</a>{% endif %}
-        {% if result.page * result.pageSize < result.total %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('proposals.list_page', page=result.page + 1, pageSize=result.pageSize, status=request.args.get('status'), sourceType=request.args.get('sourceType'), keyword=request.args.get('keyword'), updatedAfter=request.args.get('updatedAfter')) }}">下一页</a>{% endif %}
-      </nav>
-      {% endif %}
+    <div class="proposal-table-wrap">
+      <table class="proposal-table">
+        <thead><tr><th scope="col">提案编号</th><th scope="col">提案名称</th><th scope="col">来源</th><th scope="col">状态</th><th scope="col">更新时间</th><th scope="col"><span class="visually-hidden">操作</span></th></tr></thead>
+        <tbody>{% for item in result['items'] %}<tr>
+          <td class="proposal-table-id">{{ item.businessId }}</td>
+          <td><a class="proposal-table-link" href="{{ url_for('proposals.detail_page', business_id=item.businessId) }}">{{ item.title }}</a></td>
+          <td>{{ source_labels.get(item.sourceType, item.sourceType) }}</td>
+          <td><span class="proposal-status proposal-status-{{ status_classes.get(item.status, 'draft') }}">{{ status_labels.get(item.status, item.status) }}</span></td>
+          <td>{{ item.updatedAt }}</td>
+          <td><a class="proposal-row-action" href="{{ url_for('proposals.detail_page', business_id=item.businessId) }}" aria-label="查看提案 {{ item.title }}"><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></a></td>
+        </tr>{% endfor %}</tbody>
+      </table>
     </div>
-    {% else %}<div class="empty-state"><i class="bi bi-lightbulb"></i><h5>尚无科研提案</h5><a href="{{ url_for('proposals.new_page') }}" class="btn btn-outline-primary">新建提案</a></div>{% endif %}
-  </div>
+    <footer class="proposal-pagination">
+      <span class="proposal-pagination-count">共 {{ result.total }} 条</span>
+      {% if result.page > 1 %}<a class="proposal-button proposal-button-secondary proposal-button-sm" href="{{ url_for('proposals.list_page', page=result.page - 1, pageSize=result.pageSize, status=request.args.get('status'), sourceType=request.args.get('sourceType'), keyword=request.args.get('keyword'), updatedAfter=request.args.get('updatedAfter')) }}"><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#chevron-left"></use></svg>上一页</a>{% endif %}
+      {% if result.page * result.pageSize < result.total %}<a class="proposal-button proposal-button-secondary proposal-button-sm" href="{{ url_for('proposals.list_page', page=result.page + 1, pageSize=result.pageSize, status=request.args.get('status'), sourceType=request.args.get('sourceType'), keyword=request.args.get('keyword'), updatedAfter=request.args.get('updatedAfter')) }}">下一页<svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#chevron-right"></use></svg></a>{% endif %}
+    </footer>
+    {% else %}
+    <div class="proposal-empty" role="status"><div><span class="proposal-empty-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#lightbulb"></use></svg></span><h2>{{ '未找到匹配的科研提案' if request.query_string else '尚无科研提案' }}</h2><p>{{ '请调整查询条件后重试。' if request.query_string else '从一个想法开始，先形成可继续完善的草稿。' }}</p>{% if request.query_string %}<a href="{{ url_for('proposals.list_page') }}" class="proposal-button proposal-button-secondary">清除查询</a>{% else %}<a href="{{ url_for('proposals.new_page') }}" class="proposal-button proposal-button-primary">新建提案</a>{% endif %}</div></div>
+    {% endif %}
+  </section>
 </div>
 {% endblock %}

@@ -692,8 +692,10 @@ def test_detail_page_exposes_complete_proposal_workflow(tmp_path, engine, servic
 def test_new_proposal_form_works_with_csrf_enabled(tmp_path, engine, service):
     client = _web_client(tmp_path, engine, service, csrf=True)
     form = client.get("/proposals/new")
+    form_html = form.get_data(as_text=True)
+    assert re.search(r'<option value="IDEA"\s+selected>\s*想法\s*</option>', form_html)
     token = re.search(
-        r'name="_csrf_token" value="([^"]+)"', form.get_data(as_text=True)
+        r'name="_csrf_token" value="([^"]+)"', form_html
     ).group(1)
     created = client.post(
         "/proposals/new", data={**SOURCE, "_csrf_token": token},
@@ -701,6 +703,17 @@ def test_new_proposal_form_works_with_csrf_enabled(tmp_path, engine, service):
     )
     assert created.status_code == 302
     assert "/proposals/TP-" in created.headers["Location"]
+
+
+def test_new_proposal_validation_does_not_replace_explicit_empty_source(
+    tmp_path, engine, service,
+):
+    client = _web_client(tmp_path, engine, service, csrf=False)
+    response = client.post("/proposals/new", data={**SOURCE, "sourceType": ""})
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 422
+    assert not re.search(r'<option value="IDEA"\s+selected>', html)
 
 
 def test_api_internal_failure_is_fixed_json(tmp_path, engine):

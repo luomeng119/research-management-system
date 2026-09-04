@@ -1,3 +1,4 @@
 {% extends "base.html" %}
 {% block title %}提案不存在{% endblock %}
-{% block content %}<div class="container py-5"><div class="alert alert-warning">{{ message }}</div><a href="{{ url_for('proposals.list_page') }}">返回提案列表</a></div>{% endblock %}
+{% block extra_css %}<link href="/static/css/proposal-workflow.css" rel="stylesheet">{% endblock %}
+{% block content %}<section class="proposal-panel proposal-not-found" role="alert"><span class="proposal-empty-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#circle-alert"></use></svg></span><h1>未找到科研提案</h1><p>{{ message }}</p><a class="proposal-button proposal-button-secondary" href="{{ url_for('proposals.list_page') }}"><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-left"></use></svg>返回提案列表</a></section>{% endblock %}

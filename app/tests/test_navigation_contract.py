@@ -114,3 +114,19 @@ def test_dashboard_is_operational_workspace_not_marketing_hero():
         assert f'href="{href}"' in source
     assert 'href="/projects?status=执行中"' in source
     assert 'href="/projects?status=结题上报"' in source
+
+
+def test_proposal_ui_keeps_confirmed_interaction_safeguards():
+    form = _read(TEMPLATES / "proposals" / "form.html")
+    detail = _read(TEMPLATES / "proposals" / "detail.html")
+    assistant = _read(TEMPLATES / "proposals" / "_assistant.html")
+    styles = _read(STATIC / "css" / "proposal-workflow.css")
+
+    assert "request.method == 'GET' and not proposal and not form" in form
+    assert "form.dataset.submitting" in form
+    assert "form.dataset.submitting" in detail
+    assert "assistant-current" in assistant
+    assert "assistant-proposed" in assistant
+    assert "length > 3" in assistant
+    assert 'href="#decision-records"' in detail
+    assert '@media (max-width: 1399px)' in styles
