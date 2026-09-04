@@ -13,7 +13,7 @@ def test_start_requires_deployment_inputs_and_defaults_to_safe_local_mode():
         "APP_DATA_ROOT",
     ):
         assert f'Get-RequiredEnvironmentValue "{variable}"' in START_SCRIPT
-    assert "MIGRATION_DATABASE_URL" not in START_SCRIPT
+    assert 'Get-RequiredEnvironmentValue "MIGRATION_DATABASE_URL"' not in START_SCRIPT
 
     assert '$BindHost = "127.0.0.1"' in START_SCRIPT
     assert '$env:DEPLOYMENT_MODE = "PRODUCTION"' in START_SCRIPT
@@ -29,6 +29,12 @@ def test_start_requires_deployment_inputs_and_defaults_to_safe_local_mode():
 def test_start_launches_one_waitress_process_without_migration_credentials():
     launch = "Start-Process -FilePath $WaitressExe"
     assert launch in START_SCRIPT
+    clear_migration_credential = (
+        '[Environment]::SetEnvironmentVariable('
+        '"MIGRATION_DATABASE_URL", $null, "Process")'
+    )
+    assert clear_migration_credential in START_SCRIPT
+    assert START_SCRIPT.index(clear_migration_credential) < START_SCRIPT.index(launch)
     assert "-m alembic" not in START_SCRIPT
     assert "upgrade head" not in START_SCRIPT
     assert '"--call"' in START_SCRIPT

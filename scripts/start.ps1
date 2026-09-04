@@ -91,6 +91,9 @@ try {
         $env:AI_PROVIDER = "DISABLED"
     }
 
+    # The long-running web process must never inherit the schema-owner credential.
+    [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")
+
     $BindHost = $env:APP_BIND_HOST
     if ([string]::IsNullOrWhiteSpace($BindHost)) {
         $BindHost = "127.0.0.1"
