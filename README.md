@@ -97,7 +97,16 @@ python run.py
 └── data/                   # 开发/兼容数据；正式数据位于 APP_DATA_ROOT
 ```
 
-`scripts/build_offline_bundle.py` 和 PowerShell 脚本是已实现的 Windows x64 适配层，不是跨平台产品的唯一部署边界。Linux/macOS 与其他架构需生成各自的依赖和 PostgreSQL 运行制品，不得复用 Windows 二进制包冒充验收。当前可在 macOS/Linux 使用 `bash scripts/test_postgres.sh postgresql://localhost/rm_v1_t10` 对平台中立的 PostgreSQL 核心执行真实集成测试。
+`scripts/build_offline_bundle.py` 和 PowerShell 脚本是已实现的 Windows x64 适配层，不是跨平台产品的唯一部署边界。Linux/macOS 与其他架构需生成各自的依赖和 PostgreSQL 运行制品，不得复用 Windows 二进制包冒充验收。
+
+POSIX 验收脚本面向 macOS/Linux 开发机；当前已在 macOS 实测以下平台中立核心运行链，Linux 仍需在真机单独复验：
+
+```bash
+bash scripts/test_postgres.sh postgresql://localhost/rm_v1_t10 -- \
+  bash scripts/acceptance_posix.sh
+```
+
+该命令使用隔离的真实 PostgreSQL、原始 `run.py`/Waitress、正式登录与 Chromium 业务页面，并保留脱敏验收证据；当前证据只证明本次 macOS 开发主机的运行链，不等于 Linux、Windows 或 macOS 净机离线安装包验收。
 
 ## 文档导航
 

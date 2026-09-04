@@ -1,12 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "usage: $0 <t02-admin-url>" >&2
+if [[ $# -lt 1 ]]; then
+  echo "usage: $0 <t02-admin-url> [-- command ...]" >&2
   exit 64
 fi
 
 t02_admin_hint=${1%%\?*}
+shift
+t02_after_command=()
+if [[ $# -gt 0 ]]; then
+  if [[ "$1" != "--" ]]; then
+    echo "optional command must follow --" >&2
+    exit 64
+  fi
+  shift
+  if [[ $# -eq 0 ]]; then
+    echo "-- requires a command" >&2
+    exit 64
+  fi
+  t02_after_command=("$@")
+fi
 t02_database_name=${t02_admin_hint##*/}
 if [[ ! "$t02_database_name" =~ (^|_)t(0[2-7]|10)($|_) ]]; then
   echo "refusing database identifier outside the T02-T07 contract (T10 is also allowed): $t02_database_name" >&2
@@ -109,6 +123,9 @@ export T02_REPLICATION_ROLE="$t02_replication_role"
 export T02_OWNER_MEMBER_ROLE="$t02_owner_member_role"
 export T02_WRITE_MEMBER_ROLE="$t02_write_member_role"
 export T02_INJECTION_ROLE="$t02_injection_role"
+export T02_ISOLATED_POSTGRES_ROOT="$t02_root"
+export T02_ISOLATED_POSTGRES_PORT="$t02_port"
+export T02_ISOLATED_POSTGRES_DATABASE="$t02_database"
 
 expect_provision_rejected() {
   local t02_candidate_role=$1
@@ -339,5 +356,9 @@ if [[ "$t03_contract" -eq 1 ]]; then
 fi
 if [[ "$t04_contract" -eq 1 ]]; then
   "$t02_python" -m pytest app/tests/test_file_service.py -q -k postgres
+fi
+if [[ ${#t02_after_command[@]} -gt 0 ]]; then
+  echo "T02 running post-contract command against the isolated PostgreSQL cluster"
+  "${t02_after_command[@]}"
 fi
 echo "T02 PostgreSQL contract completed; temporary cluster will be removed"

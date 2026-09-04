@@ -799,10 +799,16 @@ def test_reference_library_enforces_active_names_and_retained_categories(runtime
             template_id=f"ROOT-{marker}", display_name=f"Different {marker}"
         ),
     )
-    for statement in duplicate_statements:
-        with pytest.raises(DBAPIError):
-            with runtime_engine.begin() as connection:
-                connection.execute(statement)
+    try:
+        for statement in duplicate_statements:
+            with pytest.raises(DBAPIError):
+                with runtime_engine.begin() as connection:
+                    connection.execute(statement)
+    finally:
+        with runtime_engine.begin() as connection:
+            connection.execute(items.delete().where(items.c.template_id.like(f"%{marker}")))
+            connection.execute(folders.delete().where(folders.c.name == f"Nested {marker}"))
+            connection.execute(folders.delete().where(folders.c.name == f"Root {marker}"))
 
 
 def test_mainline_tables_use_uuid_timestamptz_audit_and_version(migration_engine):

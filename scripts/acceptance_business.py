@@ -167,6 +167,43 @@ def _actor_id(services, username: str) -> int:
     return int(account["id"])
 
 
+def ensure_operator(services, username: str, name: str, password: str) -> None:
+    """Create or reset the disposable acceptance operator via the runtime role."""
+    from app.security.auth import BUSINESS_USER, hash_password, validate_password
+
+    username = username.strip()
+    name = name.strip()
+    if not username or not name:
+        raise AcceptanceContractError("acceptance operator username and name are required")
+    try:
+        validate_password(password)
+    except ValueError as error:
+        raise AcceptanceContractError(f"acceptance operator password is invalid: {error}") from error
+
+    repository = services["users_repository"]
+    with repository.engine.begin() as connection:
+        existing = repository.get_by_username(username, connection)
+        values = {
+            "password": hash_password(password),
+            "role": BUSINESS_USER,
+            "name": name,
+            "status": "active",
+            "must_change_password": False,
+        }
+        if existing is None:
+            connection.execute(repository.table.insert().values(
+                username=username,
+                version=1,
+                **values,
+            ))
+        else:
+            connection.execute(
+                repository.table.update()
+                .where(repository.table.c.id == existing["id"])
+                .values(version=repository.table.c.version + 1, **values)
+            )
+
+
 def _read_version(file_service, file_id: str, invoice_id: int, version: int) -> dict:
     opened = file_service.open_version_stream(
         file_id, version, object_type="INVOICE", object_id=str(invoice_id)
@@ -578,6 +615,9 @@ def main(argv: list[str] | None = None) -> int:
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("--expected", type=Path, required=True)
     verify_parser.add_argument("--output", type=Path, required=True)
+    operator_parser = subparsers.add_parser("ensure-user")
+    operator_parser.add_argument("--username", required=True)
+    operator_parser.add_argument("--name", required=True)
     args = parser.parse_args(argv)
 
     os.environ["AI_PROVIDER"] = "DISABLED"
@@ -586,13 +626,20 @@ def main(argv: list[str] | None = None) -> int:
     app = create_app()
     services = _services(app)
     try:
-        if args.command == "seed":
+        if args.command == "ensure-user":
+            password = sys.stdin.readline().rstrip("\r\n")
+            if not password:
+                raise AcceptanceContractError("acceptance operator password was not supplied on stdin")
+            ensure_operator(services, args.username, args.name, password)
+            password = ""
+        elif args.command == "seed":
             snapshot = seed(services, args.username)
+            _write_json(args.output, snapshot)
         else:
             expected = _load_json(args.expected)
             snapshot = build_snapshot(services, expected.get("identities") or {})
             assert_same_snapshot(expected, snapshot)
-        _write_json(args.output, snapshot)
+            _write_json(args.output, snapshot)
         return 0
     except AcceptanceContractError as error:
         print(f"ERROR: {error}", file=sys.stderr)

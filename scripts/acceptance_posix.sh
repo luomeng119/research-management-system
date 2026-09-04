@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+for t12_name in MIGRATION_DATABASE_URL DATABASE_URL \
+  T02_ISOLATED_POSTGRES_ROOT T02_ISOLATED_POSTGRES_PORT \
+  T02_ISOLATED_POSTGRES_DATABASE; do
+  if [[ -z "${!t12_name:-}" ]]; then
+    echo "required environment variable is missing: $t12_name" >&2
+    exit 64
+  fi
+done
+
+for t12_command in curl node; do
+  if ! command -v "$t12_command" >/dev/null 2>&1; then
+    echo "required acceptance command is unavailable: $t12_command" >&2
+    exit 69
+  fi
+done
+
+if [[ ! -x .venv/bin/python ]]; then
+  echo "project interpreter is unavailable: .venv/bin/python" >&2
+  exit 69
+fi
+if [[ ! -d node_modules/@playwright/test ]]; then
+  echo "Playwright test runtime is unavailable: node_modules/@playwright/test" >&2
+  exit 69
+fi
+
+t12_python=.venv/bin/python
+export PYTHONPATH="$PWD"
+
+"$t12_python" - <<'PY'
+import os
+from pathlib import Path
+
+import sqlalchemy as sa
+
+
+expected_data = (Path(os.environ["T02_ISOLATED_POSTGRES_ROOT"]) / "data").resolve()
+expected_port = int(os.environ["T02_ISOLATED_POSTGRES_PORT"])
+expected_database = os.environ["T02_ISOLATED_POSTGRES_DATABASE"]
+if not expected_data.is_dir():
+    raise SystemExit(f"isolated PostgreSQL data directory is unavailable: {expected_data}")
+pid_lines = (expected_data / "postmaster.pid").read_text(encoding="utf-8").splitlines()
+if len(pid_lines) < 4 or int(pid_lines[3]) != expected_port:
+    raise SystemExit("isolated PostgreSQL PID record does not match the harness port")
+try:
+    os.kill(int(pid_lines[0]), 0)
+except (OSError, ValueError) as exc:
+    raise SystemExit("isolated PostgreSQL process is not active") from exc
+
+for variable in ("MIGRATION_DATABASE_URL", "DATABASE_URL"):
+    engine = sa.create_engine(os.environ[variable])
+    try:
+        with engine.connect() as connection:
+            actual_database, actual_port, actual_address, actual_user = connection.execute(
+                sa.text(
+                    "SELECT current_database(), inet_server_port(), "
+                    "host(inet_server_addr()), current_user"
+                )
+            ).one()
+    finally:
+        engine.dispose()
+    if (
+        actual_database != expected_database
+        or int(actual_port) != expected_port
+        or actual_address not in {"127.0.0.1", "::1"}
+        or actual_user
+        != f"rm_v1_t02_{'migration' if variable == 'MIGRATION_DATABASE_URL' else 'runtime'}_{expected_port}"
+    ):
+        raise SystemExit(
+            f"{variable} is not bound to the isolated PostgreSQL harness"
+        )
+PY
+
+mkdir -p build
+t12_evidence_root=$(mktemp -d "$PWD/build/acceptance-posix.XXXXXX")
+chmod 700 "$t12_evidence_root"
+t12_runtime_root="$t12_evidence_root/runtime"
+mkdir -p "$t12_runtime_root"
+chmod 700 "$t12_runtime_root"
+t12_baseline="$t12_evidence_root/business-baseline.json"
+t12_after="$t12_evidence_root/business-after-browser.json"
+t12_readiness="$t12_evidence_root/readiness.json"
+t12_outbound="$t12_evidence_root/outbound-requests.json"
+t12_browser_result="$t12_evidence_root/browser-result.json"
+t12_app_log="$t12_evidence_root/waitress.log"
+t12_app_pid=""
+
+cleanup_t12_posix() {
+  if [[ -n "$t12_app_pid" ]] && kill -0 "$t12_app_pid" >/dev/null 2>&1; then
+    kill "$t12_app_pid" >/dev/null 2>&1 || true
+    wait "$t12_app_pid" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_t12_posix EXIT INT TERM
+
+stop_t12_waitress() {
+  if [[ -z "$t12_app_pid" ]] || ! kill -0 "$t12_app_pid" >/dev/null 2>&1; then
+    echo "Waitress was not running at acceptance cleanup" >&2
+    return 1
+  fi
+  kill "$t12_app_pid"
+  wait "$t12_app_pid" >/dev/null 2>&1 || true
+  if kill -0 "$t12_app_pid" >/dev/null 2>&1; then
+    echo "Waitress remained active after acceptance cleanup" >&2
+    return 1
+  fi
+  t12_app_pid=""
+}
+
+t12_port=$("$t12_python" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+t12_password=$("$t12_python" -c 'import secrets; print("Accept-" + secrets.token_urlsafe(24) + "-7A")')
+export APP_DATA_ROOT="$t12_runtime_root"
+export APP_BIND_HOST=127.0.0.1
+export APP_PORT="$t12_port"
+export AI_PROVIDER=DISABLED
+export DEPLOYMENT_MODE=PRODUCTION
+export FLASK_SECRET_KEY
+FLASK_SECRET_KEY=$("$t12_python" -c 'import secrets; print(secrets.token_urlsafe(48))')
+export ACCEPTANCE_USERNAME
+ACCEPTANCE_USERNAME=$("$t12_python" -c 'import secrets; print("acceptance_" + secrets.token_hex(8))')
+
+printf '%s\n' "$t12_password" | "$t12_python" scripts/acceptance_business.py ensure-user \
+  --username "$ACCEPTANCE_USERNAME" --name "张老师"
+"$t12_python" scripts/acceptance_business.py seed \
+  --username "$ACCEPTANCE_USERNAME" --output "$t12_baseline"
+
+env -i \
+  PATH="$PATH" \
+  HOME="${HOME:-}" \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  LANG="${LANG:-C.UTF-8}" \
+  PYTHONPATH="$PYTHONPATH" \
+  DATABASE_URL="$DATABASE_URL" \
+  FLASK_SECRET_KEY="$FLASK_SECRET_KEY" \
+  APP_DATA_ROOT="$APP_DATA_ROOT" \
+  APP_BIND_HOST="$APP_BIND_HOST" \
+  APP_PORT="$APP_PORT" \
+  AI_PROVIDER="$AI_PROVIDER" \
+  DEPLOYMENT_MODE="$DEPLOYMENT_MODE" \
+  "$t12_python" run.py >"$t12_app_log" 2>&1 &
+t12_app_pid=$!
+t12_base_url="http://127.0.0.1:$t12_port"
+
+t12_ready=0
+for _ in {1..80}; do
+  if ! kill -0 "$t12_app_pid" >/dev/null 2>&1; then
+    echo "Waitress exited before readiness; see $t12_app_log" >&2
+    exit 70
+  fi
+  if curl --fail --silent --show-error "$t12_base_url/health/ready" \
+      --output "$t12_readiness" 2>/dev/null; then
+    t12_ready=1
+    break
+  fi
+  sleep 0.25
+done
+if [[ "$t12_ready" -ne 1 ]]; then
+  echo "Waitress readiness timed out; see $t12_app_log" >&2
+  exit 70
+fi
+
+"$t12_python" - "$t12_readiness" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    payload = json.load(stream)
+expected = {
+    "status": "ready",
+    "checks": {"database": "ok", "schema": "ok", "storage": "ok"},
+}
+if payload != expected:
+    raise SystemExit(f"unexpected readiness payload: {payload!r}")
+PY
+
+printf '%s\n' "$t12_password" | env -i \
+  PATH="$PATH" \
+  HOME="${HOME:-}" \
+  TMPDIR="${TMPDIR:-/tmp}" \
+  LANG="${LANG:-C.UTF-8}" \
+  ACCEPTANCE_BASE_URL="$t12_base_url" \
+  ACCEPTANCE_BASELINE="$t12_baseline" \
+  ACCEPTANCE_OUTBOUND="$t12_outbound" \
+  ACCEPTANCE_RESULT="$t12_browser_result" \
+  ACCEPTANCE_USERNAME="$ACCEPTANCE_USERNAME" \
+  node scripts/acceptance_browser.mjs
+t12_password=""
+
+"$t12_python" scripts/acceptance_business.py verify \
+  --expected "$t12_baseline" --output "$t12_after"
+
+stop_t12_waitress
+
+echo "POSIX production-chain acceptance passed: PostgreSQL + Waitress + Chromium"
+echo "Evidence retained at: $t12_evidence_root"
