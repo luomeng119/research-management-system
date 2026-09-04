@@ -38,13 +38,30 @@ def _current_logs(module_name):
         'file_name': request.args.get('file_name'),
         'start_date': request.args.get('start_date'),
         'end_date': request.args.get('end_date'),
-        'operation': request.args.get('operation_type'),
     }
     if module_name == 'equipment':
-        return _equipment_resources_service().list_logs(module_name, **filters)
+        return _equipment_resources_service().list_logs(
+            module_name, operation=request.args.get('operation_type'), **filters
+        )
     if module_name in {'standards', 'templates'}:
         service = current_app.extensions.get('reference_library_service')
-        return service.list_logs(module_name, **filters) if service is not None else []
+        return service.list_logs(
+            module_name, operation=request.args.get('operation_type'), **filters
+        ) if service is not None else []
+    project_categories = {
+        'security': 'SECURITY_CONFIDENTIALITY',
+        'crypto': 'CRYPTO_APPLICATION',
+    }
+    if module_name in project_categories:
+        service = current_app.extensions.get('project_service')
+        if service is None:
+            return []
+        return service.list_logs(
+            category=project_categories[module_name], page=1, page_size=100,
+            operator=filters['operator'], project_name=filters['file_name'],
+            start_date=filters['start_date'], end_date=filters['end_date'],
+            newest_first=True,
+        )['items']
     return []
 
 

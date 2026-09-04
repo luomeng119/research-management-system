@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Barrier
 import os
 import uuid
@@ -38,6 +38,24 @@ def _common_columns():
 
 def _schema(engine):
     metadata = sa.MetaData()
+    sa.Table(
+        "users", metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("username", sa.Text, nullable=False),
+        sa.Column("name", sa.Text),
+    )
+    sa.Table(
+        "audit_events", metadata,
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("actor_user_id", sa.Integer),
+        sa.Column("action", sa.Text, nullable=False),
+        sa.Column("object_type", sa.Text, nullable=False),
+        sa.Column("object_id", sa.Text),
+        sa.Column("result", sa.Text, nullable=False),
+        sa.Column("request_id", sa.Text),
+        sa.Column("metadata", sa.JSON, nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    )
     sa.Table(
         "proposals", metadata, *_common_columns(),
         sa.Column("business_id", sa.Text, unique=True),
@@ -185,6 +203,134 @@ def test_progress_supports_all_read_only_path_states_and_lists_newest_first(life
     assert page["total"] == 3
     assert [row["status"] for row in page["items"]] == ["NORMAL"]
     assert [event["event_name"] for event in audit.events].count("project_record_added") == 3
+
+
+def test_project_logs_are_bounded_and_category_scoped(lifecycle):
+    service, engine, _, _ = lifecycle
+    metadata = sa.MetaData()
+    users = sa.Table("users", metadata, autoload_with=engine)
+    registry = sa.Table("project_registry", metadata, autoload_with=engine)
+    security = sa.Table("security_projects", metadata, autoload_with=engine)
+    crypto = sa.Table("crypto_projects", metadata, autoload_with=engine)
+    events = sa.Table("audit_events", metadata, autoload_with=engine)
+    now = datetime.now(timezone.utc)
+    security_registry_id = str(uuid.uuid4())
+    crypto_registry_id = str(uuid.uuid4())
+    with engine.begin() as connection:
+        connection.execute(users.insert().values(
+            id=8, username="li", name="李老师"
+        ))
+        connection.execute(registry.insert(), [
+            {
+                "id": security_registry_id,
+                "category": "SECURITY_CONFIDENTIALITY",
+                "business_id": "AB-2026-001", "proposal_id": None,
+                "status": "ACTIVE", "created_at": now, "updated_at": now,
+                "created_by": 8, "updated_by": 8, "version": 1,
+            },
+            {
+                "id": crypto_registry_id,
+                "category": "CRYPTO_APPLICATION",
+                "business_id": "MM-2026-001", "proposal_id": None,
+                "status": "ACTIVE", "created_at": now, "updated_at": now,
+                "created_by": 8, "updated_by": 8, "version": 1,
+            },
+        ])
+        connection.execute(security.insert().values(
+            project_id="AB-2026-001", registry_id=security_registry_id,
+            name="安全研究", leader="李老师", status="任务下达", created_at=now,
+        ))
+        connection.execute(crypto.insert().values(
+            project_id="MM-2026-001", registry_id=crypto_registry_id,
+            name="密码研究", leader="李老师", status="任务下达", created_at=now,
+        ))
+        connection.execute(events.insert(), [
+            {
+                "id": str(uuid.uuid4()), "actor_user_id": 8,
+                "action": "project_created_from_proposal",
+                "object_type": "PROJECT", "object_id": "AB-2026-001",
+                "result": "SUCCESS", "request_id": "req-security-create",
+                "metadata": {"project_category": "SECURITY_CONFIDENTIALITY"},
+                "created_at": now,
+            },
+            {
+                "id": str(uuid.uuid4()), "actor_user_id": 8,
+                "action": "project_status_changed",
+                "object_type": "PROJECT", "object_id": "AB-2026-001",
+                "result": "SUCCESS", "request_id": "req-security-status",
+                "metadata": {"from_status": "PENDING", "to_status": "ACTIVE"},
+                "created_at": now,
+            },
+            {
+                "id": str(uuid.uuid4()), "actor_user_id": 8,
+                "action": "project_created_from_proposal",
+                "object_type": "PROJECT", "object_id": "MM-2026-001",
+                "result": "SUCCESS", "request_id": "req-crypto-create",
+                "metadata": {"project_category": "CRYPTO_APPLICATION"},
+                "created_at": now,
+            },
+        ])
+
+    security_logs = service.list_logs(
+        category="SECURITY_CONFIDENTIALITY", page=1, page_size=1
+    )
+    crypto_logs = service.list_logs(
+        category="CRYPTO_APPLICATION", page=1, page_size=50
+    )
+
+    assert security_logs["total"] == 2
+    assert len(security_logs["items"]) == 1
+    assert {item["file_name"] for item in security_logs["items"]} == {"安全研究"}
+    assert crypto_logs["total"] == 1
+    assert crypto_logs["items"][0]["file_name"] == "密码研究"
+    assert crypto_logs["items"][0]["operator"] == "李老师"
+
+
+def test_project_logs_can_query_latest_one_hundred(lifecycle):
+    service, engine, _, _ = lifecycle
+    metadata = sa.MetaData()
+    users = sa.Table("users", metadata, autoload_with=engine)
+    registry = sa.Table("project_registry", metadata, autoload_with=engine)
+    security = sa.Table("security_projects", metadata, autoload_with=engine)
+    events = sa.Table("audit_events", metadata, autoload_with=engine)
+    started_at = datetime.now(timezone.utc)
+    registry_id = str(uuid.uuid4())
+    with engine.begin() as connection:
+        connection.execute(users.insert().values(
+            id=9, username="wang", name="王老师"
+        ))
+        connection.execute(registry.insert().values(
+            id=registry_id, category="SECURITY_CONFIDENTIALITY",
+            business_id="AB-2026-101", proposal_id=None, status="ACTIVE",
+            created_at=started_at, updated_at=started_at,
+            created_by=9, updated_by=9, version=1,
+        ))
+        connection.execute(security.insert().values(
+            project_id="AB-2026-101", registry_id=registry_id,
+            name="百条日志验证", leader="王老师", status="任务下达",
+            created_at=started_at,
+        ))
+        connection.execute(events.insert(), [{
+            "id": str(uuid.uuid4()), "actor_user_id": 9,
+            "action": "project_record_added", "object_type": "PROJECT",
+            "object_id": "AB-2026-101", "result": "SUCCESS",
+            "request_id": f"req-{index}", "metadata": {"index": index},
+            "created_at": started_at + timedelta(seconds=index),
+        } for index in range(101)])
+
+    result = service.list_logs(
+        category="SECURITY_CONFIDENTIALITY", page=1, page_size=100,
+        newest_first=True,
+    )
+
+    assert result["total"] == 101
+    assert len(result["items"]) == 100
+    assert result["items"][0]["timestamp"] == (
+        started_at + timedelta(seconds=100)
+    ).replace(tzinfo=None)
+    assert result["items"][-1]["timestamp"] == (
+        started_at + timedelta(seconds=1)
+    ).replace(tzinfo=None)
 
 
 def test_invalid_progress_does_not_write(lifecycle):

@@ -268,6 +268,8 @@ def equipment_routes(expert_engine, equipment_service, tmp_path):
     from app.routes.projects import bp as projects_bp
     from app.routes.security_projects import bp as security_projects_bp
     from app.routes.crypto_projects import bp as crypto_projects_bp
+    from app.routes.crypto_logs import bp as crypto_logs_bp
+    from app.routes.security_logs import bp as security_logs_bp
     from app.routes.research_units import bp as units_bp
     from app.web.files import bp as files_bp
 
@@ -294,6 +296,8 @@ def equipment_routes(expert_engine, equipment_service, tmp_path):
     app.register_blueprint(projects_bp)
     app.register_blueprint(security_projects_bp)
     app.register_blueprint(crypto_projects_bp)
+    app.register_blueprint(security_logs_bp)
+    app.register_blueprint(crypto_logs_bp)
     app.register_blueprint(units_bp)
     app.register_blueprint(files_bp)
     client = app.test_client()
@@ -341,11 +345,17 @@ def test_equipment_runtime_has_no_legacy_operation_log_fallback():
     equipment_source = (ROOT / "app/routes/equipment.py").read_text(encoding="utf-8")
     api_source = (ROOT / "app/routes/api.py").read_text(encoding="utf-8")
     fuzzy_source = (ROOT / "app/utils/fuzzy_match.py").read_text(encoding="utf-8")
+    security_logs_source = (ROOT / "app/routes/security_logs.py").read_text(encoding="utf-8")
+    crypto_logs_source = (ROOT / "app/routes/crypto_logs.py").read_text(encoding="utf-8")
 
     assert "OperationLogModel" not in equipment_source
     assert "EquipmentModel" not in api_source
     assert "OperationLogModel" not in api_source
     assert "get_db" not in fuzzy_source
+    assert "EquipmentModel" not in security_logs_source
+    assert "OperationLogModel" not in security_logs_source
+    assert "EquipmentModel" not in crypto_logs_source
+    assert "OperationLogModel" not in crypto_logs_source
 
 
 def test_equipment_stats_merge_null_category_into_general(equipment_service):
@@ -511,6 +521,41 @@ def test_equipment_api_search_and_logs_use_the_resource_service(
     }
     assert logs["data"][0]["module"] == "equipment"
     assert logs["data"][0]["module_name"] == "设备知识库"
+
+
+def test_security_and_crypto_log_routes_use_category_scoped_project_service(
+    equipment_routes
+):
+    calls = []
+
+    class ProjectLogs:
+        def list_logs(self, **values):
+            calls.append(values)
+            return {
+                "items": [{
+                    "timestamp": "2026-09-04 09:00:00",
+                    "operator": "王老师", "operation_type": "状态变更",
+                    "file_name": "分类项目", "detail": "",
+                }],
+                "page": values["page"], "pageSize": values["page_size"],
+                "total": 1,
+            }
+
+    equipment_routes.application.extensions["project_service"] = ProjectLogs()
+    security = equipment_routes.get("/security_logs/logs/security")
+    crypto = equipment_routes.get("/crypto_logs/logs/crypto")
+    security_api = equipment_routes.get("/api/logs/security").get_json()
+
+    assert security.status_code == 200
+    assert crypto.status_code == 200
+    assert [call["category"] for call in calls] == [
+        "SECURITY_CONFIDENTIALITY", "CRYPTO_APPLICATION",
+        "SECURITY_CONFIDENTIALITY",
+    ]
+    assert calls[2]["newest_first"] is True
+    assert "分类项目" in security.get_data(as_text=True)
+    assert "分类项目" in crypto.get_data(as_text=True)
+    assert security_api["data"][0]["module"] == "security"
 
 
 def test_equipment_dictionaries_are_database_backed(equipment_service):

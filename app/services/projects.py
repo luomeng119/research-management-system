@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import sqlalchemy as sa
 
@@ -453,6 +453,55 @@ class ProjectService:
                 status=status or None, keyword=keyword or None,
             )
         return {"items": rows, "page": page, "pageSize": page_size, "total": total}
+
+    def list_logs(
+        self, *, category: str, page=1, page_size=50, operator=None,
+        project_name=None, start_date=None, end_date=None,
+        newest_first=False,
+    ) -> dict:
+        if category not in CATEGORIES:
+            raise ProjectServiceError("VALIDATION_ERROR", "项目类别无效", 422)
+        try:
+            page, page_size = int(page), int(page_size)
+        except (TypeError, ValueError) as error:
+            raise ProjectServiceError("VALIDATION_ERROR", "分页参数无效", 422) from error
+        if page < 1 or page_size < 1 or page_size > 100:
+            raise ProjectServiceError("VALIDATION_ERROR", "分页参数无效", 422)
+        try:
+            start_at = (
+                datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+                if start_date else None
+            )
+            end_at = (
+                datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc)
+                + timedelta(days=1) if end_date else None
+            )
+        except ValueError as error:
+            raise ProjectServiceError("VALIDATION_ERROR", "日志日期格式无效", 422) from error
+        with self.repository.engine.connect() as connection:
+            rows, total = self.repository.list_project_logs(
+                connection, category=category, page=page, page_size=page_size,
+                operator=str(operator or "").strip() or None,
+                project_name=str(project_name or "").strip() or None,
+                start_at=start_at, end_at=end_at,
+                newest_first=bool(newest_first),
+            )
+        labels = {
+            "project_created_from_proposal": "立项",
+            "project_status_changed": "状态变更",
+            "project_record_added": "登记记录",
+        }
+        items = [{
+            "timestamp": row["created_at"],
+            "operator": str(row.get("operator_name") or ""),
+            "operation_type": labels.get(row["action"], row["action"]),
+            "file_name": str(row.get("project_name") or ""),
+            "detail": "" if row.get("result") == "SUCCESS" else "操作失败",
+        } for row in rows]
+        return {
+            "items": items, "page": page, "pageSize": page_size,
+            "total": total,
+        }
 
     def create_standalone(
         self, category: str, payload: dict, *, actor_user_id: int

@@ -1,6 +1,6 @@
-from flask import Blueprint, render_template, request, redirect, url_for, session
-from app.models import EquipmentModel, OperationLogModel
-import os
+from flask import Blueprint, current_app, render_template, request, redirect, session
+
+from app.services.projects import ProjectServiceError
 
 bp = Blueprint('security_logs', __name__, url_prefix='/security_logs')
 
@@ -16,23 +16,19 @@ def logs():
     page = int(request.args.get('page', 1))
     per_page = 50
     
-    log_model = OperationLogModel()
-    all_logs = log_model.search(module='security', operator=operator, file_name=file_name, start_date=start_date, end_date=end_date, limit=1000)
-    
-    total = len(all_logs)
-    start = (page - 1) * per_page
-    end = start + per_page
-    logs = all_logs[start:end]
+    service = current_app.extensions.get('project_service')
+    if service is None:
+        return '项目服务未就绪', 503
+    try:
+        result = service.list_logs(
+            category='SECURITY_CONFIDENTIALITY', page=page,
+            page_size=per_page, operator=operator, project_name=file_name,
+            start_date=start_date, end_date=end_date,
+        )
+    except ProjectServiceError as error:
+        return error.message, error.status_code
+    logs = result['items']
+    total = result['total']
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
-    
-    equipment_model = EquipmentModel()
-    equipment = equipment_model.get_all()
-    
-    category_groups = {}
-    for e in equipment:
-        category = e['category'] if e.get('category') else '未分类'
-        if category not in category_groups:
-            category_groups[category] = []
-        category_groups[category].append(e)
-    
-    return render_template('equipment/logs.html', logs=logs, equipment=equipment, category_groups=category_groups, module_name='security', module_title='安全保密项目', page=page, total_pages=total_pages, total=total)
+
+    return render_template('equipment/logs.html', logs=logs, module_name='security', module_title='安全保密项目', page=page, total_pages=total_pages, total=total)

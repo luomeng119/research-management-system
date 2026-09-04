@@ -47,6 +47,14 @@ class ProjectsRepository:
             sa.Table("object_files", metadata, autoload_with=engine)
             if inspector.has_table("object_files") else None
         )
+        self.audit_events = (
+            sa.Table("audit_events", metadata, autoload_with=engine)
+            if inspector.has_table("audit_events") else None
+        )
+        self.users = (
+            sa.Table("users", metadata, autoload_with=engine)
+            if inspector.has_table("users") else None
+        )
 
     @staticmethod
     def _id(connection: Connection, value):
@@ -195,6 +203,73 @@ class ProjectsRepository:
             )
         ).mappings()
         return [dict(row) for row in rows], int(total or 0)
+
+    def list_project_logs(
+        self, connection: Connection, *, category: str, page: int,
+        page_size: int, operator: str | None = None,
+        project_name: str | None = None, start_at=None, end_at=None,
+        newest_first: bool = False,
+    ) -> tuple[list[dict], int]:
+        events = self.audit_events
+        if events is None:
+            return [], 0
+        project_table = self.category_tables[category]
+        from_clause = events.join(
+            self.registry,
+            sa.and_(
+                events.c.object_type == "PROJECT",
+                events.c.object_id == self.registry.c.business_id,
+            ),
+        ).join(
+            project_table,
+            project_table.c.registry_id == self.registry.c.id,
+        )
+        operator_name = sa.cast(events.c.actor_user_id, sa.Text)
+        if self.users is not None:
+            from_clause = from_clause.outerjoin(
+                self.users, self.users.c.id == events.c.actor_user_id
+            )
+            operator_name = sa.func.coalesce(
+                self.users.c.name, self.users.c.username, operator_name
+            )
+        statement = sa.select(
+            events.c.created_at,
+            events.c.action,
+            events.c.result,
+            events.c.metadata,
+            project_table.c.name.label("project_name"),
+            operator_name.label("operator_name"),
+        ).select_from(from_clause).where(
+            self.registry.c.category == category,
+            events.c.action.in_((
+                "project_created_from_proposal",
+                "project_status_changed",
+                "project_record_added",
+            )),
+        )
+        if operator:
+            escaped = operator.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            statement = statement.where(operator_name.ilike(f"%{escaped}%", escape="\\"))
+        if project_name:
+            escaped = project_name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            statement = statement.where(project_table.c.name.ilike(f"%{escaped}%", escape="\\"))
+        if start_at is not None:
+            statement = statement.where(events.c.created_at >= start_at)
+        if end_at is not None:
+            statement = statement.where(events.c.created_at < end_at)
+        total = int(connection.scalar(
+            sa.select(sa.func.count()).select_from(statement.subquery())
+        ) or 0)
+        order = (
+            (events.c.created_at.desc(), events.c.id.desc())
+            if newest_first
+            else (events.c.created_at.asc(), events.c.id.asc())
+        )
+        rows = connection.execute(paginate(
+            statement.order_by(*order),
+            page=page, page_size=page_size,
+        )).mappings()
+        return [dict(row) for row in rows], total
 
     def list_category_projects(
         self,
