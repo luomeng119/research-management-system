@@ -825,7 +825,7 @@ class ExpertModel:
         self._ensure_id_card_column()
     
     def get_db(self):
-        return sqlite3.connect('data/research.db')
+        return sqlite3.connect(DB_PATH)
     
     def _ensure_phone_column(self):
         """确保 phone 列存在"""
@@ -1039,7 +1039,7 @@ class ExpertGroupModel:
         pass
     
     def get_db(self):
-        return sqlite3.connect('data/research.db')
+        return sqlite3.connect(DB_PATH)
     
     def create_tables(self):
         """创建专家组相关表"""

@@ -334,11 +334,13 @@ def test_equipment_service_uses_bounded_filters_and_preserves_fields(equipment_s
 def test_expert_runtime_has_no_sqlite_or_temp_file_fallback():
     experts_source = (ROOT / "app/routes/experts.py").read_text(encoding="utf-8")
     groups_source = (ROOT / "app/routes/expert_groups.py").read_text(encoding="utf-8")
+    models_source = (ROOT / "app/models.py").read_text(encoding="utf-8")
 
     assert "ExpertModel" not in experts_source
     assert "ExpertGroupModel" not in groups_source
     assert "IMPORT_TMP_DIR" not in experts_source
     assert "task_path" not in experts_source
+    assert "sqlite3.connect('data/research.db')" not in models_source
 
 
 def test_equipment_runtime_has_no_legacy_operation_log_fallback():
