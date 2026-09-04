@@ -1,4 +1,8 @@
+import importlib
 from pathlib import Path
+import sys
+
+import pytest
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -69,6 +73,72 @@ def test_restore_verifies_archive_before_pg_restore_and_live_state_afterwards():
     assert '"--no-privileges"' in RESTORE_SCRIPT
     assert '"--no-password"' in RESTORE_SCRIPT
     assert '"--list"' in RESTORE_SCRIPT
+
+
+def test_restore_uses_owner_for_restore_then_reprovisions_runtime_acl():
+    """Catches restoring as the least-privilege runtime role or skipping ACL repair."""
+    assert 'Get-RequiredEnvironmentValue "MIGRATION_DATABASE_URL"' in RESTORE_SCRIPT
+    assert 'Get-RequiredEnvironmentValue "DATABASE_URL"' in RESTORE_SCRIPT
+    assert "$RuntimeRole" in RESTORE_SCRIPT
+    owner_environment = RESTORE_SCRIPT.index("Set-PostgresEnvironment -DatabaseUrl $MigrationDatabaseUrl")
+    empty_check = RESTORE_SCRIPT.index("$TableCountOutput =", owner_environment)
+    restore = RESTORE_SCRIPT.index("& $PgRestoreExe", empty_check)
+    provision = RESTORE_SCRIPT.index('"provision_postgres.py"', restore)
+    live_verify = RESTORE_SCRIPT.rindex('"verify"')
+    assert owner_environment < empty_check < restore < provision < live_verify
+    assert '"--runtime-role", $RuntimeRole' in RESTORE_SCRIPT
+    assert '"--migration-url"' not in RESTORE_SCRIPT
+    assert '"--migration-url", $MigrationDatabaseUrl' not in RESTORE_SCRIPT
+    assert "DATABASE_URL and MIGRATION_DATABASE_URL must target the same staging database" in RESTORE_SCRIPT
+    assert "runtime role must differ" in RESTORE_SCRIPT
+    assert "$Uri.Query" in RESTORE_SCRIPT
+    assert "$Uri.Fragment" in RESTORE_SCRIPT
+    assert "must not include query parameters or fragments" in RESTORE_SCRIPT
+    assert "fall back" not in RESTORE_SCRIPT.lower()
+
+
+def test_provision_cli_reads_owner_url_from_environment_without_command_line_secret(monkeypatch):
+    """Catches requiring the owner password in the process argument list."""
+    module = importlib.import_module("scripts.provision_postgres")
+    observed = {}
+
+    def provision(migration_url, runtime_role):
+        observed.update(migration_url=migration_url, runtime_role=runtime_role)
+        return "owner_role", "research_db"
+
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", "postgresql+psycopg://owner:secret@db/research_db")
+    monkeypatch.setattr(module, "provision", provision)
+    monkeypatch.setattr(sys, "argv", ["provision_postgres.py", "--runtime-role", "runtime_role"])
+    module.main()
+
+    assert observed == {
+        "migration_url": "postgresql+psycopg://owner:secret@db/research_db",
+        "runtime_role": "runtime_role",
+    }
+
+
+def test_provision_cli_fails_closed_without_owner_credential(monkeypatch):
+    module = importlib.import_module("scripts.provision_postgres")
+    monkeypatch.delenv("MIGRATION_DATABASE_URL", raising=False)
+    monkeypatch.setattr(sys, "argv", ["provision_postgres.py", "--runtime-role", "runtime_role"])
+
+    with pytest.raises(SystemExit) as failure:
+        module.main()
+
+    assert failure.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["?host=other", "?port=6543", "?dbname=otherdb", "#unexpected"],
+)
+def test_provision_rejects_url_components_that_can_change_the_effective_target(suffix):
+    module = importlib.import_module("scripts.provision_postgres")
+
+    with pytest.raises(ValueError, match="query parameters or fragments"):
+        module._psycopg_url(
+            "postgresql+psycopg://owner:secret@localhost/research_db" + suffix
+        )
 
 
 def test_database_credentials_are_not_passed_on_process_command_lines():

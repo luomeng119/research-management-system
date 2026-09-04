@@ -28,18 +28,30 @@ function Resolve-Executable {
 }
 
 function Set-PostgresEnvironment {
-    param([Parameter(Mandatory = $true)][string]$DatabaseUrl)
+    param(
+        [Parameter(Mandatory = $true)][string]$DatabaseUrl,
+        [string]$VariableName = "DATABASE_URL"
+    )
     $Normalized = [Regex]::Replace($DatabaseUrl, '^postgresql(?:\+[^:]+)?://', 'postgresql://')
-    try { $Uri = [Uri]$Normalized } catch { throw "DATABASE_URL is not a valid PostgreSQL URL." }
-    if ($Uri.Scheme -ne "postgresql" -or [string]::IsNullOrWhiteSpace($Uri.Host)) { throw "DATABASE_URL must be a PostgreSQL URL." }
+    try { $Uri = [Uri]$Normalized } catch { throw "$VariableName is not a valid PostgreSQL URL." }
+    if ($Uri.Scheme -ne "postgresql" -or [string]::IsNullOrWhiteSpace($Uri.Host)) { throw "$VariableName must be a PostgreSQL URL." }
+    if (-not [string]::IsNullOrWhiteSpace($Uri.Query) -or -not [string]::IsNullOrWhiteSpace($Uri.Fragment)) {
+        throw "$VariableName must not include query parameters or fragments."
+    }
     $UserParts = $Uri.UserInfo.Split([char[]]@(':'), 2)
-    if ($UserParts.Count -lt 1 -or [string]::IsNullOrWhiteSpace($UserParts[0])) { throw "DATABASE_URL must include a PostgreSQL user." }
+    if ($UserParts.Count -lt 1 -or [string]::IsNullOrWhiteSpace($UserParts[0])) { throw "$VariableName must include a PostgreSQL user." }
     $env:PGHOST = $Uri.Host
     $env:PGPORT = if ($Uri.IsDefaultPort) { "5432" } else { [string]$Uri.Port }
     $env:PGDATABASE = [Uri]::UnescapeDataString($Uri.AbsolutePath.TrimStart('/'))
     $env:PGUSER = [Uri]::UnescapeDataString($UserParts[0])
     $env:PGPASSWORD = if ($UserParts.Count -eq 2) { [Uri]::UnescapeDataString($UserParts[1]) } else { "" }
-    if ([string]::IsNullOrWhiteSpace($env:PGDATABASE)) { throw "DATABASE_URL must include a database name." }
+    if ([string]::IsNullOrWhiteSpace($env:PGDATABASE)) { throw "$VariableName must include a database name." }
+    return [PSCustomObject]@{
+        Host = $env:PGHOST
+        Port = $env:PGPORT
+        Database = $env:PGDATABASE
+        User = $env:PGUSER
+    }
 }
 
 function Test-DirectoryEmpty {
@@ -139,7 +151,8 @@ try {
     $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
     $ArchivePath = (Resolve-Path -LiteralPath $ArchivePath).Path
     $ConfiguredDataRoot = Get-RequiredEnvironmentValue "APP_DATA_ROOT"
-    $DatabaseUrl = Get-RequiredEnvironmentValue "DATABASE_URL"
+    $RuntimeDatabaseUrl = Get-RequiredEnvironmentValue "DATABASE_URL"
+    $MigrationDatabaseUrl = Get-RequiredEnvironmentValue "MIGRATION_DATABASE_URL"
     if (-not (Test-Path -LiteralPath $ConfiguredDataRoot -PathType Container)) { throw "APP_DATA_ROOT must reference an existing staging directory." }
     $DataRoot = (Resolve-Path -LiteralPath $ConfiguredDataRoot).Path
     Assert-NoReparseTree -Path $DataRoot
@@ -184,7 +197,19 @@ try {
         if (Test-Path -LiteralPath $TargetFile) { throw "Restore business-file target must be empty: $TargetFile" }
     }
 
-    Set-PostgresEnvironment -DatabaseUrl $DatabaseUrl
+    $RuntimeConnection = Set-PostgresEnvironment -DatabaseUrl $RuntimeDatabaseUrl -VariableName "DATABASE_URL"
+    $RuntimeRole = $RuntimeConnection.User
+    $MigrationConnection = Set-PostgresEnvironment -DatabaseUrl $MigrationDatabaseUrl -VariableName "MIGRATION_DATABASE_URL"
+    if (
+        -not $RuntimeConnection.Host.Equals($MigrationConnection.Host, [StringComparison]::OrdinalIgnoreCase) -or
+        $RuntimeConnection.Port -ne $MigrationConnection.Port -or
+        $RuntimeConnection.Database -ne $MigrationConnection.Database
+    ) {
+        throw "DATABASE_URL and MIGRATION_DATABASE_URL must target the same staging database."
+    }
+    if ($RuntimeRole.Equals($MigrationConnection.User, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "DATABASE_URL runtime role must differ from the MIGRATION_DATABASE_URL owner role."
+    }
     $PsqlExe = Resolve-Executable -ConfiguredValue $env:PSQL_EXE -FallbackName "psql.exe"
     $SchemaObjectQuery = @"
 SELECT
@@ -222,6 +247,11 @@ SELECT
     if ($LASTEXITCODE -ne 0) { throw "database.dump is not a readable PostgreSQL custom-format archive." }
     & $PgRestoreExe @("--exit-on-error", "--single-transaction", "--no-owner", "--no-privileges", "--no-password", $DumpPath)
     if ($LASTEXITCODE -ne 0) { throw "pg_restore failed with exit code $LASTEXITCODE. Discard this staging target." }
+
+    $Provisioner = Join-Path $PSScriptRoot "provision_postgres.py"
+    & $PythonExe @($Provisioner, "--runtime-role", $RuntimeRole)
+    if ($LASTEXITCODE -ne 0) { throw "PostgreSQL runtime ACL provisioning failed. Discard this staging target." }
+    $null = Set-PostgresEnvironment -DatabaseUrl $RuntimeDatabaseUrl -VariableName "DATABASE_URL"
 
     Copy-DirectoryContents -Source (Join-Path (Join-Path $ExtractRoot "payload") "data\files") -Destination $TargetRoots[0]
     Copy-DirectoryContents -Source (Join-Path (Join-Path $ExtractRoot "payload") "uploads") -Destination $TargetRoots[1]

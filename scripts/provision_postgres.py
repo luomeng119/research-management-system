@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+from urllib.parse import urlsplit
 
 import psycopg
 from psycopg import sql
@@ -8,6 +10,11 @@ from sqlalchemy.engine import make_url
 
 
 def _psycopg_url(value: str) -> str:
+    split = urlsplit(value)
+    if split.query or split.fragment:
+        raise ValueError(
+            "migration URL must not include query parameters or fragments"
+        )
     url = make_url(value)
     if not url.drivername.startswith("postgresql"):
         raise ValueError("migration URL must use PostgreSQL")
@@ -150,9 +157,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Apply the production PostgreSQL migration/runtime role boundary."
     )
-    parser.add_argument("--migration-url", required=True)
+    parser.add_argument(
+        "--migration-url",
+        default=os.environ.get("MIGRATION_DATABASE_URL"),
+        help="Database-owner URL; defaults to MIGRATION_DATABASE_URL.",
+    )
     parser.add_argument("--runtime-role", required=True)
     args = parser.parse_args()
+    if not args.migration_url:
+        parser.error("--migration-url or MIGRATION_DATABASE_URL is required")
     owner, database = provision(args.migration_url, args.runtime_role)
     print(
         f"PostgreSQL privileges provisioned: database={database} "
