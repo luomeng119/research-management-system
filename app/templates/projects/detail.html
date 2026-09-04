@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ project['name'] }} - 科研管理系统V2{% endblock %}
+{% block title %}{{ project['name'] }} - 科研创新管理{% endblock %}
 
 {% block content %}
 {% include 'components/preview_panel.html' %}
@@ -24,11 +24,17 @@
         <div id="collapseProject" class="collapse show">
             <div class="card-body">
                 <style>
-                .info-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 16px; }
+                .info-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 16px; }
                 .info-field { display: flex; align-items: center; min-height: 32px; }
                 .info-field label { width: 100px; text-align: right; margin: 0; font-weight: 600; color: #555; flex-shrink: 0; padding-right: 8px; }
                 .info-field .form-control, .info-field .form-select { flex: 1; min-width: 0; }
                 .info-field .field-text { flex: 1; color: #333; }
+                @media (max-width: 1599px) {
+                    .info-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+                }
+                @media (max-width: 899px) {
+                    .info-grid { grid-template-columns: minmax(0, 1fr); }
+                }
                 </style>
                 <div class="info-grid">
                     <div class="info-field">
@@ -101,6 +107,7 @@
         <div id="collapseEquipment" class="collapse show">
             <div class="card-body p-2">
                 {% if project_equipment %}
+                <div class="table-responsive">
                 <table class="table table-sm table-hover mb-0">
                     <thead>
                         <tr>
@@ -140,6 +147,7 @@
                     {% endfor %}
                     </tbody>
                 </table>
+                </div>
                 {% else %}
                 <p class="text-muted mb-0 px-2">暂无选型设备</p>
                 {% endif %}

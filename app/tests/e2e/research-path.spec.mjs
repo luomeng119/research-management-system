@@ -98,10 +98,13 @@ test('历史业务日期可手工填写且旧项目文件入口可用', async ({
 });
 
 test('项目详情可读取设备、设备组和项目之间的真实关系', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await login(page);
   await page.getByRole('link', { name: '原项目文件' }).click();
 
   await expect(page).toHaveURL(/\/projects\/detail\/KY-2026-001$/);
+  await expect(page).toHaveTitle(/科研创新管理$/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await expect(page.getByText('设备选型 (1)')).toBeVisible();
   const equipmentRow = page.locator('tr[data-group-id]').filter({ hasText: '便携式数据采集终端' });
   await expect(equipmentRow).toContainText('通用设备');
