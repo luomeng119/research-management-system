@@ -19,9 +19,24 @@ class ResourceServiceError(RuntimeError):
 
 
 def _positive_int(value, field, *, maximum=None):
+    if isinstance(value, bool):
+        raise ResourceServiceError(
+            "VALIDATION_ERROR", f"{field} 必须是整数", 422,
+            fields={field: "请填写有效整数"},
+        )
     try:
         parsed = int(value)
     except (TypeError, ValueError):
+        raise ResourceServiceError(
+            "VALIDATION_ERROR", f"{field} 必须是整数", 422,
+            fields={field: "请填写有效整数"},
+        )
+    if isinstance(value, float) and not value.is_integer():
+        raise ResourceServiceError(
+            "VALIDATION_ERROR", f"{field} 必须是整数", 422,
+            fields={field: "请填写有效整数"},
+        )
+    if isinstance(value, str) and value.strip() != str(parsed):
         raise ResourceServiceError(
             "VALIDATION_ERROR", f"{field} 必须是整数", 422,
             fields={field: "请填写有效整数"},
@@ -766,3 +781,107 @@ class EquipmentResourcesService:
         with self.repository.engine.begin() as connection:
             if not self.repository.delete_subclass(connection, int(row_id)):
                 raise ResourceServiceError("RESOURCE_NOT_FOUND", "设备子类不存在", 404)
+
+    def get_or_create_project_group(self, project_id, project_name, creator):
+        project_id = str(project_id or "").strip()
+        project_name = str(project_name or "").strip()
+        if not project_id or not project_name:
+            raise ResourceServiceError("VALIDATION_ERROR", "项目和设备组名称不能为空", 422)
+        now = datetime.now(timezone.utc)
+        with self.repository.engine.begin() as connection:
+            self.repository.lock_project_group(connection, project_id)
+            row = self.repository.get_group_by_project(connection, project_id)
+            if row is None:
+                group_id = "FG" + now.strftime("%Y%m%d") + uuid.uuid4().hex[:8].upper()
+                self.repository.insert_equipment_group(connection, {
+                    "group_id": group_id, "project_name": project_name,
+                    "project_id": project_id, "creator": str(creator or "").strip(),
+                    "created_at": now, "updated_at": now,
+                })
+                row = self.repository.get_group_by_project(connection, project_id)
+        return dict(row)
+
+    def add_group_member(self, group_id, equipment_id, *, quantity=1,
+                         location="", selected_by=""):
+        quantity = _positive_int(quantity, "quantity")
+        now = datetime.now(timezone.utc)
+        with self.repository.engine.begin() as connection:
+            self.repository.lock_equipment_group(connection, str(group_id).strip())
+            group, _ = self.repository.get_equipment_group(connection, str(group_id).strip())
+            if group is None:
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "设备组不存在", 404)
+            if self.repository.get_equipment(connection, str(equipment_id).strip()) is None:
+                raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "设备不存在", 404)
+            self.repository.upsert_group_member(connection, {
+                "group_id": str(group_id).strip(),
+                "equipment_id": str(equipment_id).strip(),
+                "quantity": quantity, "location": str(location or "").strip(),
+                "selected_by": str(selected_by or "").strip(), "selected_at": now,
+            })
+
+    def get_equipment_group(self, group_id):
+        with self.repository.engine.connect() as connection:
+            group, members = self.repository.get_equipment_group(
+                connection, str(group_id).strip()
+            )
+        if group is None:
+            raise ResourceServiceError("RESOURCE_NOT_FOUND", "设备组不存在", 404)
+        group["members"] = members
+        return group
+
+    @staticmethod
+    def _relations(values):
+        normalized = []
+        seen = set()
+        for row in values or []:
+            if not isinstance(row, Mapping):
+                raise ResourceServiceError("VALIDATION_ERROR", "关联设备格式无效", 422)
+            device_id = str((row or {}).get("device_id") or "").strip()
+            if not device_id or device_id in seen:
+                raise ResourceServiceError("VALIDATION_ERROR", "关联设备不能重复或为空", 422)
+            seen.add(device_id)
+            normalized.append({
+                "device_id": device_id,
+                "quantity": _positive_int(row.get("quantity", 1), "quantity"),
+            })
+        return normalized
+
+    def create_host_device(self, payload, *, relations=None):
+        payload = payload or {}
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ResourceServiceError("VALIDATION_ERROR", "宿主设备名称不能为空", 422)
+        normalized = self._relations(relations)
+        now = datetime.now(timezone.utc)
+        host_id = "HD" + now.strftime("%Y%m%d") + uuid.uuid4().hex[:10].upper()
+        with self.repository.engine.begin() as connection:
+            for relation in normalized:
+                if self.repository.get_equipment(connection, relation["device_id"]) is None:
+                    raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "关联设备不存在", 404)
+            self.repository.insert_host_device(connection, {
+                "host_id": host_id, "name": name,
+                "model": str(payload.get("model") or "").strip(),
+                "category": str(payload.get("category") or "").strip(),
+                "form": str(payload.get("form") or "").strip(),
+                "created_at": now, "updated_at": now,
+            })
+            self.repository.replace_host_relations(connection, host_id, normalized, now)
+            row = self.repository.get_host_device(connection, host_id)
+        return dict(row)
+
+    def replace_host_relations(self, host_id, relations):
+        host_id = str(host_id or "").strip()
+        normalized = self._relations(relations)
+        with self.repository.engine.begin() as connection:
+            if self.repository.get_host_device(connection, host_id) is None:
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "宿主设备不存在", 404)
+            for relation in normalized:
+                if self.repository.get_equipment(connection, relation["device_id"]) is None:
+                    raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "关联设备不存在", 404)
+            self.repository.replace_host_relations(
+                connection, host_id, normalized, datetime.now(timezone.utc)
+            )
+
+    def get_devices_by_host(self, host_id):
+        with self.repository.engine.connect() as connection:
+            return self.repository.get_devices_by_host(connection, str(host_id).strip())

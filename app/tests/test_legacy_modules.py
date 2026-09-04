@@ -115,6 +115,52 @@ def _expert_schema(engine):
         sa.Column("created_at", sa.DateTime(timezone=True)),
         sa.Column("updated_at", sa.DateTime(timezone=True)),
     )
+    sa.Table(
+        "equipment_groups", metadata,
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("group_id", sa.Text, nullable=False, unique=True),
+        sa.Column("project_name", sa.Text, nullable=False),
+        sa.Column("project_id", sa.Text, unique=True),
+        sa.Column("creator", sa.Text, nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    sa.Table(
+        "equipment_group_members", metadata,
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("group_id", sa.Text, nullable=False),
+        sa.Column("equipment_id", sa.Text, nullable=False),
+        sa.Column("quantity", sa.Integer, nullable=False),
+        sa.Column("selected_by", sa.Text, nullable=False),
+        sa.Column("selected_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("location", sa.Text),
+        sa.UniqueConstraint("group_id", "equipment_id"),
+    )
+    sa.Table(
+        "host_devices", metadata,
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("host_id", sa.Text, nullable=False, unique=True),
+        sa.Column("name", sa.Text, nullable=False), sa.Column("model", sa.Text),
+        sa.Column("category", sa.Text), sa.Column("form", sa.Text),
+        sa.Column("created_at", sa.DateTime(timezone=True)),
+        sa.Column("updated_at", sa.DateTime(timezone=True)),
+    )
+    sa.Table(
+        "host_device_categories", metadata,
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("name", sa.Text, nullable=False, unique=True),
+        sa.Column("created_at", sa.DateTime(timezone=True)),
+    )
+    sa.Table(
+        "device_host_relations", metadata,
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("device_id", sa.Text, nullable=False),
+        sa.Column("host_id", sa.Text, nullable=False),
+        sa.Column("quantity", sa.Integer, nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True)),
+        sa.Column("updated_at", sa.DateTime(timezone=True)),
+        sa.UniqueConstraint("device_id", "host_id"),
+    )
     metadata.create_all(engine)
     return metadata
 
@@ -227,6 +273,73 @@ def test_equipment_dictionaries_are_database_backed(equipment_service):
     with pytest.raises(ResourceServiceError) as caught:
         equipment_service.create_research_unit("第一研究室", "重复")
     assert caught.value.code == "RESOURCE_DUPLICATE"
+
+
+def test_equipment_groups_preserve_quantity_and_location(equipment_service):
+    equipment = equipment_service.create_equipment({"name": "密码机"})
+    group = equipment_service.get_or_create_project_group(
+        "P-001", "课题一", "张老师"
+    )
+    same = equipment_service.get_or_create_project_group(
+        "P-001", "课题一", "李老师"
+    )
+    equipment_service.add_group_member(
+        group["group_id"], equipment["equipment_id"],
+        quantity=2, location="一号实验室", selected_by="张老师",
+    )
+    detail = equipment_service.get_equipment_group(group["group_id"])
+    assert same["group_id"] == group["group_id"]
+    assert detail["members"][0]["quantity"] == 2
+    assert detail["members"][0]["location"] == "一号实验室"
+
+
+def test_host_device_relations_are_replaced_atomically(equipment_service):
+    first = equipment_service.create_equipment({"name": "密码机A"})
+    second = equipment_service.create_equipment({"name": "密码机B"})
+    host = equipment_service.create_host_device(
+        {"name": "服务器", "category": "计算存储"},
+        relations=[
+            {"device_id": first["equipment_id"], "quantity": 1},
+            {"device_id": second["equipment_id"], "quantity": 3},
+        ],
+    )
+    equipment_service.replace_host_relations(host["host_id"], [
+        {"device_id": second["equipment_id"], "quantity": 2},
+    ])
+    related = equipment_service.get_devices_by_host(host["host_id"])
+    assert [(row["device_id"], row["quantity"]) for row in related] == [
+        (second["equipment_id"], 2)
+    ]
+
+    original = equipment_service.repository.replace_host_relations
+    def fail_after_delete(connection, host_id, relations, now):
+        connection.execute(
+            equipment_service.repository.device_host_relations.delete().where(
+                equipment_service.repository.device_host_relations.c.host_id == host_id
+            )
+        )
+        raise RuntimeError("injected relation failure")
+
+    equipment_service.repository.replace_host_relations = fail_after_delete
+    try:
+        with pytest.raises(RuntimeError, match="injected relation failure"):
+            equipment_service.replace_host_relations(host["host_id"], [
+                {"device_id": first["equipment_id"], "quantity": 1},
+            ])
+    finally:
+        equipment_service.repository.replace_host_relations = original
+    assert equipment_service.get_devices_by_host(host["host_id"])[0]["device_id"] == second["equipment_id"]
+
+
+def test_relation_quantity_rejects_fraction_and_malformed_rows(equipment_service):
+    with pytest.raises(ResourceServiceError) as fraction:
+        equipment_service.create_host_device(
+            {"name": "宿主"}, relations=[{"device_id": "EQP-X", "quantity": 1.9}]
+        )
+    assert fraction.value.code == "VALIDATION_ERROR"
+    with pytest.raises(ResourceServiceError) as malformed:
+        equipment_service.create_host_device({"name": "宿主"}, relations=["EQP-X"])
+    assert malformed.value.code == "VALIDATION_ERROR"
 
 
 def test_equipment_and_unit_routes_use_postgres_service(equipment_routes, equipment_service):
@@ -701,6 +814,17 @@ def test_postgresql_equipment_resource_runtime_contract():
         })
         unit = service.create_research_unit(unit_name, f"PG别名{suffix}")
         subclass = service.create_subclass("密码设备", f"PG子类{suffix}")
+        group = service.get_or_create_project_group(
+            f"PG-PROJECT-{suffix}", f"PG课题{suffix}", "张老师"
+        )
+        service.add_group_member(
+            group["group_id"], equipment["equipment_id"], quantity=2,
+            location="PG实验室", selected_by="张老师",
+        )
+        host = service.create_host_device(
+            {"name": f"PG宿主{suffix}", "category": "计算存储"},
+            relations=[{"device_id": equipment["equipment_id"], "quantity": 1}],
+        )
         page = service.list_equipment(page=1, page_size=1, keyword=equipment_name)
         assert page["total"] == 1
         assert page["items"][0]["equipment_id"] == equipment["equipment_id"]
@@ -710,11 +834,25 @@ def test_postgresql_equipment_resource_runtime_contract():
         assert any(
             row["id"] == subclass["id"] for row in service.list_subclasses("密码设备")
         )
+        assert service.get_equipment_group(group["group_id"])["members"][0]["location"] == "PG实验室"
+        assert service.get_devices_by_host(host["host_id"])[0]["quantity"] == 1
     finally:
         cleanup = sa.create_engine(os.environ.get(
             "MIGRATION_DATABASE_URL", os.environ["T10_TEST_DATABASE_URL"]
         ))
         with cleanup.begin() as connection:
+            connection.execute(repository.device_host_relations.delete().where(
+                repository.device_host_relations.c.host_id == host["host_id"]
+            ))
+            connection.execute(repository.host_devices.delete().where(
+                repository.host_devices.c.host_id == host["host_id"]
+            ))
+            connection.execute(repository.equipment_group_members.delete().where(
+                repository.equipment_group_members.c.group_id == group["group_id"]
+            ))
+            connection.execute(repository.equipment_groups.delete().where(
+                repository.equipment_groups.c.group_id == group["group_id"]
+            ))
             connection.execute(repository.knowledge_subclasses.delete().where(
                 repository.knowledge_subclasses.c.subclass_name == f"PG子类{suffix}"
             ))

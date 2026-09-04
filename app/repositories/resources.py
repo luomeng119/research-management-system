@@ -285,6 +285,17 @@ class EquipmentResourcesRepository:
             "knowledge_subclasses", metadata, autoload_with=engine
         )
         self.research_units = sa.Table("research_units", metadata, autoload_with=engine)
+        self.equipment_groups = sa.Table("equipment_groups", metadata, autoload_with=engine)
+        self.equipment_group_members = sa.Table(
+            "equipment_group_members", metadata, autoload_with=engine
+        )
+        self.host_devices = sa.Table("host_devices", metadata, autoload_with=engine)
+        self.host_device_categories = sa.Table(
+            "host_device_categories", metadata, autoload_with=engine
+        )
+        self.device_host_relations = sa.Table(
+            "device_host_relations", metadata, autoload_with=engine
+        )
 
     @staticmethod
     def _pattern(value):
@@ -402,3 +413,93 @@ class EquipmentResourcesRepository:
         return connection.execute(self.knowledge_subclasses.delete().where(
             self.knowledge_subclasses.c.id == row_id
         )).rowcount
+
+    @staticmethod
+    def lock_project_group(connection, project_id):
+        if connection.dialect.name == "postgresql":
+            connection.execute(
+                sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": f"equipment-group:{project_id}"},
+            )
+
+    def get_group_by_project(self, connection, project_id):
+        return connection.execute(sa.select(self.equipment_groups).where(
+            self.equipment_groups.c.project_id == project_id
+        )).mappings().first()
+
+    def insert_equipment_group(self, connection, values):
+        connection.execute(self.equipment_groups.insert().values(**values))
+
+    def get_equipment_group(self, connection, group_id):
+        group = connection.execute(sa.select(self.equipment_groups).where(
+            self.equipment_groups.c.group_id == group_id
+        )).mappings().first()
+        if group is None:
+            return None, []
+        members = connection.execute(sa.select(
+            self.equipment_group_members,
+            self.equipment.c.name, self.equipment.c.model,
+            self.equipment.c.category, self.equipment.c.form,
+            self.equipment.c.price, self.equipment.c.tech_status,
+        ).select_from(self.equipment_group_members.join(
+            self.equipment,
+            self.equipment_group_members.c.equipment_id == self.equipment.c.equipment_id,
+        )).where(
+            self.equipment_group_members.c.group_id == group_id
+        ).order_by(self.equipment_group_members.c.selected_at, self.equipment_group_members.c.id)).mappings()
+        return dict(group), [dict(row) for row in members]
+
+    def lock_equipment_group(self, connection, group_id):
+        statement = sa.select(self.equipment_groups.c.id).where(
+            self.equipment_groups.c.group_id == group_id
+        )
+        if connection.dialect.name == "postgresql":
+            statement = statement.with_for_update()
+        connection.execute(statement).scalar()
+
+    def upsert_group_member(self, connection, values):
+        existing = connection.execute(sa.select(self.equipment_group_members.c.id).where(sa.and_(
+            self.equipment_group_members.c.group_id == values["group_id"],
+            self.equipment_group_members.c.equipment_id == values["equipment_id"],
+        ))).scalar()
+        if existing:
+            connection.execute(self.equipment_group_members.update().where(
+                self.equipment_group_members.c.id == existing
+            ).values(quantity=values["quantity"], location=values.get("location"),
+                     selected_by=values["selected_by"], selected_at=values["selected_at"]))
+        else:
+            connection.execute(self.equipment_group_members.insert().values(**values))
+
+    def insert_host_device(self, connection, values):
+        connection.execute(self.host_devices.insert().values(**values))
+
+    def get_host_device(self, connection, host_id):
+        return connection.execute(sa.select(self.host_devices).where(
+            self.host_devices.c.host_id == host_id
+        )).mappings().first()
+
+    def replace_host_relations(self, connection, host_id, relations, now):
+        connection.execute(self.device_host_relations.delete().where(
+            self.device_host_relations.c.host_id == host_id
+        ))
+        if relations:
+            connection.execute(self.device_host_relations.insert(), [{
+                "device_id": row["device_id"], "host_id": host_id,
+                "quantity": row["quantity"], "created_at": now, "updated_at": now,
+            } for row in relations])
+
+    def get_devices_by_host(self, connection, host_id):
+        rows = connection.execute(sa.select(
+            self.device_host_relations.c.device_id,
+            self.device_host_relations.c.quantity,
+            self.device_host_relations.c.created_at,
+            self.device_host_relations.c.updated_at,
+            self.equipment.c.name, self.equipment.c.model,
+            self.equipment.c.category, self.equipment.c.tech_status,
+        ).select_from(self.device_host_relations.join(
+            self.equipment,
+            self.device_host_relations.c.device_id == self.equipment.c.equipment_id,
+        )).where(self.device_host_relations.c.host_id == host_id).order_by(
+            self.device_host_relations.c.id
+        )).mappings()
+        return [dict(row) for row in rows]
