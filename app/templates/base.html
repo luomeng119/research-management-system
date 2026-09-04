@@ -1,114 +1,81 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>{% block title %}科研管理系统{% endblock %}</title>
+    <title>{% block title %}科研创新管理{% endblock %}</title>
     <link href="/static/css/bootstrap.min.css" rel="stylesheet">
     <link href="/static/css/bootstrap-icons.css" rel="stylesheet">
     <link href="/static/css/design-tokens.css" rel="stylesheet">
-    <style>
-        body { padding-top: 56px; }
-        .sidebar { width: 250px; min-width: 150px; max-width: 400px; height: calc(100vh - 56px); overflow-y: auto; border-right: 1px solid #dee2e6; }
-        .content { flex: 1; min-width: 0; }
-        .resizer { width: 6px; cursor: col-resize; background: #e8e8e8; border-left: 1px solid #d0d0d0; border-right: 1px solid #d0d0d0; transition: background 0.15s, border-color 0.15s; flex-shrink: 0; }
-        .resizer:hover { background: #0d6efd; border-color: #0d6efd; }
-        .tree-node { cursor: pointer; user-select: none; }
-        .tree-node .bi { margin-right: 5px; }
-        .tree-children { padding-left: 20px; display: none; }
-        .tree-children.show { display: block; }
-        ul.children { padding-left: 0; margin: 0; list-style: none; }
-        ul.children > li { display: block !important; }
-        li.folder-node { display: block !important; }
-        li.folder-node > ul.children { margin-left: 0; padding-left: 20px; }
-        .tree-link { text-decoration: none; color: #333; padding: 5px 10px; display: block; border-radius: 4px; }
-        .tree-link:hover { background: #f8f9fa; }
-        .tree-link.active { background: #e7f1ff !important; color: #0d6efd !important; font-weight: 500; }
-        .sidebar.collapsed { width: 0 !important; min-width: 0 !important; border-right: none; overflow: hidden; }
-        .sidebar:not(.collapsed) { border-right: 1px solid #dee2e6; }
-        .content.expanded { flex: 1; }
-        .tree-loading { padding: 20px; text-align: center; color: #6c757d; }
-        .tree-error { padding: 20px; text-align: center; color: #dc3545; }
-        .spin { animation: spin 1s linear infinite; }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-        .toggle-icon { cursor: pointer; width: 16px; display: inline-block; }
-        .toggle-icon:hover { color: #0d6efd; }
-        .node-text { cursor: pointer; }
-    </style>
+    <link href="/static/css/app-shell.css" rel="stylesheet">
+    <link href="/static/richeditor/richeditor.css" rel="stylesheet">
     {% block extra_css %}{% endblock %}
     <script src="/static/js/jquery-3.7.0.min.js"></script>
     <script src="/static/js/bootstrap.bundle.min.js"></script>
-<link rel="stylesheet" href="/static/richeditor/richeditor.css">
 </head>
 <body>
-    <nav class="navbar navbar-dark bg-primary fixed-top">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="/">科研管理系统 <span id="app-version">{{ config.get('VERSION') or '1.12.0' }}</span></a>
-            {% if session.get('user') %}
-            <div class="dropdown">
-                <button class="btn btn-outline-light dropdown-toggle" data-bs-toggle="dropdown">
-                    <i class="bi bi-person-circle"></i> {{ session.get('user') }}
-                </button>
-                <ul class="dropdown-menu dropdown-menu-end">
-                    {% if session.get('role') == 'SYSTEM_MAINTAINER' %}
-                    <li><a class="dropdown-item" href="{{ url_for('users.index') }}"><i class="bi bi-people"></i> 用户管理</a></li>
-                    <li><hr class="dropdown-divider"></li>
-                    {% endif %}
-                    <li><a class="dropdown-item" href="{{ url_for('users.change_password') }}"><i class="bi bi-key"></i> 修改密码</a></li>
-                    <li><hr class="dropdown-divider"></li>
-                    <li><span class="dropdown-item-text">角色: {{ session.get('role') }}</span></li>
-                    <li><hr class="dropdown-divider"></li>
-                    <li>
-                        <form method="post" action="{{ url_for('auth.logout') }}" class="m-0">
-                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                            <button class="dropdown-item" type="submit">退出登录</button>
-                        </form>
-                    </li>
-                </ul>
-            </div>
-            {% endif %}
-        </div>
-    </nav>
-    
     {% if session.get('user') %}
-    <div class="container-fluid mt-4">
-        <div class="d-flex align-items-start">
-            <button class="btn btn-sm btn-outline-secondary me-2 mt-2" onclick="toggleSidebar()" title="折叠/展开目录">
-                <i class="bi bi-chevron-left" id="sidebarToggleIcon"></i>
-            </button>
-            <div class="sidebar" id="sidebar">
-                <div class="tree-loading" id="treeLoading">
-                    <i class="bi bi-arrow-repeat spin"></i> 加载中...
+    <div class="app-shell" id="appShell">
+        <aside class="primary-sidebar" aria-label="一级导航">
+            <a class="brand" href="/" aria-label="返回工作台">
+                <img src="/static/brand/logo-reference.png" alt="科研机构 Logo">
+                <span class="brand-copy"><strong>科研创新管理</strong><small>Research Workspace</small></span>
+            </a>
+            <nav class="primary-nav">
+                <a class="primary-nav-item" data-primary-nav="dashboard" href="/"><span class="primary-nav-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#layout-dashboard"></use></svg></span><span>工作台</span></a>
+                <a class="primary-nav-item" data-primary-nav="proposals" href="/proposals"><span class="primary-nav-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#lightbulb"></use></svg></span><span>科研提案</span></a>
+                <a class="primary-nav-item" data-primary-nav="projects" href="/projects"><span class="primary-nav-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#folder-kanban"></use></svg></span><span>科研项目</span></a>
+                <a class="primary-nav-item" data-primary-nav="experts" href="/experts"><span class="primary-nav-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#users-round"></use></svg></span><span>专家库</span></a>
+                <a class="primary-nav-item" data-primary-nav="resources" href="/equipment"><span class="primary-nav-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#library"></use></svg></span><span>科研资源</span></a>
+                <a class="primary-nav-item" data-primary-nav="tools" href="/utils"><span class="primary-nav-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#wrench"></use></svg></span><span>辅助工具</span></a>
+            </nav>
+            <button class="collapse-primary-nav" id="collapsePrimaryNav" type="button" aria-label="收起导航" aria-expanded="true"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#panel-left-close"></use></svg><span>收起导航</span></button>
+        </aside>
+
+        <div class="workspace">
+            <header class="topbar glass-control">
+                <div class="app-breadcrumb" aria-label="当前位置"><span>科研创新管理</span><b aria-hidden="true">/</b><strong id="pageCrumb">工作台</strong></div>
+                <div class="top-actions">
+                    <div class="search-guidance" aria-label="全局搜索"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#search"></use></svg><span>请在各模块内搜索</span></div>
+                    <a class="top-icon-link" href="/utils" aria-label="打开辅助工具"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#wrench"></use></svg></a>
+                    <div class="dropdown">
+                        {% set display_name = session.get('name') or session.get('user') or '用户' %}
+                        <button class="user-menu dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"><span class="avatar" aria-hidden="true">{{ display_name[:1] }}</span><span>{{ display_name }}</span></button>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            {% if session.get('role') == 'SYSTEM_MAINTAINER' %}<li><a class="dropdown-item" href="{{ url_for('users.index') }}">用户管理</a></li><li><hr class="dropdown-divider"></li>{% endif %}
+                            <li><a class="dropdown-item" href="{{ url_for('users.change_password') }}">修改密码</a></li>
+                            <li><span class="dropdown-item-text">角色：{{ session.get('role') }}</span></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><form method="post" action="{{ url_for('auth.logout') }}" class="m-0"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="dropdown-item" type="submit">退出登录</button></form></li>
+                        </ul>
+                    </div>
                 </div>
-                <div class="tree-error" id="treeError" style="display:none;">
-                    <i class="bi bi-exclamation-triangle"></i> 加载失败，点击重试
-                </div>
-                <div id="treeContainer"></div>
-            </div>
-            <div class="resizer" id="resizer"></div>
-            <div class="content">
-                {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                {% for category, message in messages %}
-                <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show">
-                    {{ message }}
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                </div>
-                {% endfor %}
-                {% endif %}
-                {% endwith %}
-                {% include 'components/doc_preview.html' %}
-                {% block content %}{% endblock %}
+            </header>
+
+            <div class="workspace-body">
+                <button class="directory-toggle" id="directoryToggle" type="button" aria-label="收起二级目录" aria-controls="sidebar" aria-expanded="true"><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#panel-left-close"></use></svg></button>
+                <aside class="directory-sidebar" id="sidebar" aria-label="功能目录" data-tree-endpoint="/api/tree">
+                    <div class="directory-heading"><strong>功能目录</strong><small>原有模块与数据入口</small></div>
+                    <div class="tree-loading" id="treeLoading" role="status">正在加载目录…</div>
+                    <div class="tree-error" id="treeError" hidden></div>
+                    <div id="treeContainer"></div>
+                </aside>
+                <div class="directory-resizer" id="resizer" role="separator" aria-label="调整功能目录宽度" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="380" aria-valuenow="250" tabindex="0"></div>
+                <main class="content" id="mainContent">
+                    {% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">{{ message }}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="关闭"></button></div>{% endfor %}{% endif %}{% endwith %}
+                    {% include 'components/doc_preview.html' %}
+                    {% block content %}{% endblock %}
+                </main>
             </div>
         </div>
     </div>
     {% else %}
     {% block login_content %}{% endblock %}
     {% endif %}
-    
+
     <script src="/static/js/ui-enhance.js"></script>
     <script>
     window.APP_CSRF_TOKEN = {{ csrf_token()|tojson }};
@@ -117,237 +84,22 @@
             var method = (form.getAttribute('method') || 'get').toLowerCase();
             if (method !== 'get' && !form.querySelector('input[name="_csrf_token"]')) {
                 var input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = '_csrf_token';
-                input.value = window.APP_CSRF_TOKEN;
-                form.appendChild(input);
+                input.type = 'hidden'; input.name = '_csrf_token'; input.value = window.APP_CSRF_TOKEN; form.appendChild(input);
             }
         });
-        if (window.jQuery) {
-            $.ajaxSetup({headers: {'X-CSRF-Token': window.APP_CSRF_TOKEN}});
-        }
+        if (window.jQuery) window.jQuery.ajaxSetup({headers: {'X-CSRF-Token': window.APP_CSRF_TOKEN}});
         var originalFetch = window.fetch;
         window.fetch = function (input, init) {
             init = init || {};
             var method = (init.method || 'GET').toUpperCase();
             if (['POST', 'PUT', 'PATCH', 'DELETE'].indexOf(method) !== -1) {
-                init.headers = new Headers(init.headers || {});
-                init.headers.set('X-CSRF-Token', window.APP_CSRF_TOKEN);
+                init.headers = new Headers(init.headers || {}); init.headers.set('X-CSRF-Token', window.APP_CSRF_TOKEN);
             }
             return originalFetch(input, init);
         };
     });
     </script>
-    <script>
-    (function() {
-        var treeData = null;
-        var currentPath = window.location.pathname;
-        
-        function loadTree() {
-            $('#treeLoading').show();
-            $('#treeError').hide();
-            $('#treeContainer').hide();
-            
-            $.ajax({
-                url: '/api/tree',
-                method: 'GET',
-                timeout: 10000,
-                success: function(res) {
-                    if (res.code === 0) {
-                        treeData = res.data;
-                        renderTree(treeData);
-                        restoreTreeState();
-                        highlightCurrentPage();
-                        $('#treeLoading').hide();
-                        $('#treeContainer').show();
-                    } else {
-                        showError('加载失败: ' + res.msg);
-                    }
-                },
-                error: function(xhr, status, error) {
-                    showError('加载失败，请检查网络');
-                }
-            });
-        }
-        
-        function showError(msg) {
-            $('#treeLoading').hide();
-            $('#treeContainer').hide();
-            $('#treeError').html('<i class="bi bi-exclamation-triangle"></i> ' + msg + '<br><button class="btn btn-sm btn-outline-danger mt-2" onclick="loadTree()">重试</button>');
-            $('#treeError').show();
-        }
-        
-        function renderTree(nodes) {
-            var html = '<ul class="nav flex-column">';
-            nodes.forEach(function(node) {
-                html += buildNodeHtml(node);
-            });
-            html += '</ul>';
-            $('#treeContainer').html(html);
-            
-            // 展开/折叠图标点击 - 只展开不跳转
-            $('.toggle-icon').on('click', function(e) {
-                e.stopPropagation();
-                var $parent = $(this).closest('.tree-node');
-                var $children = $parent.find('> .tree-children');
-                $children.toggleClass('show');
-                saveTreeState();
-            });
-            
-            // 文字点击 - 父节点展开+跳转，叶子节点跳转
-            $('.node-text').on('click', function(e) {
-                e.stopPropagation();
-                var $this = $(this);
-                var $parent = $this.closest('.tree-node');
-                var $children = $parent.find('> .tree-children');
-                var hasChildren = $children.length > 0;
-                var url = $(this).data('url');
-                
-                if (hasChildren) {
-                    // 父节点：展开 + 跳转
-                    $children.toggleClass('show');
-                    saveTreeState();
-                    if (url && url !== 'javascript:void(0)' && url !== '#') {
-                        $('.tree-link').removeClass('active');
-                        $this.closest('.tree-link').addClass('active');
-                        sessionStorage.setItem('activeTreeNode', $this.data('id'));
-                        window.location.href = url;
-                    }
-                } else {
-                    // 叶子节点：直接跳转
-                    if (url && url !== 'javascript:void(0)' && url !== '#') {
-                        $('.tree-link').removeClass('active');
-                        $this.closest('.tree-link').addClass('active');
-                        sessionStorage.setItem('activeTreeNode', $this.data('id'));
-                        window.location.href = url;
-                    }
-                }
-            });
-        }
-        
-        function buildNodeHtml(node) {
-            var hasChildren = node.children && node.children.length > 0;
-            var icon = node.icon || 'bi-folder';
-            var url = node.url || '';
-            var html = '<li class="nav-item tree-node">';
-            
-            if (hasChildren) {
-                // 父节点
-                html += '<a class="tree-link" data-id="' + node.id + '">';
-                html += '<i class="bi bi-chevron-right toggle-icon"></i> ';
-                html += '<i class="bi ' + icon + '"></i> <span class="node-text" data-id="' + node.id + '" data-url="' + url + '">' + node.label + '</span></a>';
-                html += '<ul class="nav flex-column tree-children">';
-                node.children.forEach(function(child) {
-                    html += buildNodeHtml(child);
-                });
-                html += '</ul>';
-            } else {
-                // 叶子节点
-                html += '<a class="tree-link" data-id="' + node.id + '" data-url="' + url + '">';
-                html += '<i class="bi ' + icon + '"></i> <span class="node-text" data-id="' + node.id + '" data-url="' + url + '">' + node.label + '</span></a>';
-            }
-            
-            html += '</li>';
-            return html;
-        }
-        
-        function saveTreeState() {
-            var openIds = [];
-            $('.tree-children.show').each(function() {
-                var id = $(this).prev('.tree-link').find('.toggle-icon').data('id') || $(this).prev('.tree-link').data('id');
-                if (id) openIds.push(id);
-            });
-            sessionStorage.setItem('treeState', JSON.stringify(openIds));
-        }
-        
-        function restoreTreeState() {
-            var openIds = JSON.parse(sessionStorage.getItem('treeState') || '[]');
-            openIds.forEach(function(id) {
-                $('.tree-link').each(function() {
-                    var $this = $(this);
-                    if ($this.find('.node-text').data('id') === id || $this.data('id') === id) {
-                        $this.next('.tree-children').addClass('show');
-                    }
-                });
-            });
-        }
-        
-        function highlightCurrentPage() {
-            var activeId = sessionStorage.getItem('activeTreeNode');
-            $('.tree-link').each(function() {
-                var url = $(this).find('.node-text').data('url') || $(this).data('url');
-                if (url && url === currentPath) {
-                    $(this).addClass('active');
-                }
-            });
-            if (activeId) {
-                $('.tree-link').each(function() {
-                    if ($(this).find('.node-text').data('id') === activeId || $(this).data('id') === activeId) {
-                        $(this).addClass('active');
-                    }
-                });
-            }
-        }
-        
-        (function() {
-            var sidebar = document.getElementById('sidebar');
-            var resizer = document.getElementById('resizer');
-            var isDragging = false;
-            
-            if (!resizer) return;
-            resizer.addEventListener('mousedown', function(e) {
-                isDragging = true;
-                document.body.style.cursor = 'col-resize';
-                e.preventDefault();
-            });
-            
-            document.addEventListener('mousemove', function(e) {
-                if (!isDragging) return;
-                var width = e.clientX;
-                if (width >= 150 && width <= 400) {
-                    sidebar.style.width = width + 'px';
-                    sessionStorage.setItem('sidebarWidth', width);
-                }
-            });
-            
-            document.addEventListener('mouseup', function() {
-                if (isDragging) {
-                    isDragging = false;
-                    document.body.style.cursor = '';
-                }
-            });
-            
-            var savedWidth = sessionStorage.getItem('sidebarWidth');
-            if (savedWidth) {
-                sidebar.style.width = savedWidth + 'px';
-            }
-        })();
-        
-        $(document).ready(function() {
-            if ($('#treeContainer').length > 0 || $('#treeLoading').length > 0) {
-                loadTree();
-            }
-        });
-        
-        window.loadTree = loadTree;
-        
-        function toggleSidebar() {
-            var sidebar = document.getElementById('sidebar');
-            var icon = document.getElementById('sidebarToggleIcon');
-            var content = document.querySelector('.content');
-            sidebar.classList.toggle('collapsed');
-            if (sidebar.classList.contains('collapsed')) {
-                icon.classList.remove('bi-chevron-left');
-                icon.classList.add('bi-chevron-right');
-            } else {
-                icon.classList.remove('bi-chevron-right');
-                icon.classList.add('bi-chevron-left');
-            }
-        }
-        
-        window.toggleSidebar = toggleSidebar;
-    })();
-    </script>
+    <script src="/static/js/app-shell.js"></script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>

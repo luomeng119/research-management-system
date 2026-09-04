@@ -41,7 +41,9 @@
     const sidebar = document.getElementById('sidebar');
     const resizer = document.getElementById('resizer');
     
-    if (sidebar && window.innerWidth <= 768) {
+    const usesAppShell = Boolean(document.getElementById('appShell'));
+
+    if (sidebar && !usesAppShell && window.innerWidth <= 768) {
         // 移动端：边栏默认隐藏
         sidebar.classList.remove('show');
     }
@@ -65,7 +67,7 @@
     };
     
     // 边栏拖拽调整宽度
-    if (resizer && sidebar) {
+    if (resizer && sidebar && !usesAppShell) {
         let isResizing = false;
         
         resizer.addEventListener('mousedown', (e) => {

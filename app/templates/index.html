@@ -1,157 +1,30 @@
 {% extends "base.html" %}
-
-{% block title %}首页 - 科研管理系统{% endblock %}
-
+{% block title %}工作台 - 科研创新管理{% endblock %}
 {% block content %}
-<style>
-.hero-bg {
-    background: linear-gradient(135deg, #0a0a1a 0%, #1a1a2e 50%, #16213e 100%);
-    min-height: 80vh;
-    position: relative;
-    overflow: hidden;
-}
-.hero-bg::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: 
-        radial-gradient(ellipse at 20% 80%, rgba(0, 255, 255, 0.1) 0%, transparent 50%),
-        radial-gradient(ellipse at 80% 20%, rgba(0, 100, 255, 0.1) 0%, transparent 50%),
-        radial-gradient(ellipse at 50% 50%, rgba(128, 0, 255, 0.05) 0%, transparent 70%);
-    animation: pulse 8s ease-in-out infinite;
-}
-.hero-bg::after {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background-image: 
-        linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
-    background-size: 50px 50px;
-    animation: gridMove 20s linear infinite;
-}
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
-@keyframes gridMove { 0% { transform: translate(0, 0); } 100% { transform: translate(50px, 50px); } }
-.content-overlay { position: relative; z-index: 1; padding: 40px 0; }
-.glass-card {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(0, 255, 255, 0.2);
-    border-radius: 15px;
-    transition: all 0.3s ease;
-}
-.glass-card:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(0, 255, 255, 0.5);
-    transform: translateY(-5px);
-    box-shadow: 0 10px 30px rgba(0, 255, 255, 0.2);
-}
-.stat-value {
-    font-size: 2.5rem;
-    font-weight: bold;
-    background: linear-gradient(90deg, #00ffff, #0088ff);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-}
-.welcome-title {
-    font-size: 2rem;
-    color: #fff;
-    text-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
-}
-.card-title { color: #fff; }
-</style>
-<div class="hero-bg">
-    <div class="container content-overlay">
-        <h2 class="welcome-title mb-4">欢迎使用科研管理系统</h2>
-        
-        <div class="row g-4">
-            {% if 'projects' in visible_directories %}
-            <div class="col-md-4">
-                <div class="card glass-card h-100">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-folder text-primary"></i> 科研项目</h5>
-                        <p class="card-text text-light">管理科研项目、文档和设备清单</p>
-                        <a href="/projects" class="btn btn-outline-light">进入</a>
-                    </div>
-                </div>
-            </div>
-            {% endif %}
-            
-            {% if 'security_projects' in visible_directories %}
-            <div class="col-md-4">
-                <div class="card glass-card h-100">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-shield-lock text-danger"></i> 安全保密项目</h5>
-                        <p class="card-text text-light">管理安全保密科研项目</p>
-                        <a href="/security_projects" class="btn btn-outline-light">进入</a>
-                    </div>
-                </div>
-            </div>
-            {% endif %}
-            
-            {% if 'crypto_projects' in visible_directories %}
-            <div class="col-md-4">
-                <div class="card glass-card h-100">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-key text-warning"></i> 密码应用项目</h5>
-                        <p class="card-text text-light">管理密码应用科研项目</p>
-                        <a href="/crypto_projects" class="btn btn-outline-light">进入</a>
-                    </div>
-                </div>
-            </div>
-            {% endif %}
-            
-            {% if 'equipment' in visible_directories %}
-            <div class="col-md-4">
-                <div class="card glass-card h-100">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-pc-display text-success"></i> 设备知识库</h5>
-                        <p class="card-text text-light">管理安全设备、密码设备、通用设备</p>
-                        <a href="/equipment" class="btn btn-outline-light">进入</a>
-                    </div>
-                </div>
-            </div>
-            {% endif %}
-            
-            {% if 'standards' in visible_directories %}
-            <div class="col-md-4">
-                <div class="card glass-card h-100">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-book text-info"></i> 标准法规库</h5>
-                        <p class="card-text text-light">管理国军标、国家标准、行业标准</p>
-                        <a href="/standards" class="btn btn-outline-light">进入</a>
-                    </div>
-                </div>
-            </div>
-            {% endif %}
-            
-            {% if 'utils' in visible_directories %}
-            <div class="col-md-4">
-                <div class="card glass-card h-100">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-tools text-secondary"></i> 辅助工具</h5>
-                        <p class="card-text text-light">文档校对等效率工具</p>
-                        <a href="/utils" class="btn btn-outline-light">进入</a>
-                    </div>
-                </div>
-            </div>
-            {% endif %}
-        </div>
-        
-        {% if session.get('role') == 'SYSTEM_MAINTAINER' %}
-        <div class="row g-4 mt-2">
-            <div class="col-md-4">
-                <div class="card glass-card h-100 border-primary">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-people text-primary"></i> 用户管理</h5>
-                        <p class="card-text text-light">管理系统用户和权限</p>
-                        <a href="/users" class="btn btn-outline-light">管理</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-        {% endif %}
+<section class="dashboard" aria-labelledby="dashboardTitle">
+    <div class="dashboard-heading">
+        <div><p class="eyebrow">科研工作台</p><h1 id="dashboardTitle">从想法开始，推进科研提案与项目</h1><p>集中进入当前工作，原有功能仍可从左侧功能目录访问。</p></div>
+        <a class="workspace-button workspace-button-primary" href="/proposals/new"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#plus"></use></svg>新建科研提案</a>
     </div>
-</div>
+    <div class="dashboard-grid">
+        <section class="workspace-panel dashboard-focus" aria-labelledby="focusTitle">
+            <div class="workspace-panel-heading"><div><h2 id="focusTitle">待我推进</h2><p>从已登记的提案或项目继续工作</p></div></div>
+            <div class="dashboard-empty" role="status"><span class="dashboard-empty-icon"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#folder-kanban"></use></svg></span><div><strong>暂无可在工作台直接展示的汇总数据</strong><p>可从提案列表或项目列表查看实际记录。</p></div></div>
+            <div class="dashboard-actions"><a class="workspace-button workspace-button-secondary" href="/proposals">查看科研提案<svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></a><a class="workspace-button workspace-button-secondary" href="/projects">查看科研项目<svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></a></div>
+        </section>
+        <aside class="workspace-panel dashboard-start" aria-labelledby="startTitle">
+            <div class="workspace-panel-heading"><div><h2 id="startTitle">快捷开始</h2><p>常用业务入口</p></div></div>
+            <nav class="start-links" aria-label="快捷开始"><a href="/proposals/new"><span><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#lightbulb"></use></svg></span><strong>登记一个想法</strong><small>形成可继续完善的科研提案</small></a><a href="/projects"><span><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#folder-kanban"></use></svg></span><strong>进入科研项目</strong><small>查看项目记录与文件</small></a></nav>
+        </aside>
+    </div>
+    <section class="workspace-panel quick-panel" aria-labelledby="resourcesTitle">
+        <div class="workspace-panel-heading"><div><h2 id="resourcesTitle">常用资源</h2><p>已有资源与工具保持可达</p></div></div>
+        <div class="resource-links">
+            {% if 'experts' in visible_directories %}<a href="/experts"><span><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#users-round"></use></svg></span><div><strong>专家库</strong><small>查询、分组与导入导出</small></div><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></a>{% endif %}
+            {% if 'equipment' in visible_directories %}<a href="/equipment"><span><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#database"></use></svg></span><div><strong>设备等科研资源</strong><small>设备、宿主与关联关系</small></div><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></a>{% endif %}
+            {% if 'standards' in visible_directories %}<a href="/standards"><span><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#book-open-check"></use></svg></span><div><strong>标准法规</strong><small>查询文档与附件</small></div><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></a>{% endif %}
+            {% if 'utils' in visible_directories %}<a href="/utils"><span><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#wrench"></use></svg></span><div><strong>辅助工具</strong><small>使用现有效率工具</small></div><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></a>{% endif %}
+        </div>
+    </section>
+</section>
 {% endblock %}
