@@ -335,6 +335,12 @@ def test_expert_runtime_has_no_sqlite_or_temp_file_fallback():
     assert "task_path" not in experts_source
 
 
+def test_equipment_runtime_has_no_legacy_operation_log_fallback():
+    equipment_source = (ROOT / "app/routes/equipment.py").read_text(encoding="utf-8")
+
+    assert "OperationLogModel" not in equipment_source
+
+
 def test_equipment_stats_merge_null_category_into_general(equipment_service):
     equipment_service.create_equipment({"name": "未分类设备", "price": "10"})
     equipment_service.create_equipment({
@@ -343,6 +349,111 @@ def test_equipment_stats_merge_null_category_into_general(equipment_service):
     stats = equipment_service.equipment_stats()
     assert stats["by_category"]["通用设备"] == {"count": 2, "value": 30.0}
     assert stats["total"] == 2
+
+
+def test_equipment_create_and_delete_audit_with_the_resource_transaction(expert_engine):
+    audit = AuditRecorder()
+    service = EquipmentResourcesService(
+        EquipmentResourcesRepository(expert_engine), audit
+    )
+
+    created = service.create_equipment(
+        {"name": "审计设备"}, actor_user_id=7, request_id="req-create-equipment"
+    )
+    service.update_equipment(
+        created["equipment_id"], {"name": "审计设备（更新）"},
+        actor_user_id=7, request_id="req-update-equipment",
+    )
+    service.delete_equipment(
+        created["equipment_id"], actor_user_id=7,
+        request_id="req-delete-equipment",
+    )
+
+    assert [event["properties"]["operation"] for event in audit.events] == [
+        "CREATE", "UPDATE", "DELETE",
+    ]
+    assert {event["object_type"] for event in audit.events} == {"EQUIPMENT"}
+    assert {event["properties"]["resource_name"] for event in audit.events} == {
+        "审计设备", "审计设备（更新）"
+    }
+
+
+def test_equipment_audit_failure_rolls_back_the_resource_write(expert_engine):
+    service = EquipmentResourcesService(
+        EquipmentResourcesRepository(expert_engine), AuditRecorder(fail=True)
+    )
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        service.create_equipment(
+            {"name": "不应留存的设备"}, actor_user_id=7,
+            request_id="req-failed-equipment",
+        )
+
+    assert service.list_equipment(keyword="不应留存的设备")["total"] == 0
+
+
+def test_equipment_logs_are_read_from_bounded_audit_events(expert_engine):
+    from app.repositories.audit import AuditRepository
+    from app.services.audit import AuditService
+
+    metadata = sa.MetaData()
+    users = sa.Table(
+        "users", metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("username", sa.Text, nullable=False),
+        sa.Column("name", sa.Text),
+    )
+    sa.Table(
+        "audit_events", metadata,
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("actor_user_id", sa.Integer),
+        sa.Column("action", sa.Text, nullable=False),
+        sa.Column("object_type", sa.Text, nullable=False),
+        sa.Column("object_id", sa.Text),
+        sa.Column("result", sa.Text, nullable=False),
+        sa.Column("request_id", sa.Text),
+        sa.Column("metadata", sa.JSON, nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    metadata.create_all(expert_engine)
+    with expert_engine.begin() as connection:
+        connection.execute(users.insert().values(
+            id=7, username="zhang", name="张老师"
+        ))
+
+    audit = AuditService(AuditRepository(expert_engine), app_version="test-v1")
+    service = EquipmentResourcesService(
+        EquipmentResourcesRepository(expert_engine), audit
+    )
+    created = service.create_equipment(
+        {"name": "日志设备"}, actor_user_id=7, request_id="req-create-log"
+    )
+    service.update_equipment(
+        created["equipment_id"], {"name": "日志设备（新名）"},
+        actor_user_id=7, request_id="req-update-log",
+    )
+    service.delete_equipment(
+        created["equipment_id"], actor_user_id=7,
+        request_id="req-delete-log",
+    )
+
+    logs = service.list_logs("equipment", operation="删除设备", file_name="日志")
+
+    assert len(logs) == 1
+    assert logs[0]["operator"] == "张老师"
+    assert logs[0]["operation_type"] == "删除设备"
+    assert logs[0]["file_name"] == "日志设备（新名）"
+    all_logs = service.list_logs("equipment")
+    assert [item["file_name"] for item in all_logs] == [
+        "日志设备（新名）", "日志设备（新名）", "日志设备",
+    ]
+
+
+def test_equipment_log_route_keeps_the_existing_url(equipment_routes):
+    response = equipment_routes.get("/equipment/logs/equipment")
+
+    assert response.status_code == 200
+    assert "设备知识库 - 操作日志" in response.get_data(as_text=True)
 
 
 def test_equipment_dictionaries_are_database_backed(equipment_service):
@@ -966,11 +1077,6 @@ def test_host_routes_validate_and_export_from_resource_service(
 def test_equipment_images_and_attachments_use_controlled_file_service(
     equipment_routes, equipment_service, monkeypatch
 ):
-    class LogRecorder:
-        def add(self, **_values):
-            return None
-
-    monkeypatch.setattr("app.routes.equipment.OperationLogModel", LogRecorder)
     created = equipment_routes.post(
         "/equipment/add",
         data={

@@ -280,6 +280,7 @@ class EquipmentResourcesRepository:
     def __init__(self, engine) -> None:
         self.engine = engine
         metadata = sa.MetaData()
+        inspector = sa.inspect(engine)
         self.equipment = sa.Table("equipment", metadata, autoload_with=engine)
         self.knowledge_subclasses = sa.Table(
             "knowledge_subclasses", metadata, autoload_with=engine
@@ -298,6 +299,22 @@ class EquipmentResourcesRepository:
         )
         self.equipment_import_batches = sa.Table(
             "equipment_import_batches", metadata, autoload_with=engine
+        )
+        self.audit_events = (
+            sa.Table("audit_events", metadata, autoload_with=engine)
+            if inspector.has_table("audit_events") else None
+        )
+        self.users = (
+            sa.Table("users", metadata, autoload_with=engine)
+            if inspector.has_table("users") else None
+        )
+        self.object_files = (
+            sa.Table("object_files", metadata, autoload_with=engine)
+            if inspector.has_table("object_files") else None
+        )
+        self.stored_files = (
+            sa.Table("stored_files", metadata, autoload_with=engine)
+            if inspector.has_table("stored_files") else None
         )
 
     @staticmethod
@@ -364,6 +381,117 @@ class EquipmentResourcesRepository:
         return connection.execute(self.equipment.delete().where(
             self.equipment.c.equipment_id == equipment_id
         )).rowcount
+
+    def list_equipment_logs(
+        self, connection, *, operation=None, operator=None, file_name=None,
+        start_at=None, end_at=None, limit=100,
+    ):
+        events = self.audit_events
+        if events is None:
+            return []
+
+        metadata_operation = events.c.metadata["operation"].as_string()
+        import_event = events.c.action == "import_batch_completed"
+        file_event = events.c.action == "file_operation_completed"
+        direct_event = events.c.action == "equipment_operation"
+        operation_code = sa.case(
+            (import_event, sa.literal("IMPORT")),
+            else_=metadata_operation,
+        ).label("operation_code")
+
+        from_clause = events
+        effective_type = events.c.object_type
+        effective_id = events.c.object_id
+        if self.object_files is not None:
+            from_clause = from_clause.outerjoin(
+                self.object_files,
+                sa.and_(
+                    file_event,
+                    sa.cast(self.object_files.c.file_id, sa.Text) == events.c.object_id,
+                ),
+            )
+            effective_type = sa.case(
+                (file_event, self.object_files.c.object_type),
+                else_=events.c.object_type,
+            )
+            effective_id = sa.case(
+                (file_event, self.object_files.c.object_id),
+                else_=events.c.object_id,
+            )
+
+        from_clause = from_clause.outerjoin(
+            self.equipment,
+            sa.and_(
+                effective_type == "EQUIPMENT",
+                self.equipment.c.equipment_id == effective_id,
+            ),
+        ).outerjoin(
+            self.equipment_import_batches,
+            sa.and_(
+                import_event,
+                sa.cast(self.equipment_import_batches.c.id, sa.Text) == events.c.object_id,
+            ),
+        )
+
+        resource_name_snapshot = sa.case(
+            (direct_event, events.c.metadata["resource_name"].as_string()),
+            else_=sa.null(),
+        )
+        visible_name = sa.func.coalesce(
+            resource_name_snapshot,
+            self.equipment.c.name,
+            self.equipment_import_batches.c.source_name,
+            sa.literal(""),
+        )
+        if self.stored_files is not None and self.object_files is not None:
+            from_clause = from_clause.outerjoin(
+                self.stored_files,
+                sa.and_(
+                    file_event,
+                    self.stored_files.c.id == self.object_files.c.file_id,
+                ),
+            )
+            visible_name = sa.func.coalesce(
+                self.stored_files.c.original_name, visible_name
+            )
+
+        operator_name = sa.cast(events.c.actor_user_id, sa.Text)
+        if self.users is not None:
+            from_clause = from_clause.outerjoin(
+                self.users, self.users.c.id == events.c.actor_user_id
+            )
+            operator_name = sa.func.coalesce(
+                self.users.c.name, self.users.c.username, operator_name
+            )
+
+        statement = sa.select(
+            events.c.created_at,
+            events.c.result,
+            events.c.metadata,
+            operation_code,
+            visible_name.label("file_name"),
+            operator_name.label("operator_name"),
+        ).select_from(from_clause).where(sa.or_(
+            sa.and_(direct_event, events.c.object_type == "EQUIPMENT"),
+            sa.and_(
+                import_event,
+                events.c.metadata["module"].as_string() == "equipment",
+            ),
+            sa.and_(file_event, effective_type == "EQUIPMENT"),
+        ))
+        if operation:
+            statement = statement.where(sa.func.upper(operation_code) == operation)
+        if operator:
+            statement = statement.where(operator_name.ilike(self._pattern(operator), escape="\\"))
+        if file_name:
+            statement = statement.where(visible_name.ilike(self._pattern(file_name), escape="\\"))
+        if start_at is not None:
+            statement = statement.where(events.c.created_at >= start_at)
+        if end_at is not None:
+            statement = statement.where(events.c.created_at < end_at)
+        return [dict(row) for row in connection.execute(
+            statement.order_by(events.c.created_at.desc(), events.c.id.desc()).limit(limit)
+        ).mappings()]
 
     def list_research_units(self, connection):
         return [dict(row) for row in connection.execute(

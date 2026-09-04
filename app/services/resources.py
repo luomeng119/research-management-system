@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import re
@@ -617,6 +617,19 @@ class EquipmentResourcesService:
         self.repository = repository
         self.audit_service = audit_service
 
+    def _audit_equipment(
+        self, connection, *, operation, equipment_id, resource_name,
+        actor_user_id, request_id,
+    ):
+        if self.audit_service is None or actor_user_id is None:
+            return
+        self.audit_service.record(
+            connection, event_name="equipment_operation", user_id=actor_user_id,
+            object_type="EQUIPMENT", object_id=equipment_id, result="SUCCESS",
+            request_id=request_id or "unknown", duration_ms=0,
+            properties={"operation": operation, "resource_name": resource_name},
+        )
+
     def _values(self, payload, *, require_name=False):
         payload = payload or {}
         values = {}
@@ -1022,7 +1035,9 @@ class EquipmentResourcesService:
             row = self.repository.get_equipment(connection, str(equipment_id).strip())
         return dict(row) if row else None
 
-    def create_equipment(self, payload):
+    def create_equipment(
+        self, payload, *, actor_user_id=None, request_id="unknown"
+    ):
         values = self._values(payload, require_name=True)
         now = datetime.now(timezone.utc)
         equipment_id = "EQP" + now.strftime("%Y%m%d") + uuid.uuid4().hex[:10].upper()
@@ -1030,6 +1045,11 @@ class EquipmentResourcesService:
         values.setdefault("related_files", [])
         with self.repository.engine.begin() as connection:
             self.repository.insert_equipment(connection, values)
+            self._audit_equipment(
+                connection, operation="CREATE", equipment_id=equipment_id,
+                resource_name=values["name"], actor_user_id=actor_user_id,
+                request_id=request_id,
+            )
             row = self.repository.get_equipment(connection, equipment_id)
         return dict(row)
 
@@ -1058,7 +1078,9 @@ class EquipmentResourcesService:
                 self.repository.insert_equipment(connection, values)
         return len(values_list)
 
-    def update_equipment(self, equipment_id, payload):
+    def update_equipment(
+        self, equipment_id, payload, *, actor_user_id=None, request_id="unknown"
+    ):
         equipment_id = str(equipment_id or "").strip()
         values = self._values(payload)
         values["updated_at"] = datetime.now(timezone.utc)
@@ -1066,12 +1088,73 @@ class EquipmentResourcesService:
             if not self.repository.update_equipment(connection, equipment_id, values):
                 raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "设备不存在", 404)
             row = self.repository.get_equipment(connection, equipment_id)
+            self._audit_equipment(
+                connection, operation="UPDATE", equipment_id=equipment_id,
+                resource_name=row["name"], actor_user_id=actor_user_id,
+                request_id=request_id,
+            )
         return dict(row)
 
-    def delete_equipment(self, equipment_id):
+    def delete_equipment(
+        self, equipment_id, *, actor_user_id=None, request_id="unknown"
+    ):
+        equipment_id = str(equipment_id).strip()
         with self.repository.engine.begin() as connection:
-            if not self.repository.delete_equipment(connection, str(equipment_id).strip()):
+            row = self.repository.get_equipment(connection, equipment_id)
+            if row is None:
                 raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "设备不存在", 404)
+            if not self.repository.delete_equipment(connection, equipment_id):
+                raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "设备不存在", 404)
+            self._audit_equipment(
+                connection, operation="DELETE", equipment_id=equipment_id,
+                resource_name=row["name"], actor_user_id=actor_user_id,
+                request_id=request_id,
+            )
+
+    def list_logs(
+        self, module_name, *, operator=None, operation=None, file_name=None,
+        start_date=None, end_date=None,
+    ):
+        if module_name != "equipment":
+            return []
+        operation_codes = {
+            "添加设备": "CREATE", "删除设备": "DELETE",
+            "更新设备": "UPDATE",
+            "上传文件": "UPLOAD", "上传图片": "UPLOAD",
+            "导入文件": "IMPORT",
+        }
+        operation = str(operation or "").strip()
+        operation_code = operation_codes.get(operation, operation.upper() or None)
+        try:
+            start_at = (
+                datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+                if start_date else None
+            )
+            end_at = (
+                datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc)
+                + timedelta(days=1) if end_date else None
+            )
+        except ValueError as error:
+            raise ResourceServiceError("VALIDATION_ERROR", "日志日期格式无效", 422) from error
+        with self.repository.engine.connect() as connection:
+            rows = self.repository.list_equipment_logs(
+                connection, operation=operation_code,
+                operator=str(operator or "").strip() or None,
+                file_name=str(file_name or "").strip() or None,
+                start_at=start_at, end_at=end_at, limit=100,
+            )
+        labels = {
+            "CREATE": "添加设备", "UPDATE": "更新设备", "DELETE": "删除设备",
+            "UPLOAD": "上传文件", "ARCHIVE": "删除文件",
+            "IMPORT": "导入文件",
+        }
+        return [{
+            "timestamp": row["created_at"],
+            "operator": str(row.get("operator_name") or ""),
+            "operation_type": labels.get(row["operation_code"], row["operation_code"]),
+            "file_name": str(row.get("file_name") or ""),
+            "detail": "" if row.get("result") == "SUCCESS" else "操作失败",
+        } for row in rows]
 
     def list_research_units(self):
         with self.repository.engine.connect() as connection:

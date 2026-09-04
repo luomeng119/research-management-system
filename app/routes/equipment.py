@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify, send_file, current_app, Response, stream_with_context
-from app.models import OperationLogModel
 import os
 import re
 import csv
@@ -226,6 +225,7 @@ def add():
                     can_access_files=False, page_error=error.message,
                 ), error.status_code
         try:
+            identity = current_identity()
             created = _equipment_resources_service().create_equipment({
                 'name': name, 'model': model, 'category': category, 'form': form,
                 'price': price, 'techIndex': tech_index, 'techStatus': tech_status,
@@ -233,15 +233,12 @@ def add():
                 'manufacturer': manufacturer, 'mainPurpose': main_purpose,
                 'formerName': former_name, 'resourceGuarantee': resource_guarantee,
                 'subclass': subclass,
-            })
+            }, actor_user_id=identity.user_id if identity else None,
+               request_id=getattr(request, 'request_id', 'equipment-create'))
         except ResourceServiceError as error:
             flash(error.message, 'error')
             return render_template('equipment/add.html', subclasses_json=get_subclasses_json()), error.status_code
         equipment_id = created['equipment_id']
-
-        # 记录操作日志
-        log_model = OperationLogModel()
-        log_model.add(module='equipment', operation_type='添加设备', file_name=name, operator=session.get('user', '未知'))
 
         if image_files and any(f.filename for f in image_files):
             try:
@@ -328,6 +325,7 @@ def edit(equipment_id):
                 ), error.status_code
 
         try:
+            identity = current_identity()
             equipment_service.update_equipment(equipment_id, {
                 'name': name, 'model': model, 'category': category, 'form': form,
                 'price': price, 'techIndex': tech_index,
@@ -335,7 +333,8 @@ def edit(equipment_id):
                 'techStatus': tech_status, 'manufacturer': manufacturer,
                 'mainPurpose': main_purpose, 'formerName': former_name,
                 'resourceGuarantee': resource_guarantee, 'subclass': subclass,
-            })
+            }, actor_user_id=identity.user_id if identity else None,
+               request_id=getattr(request, 'request_id', 'equipment-update'))
         except ResourceServiceError as error:
             flash(error.message, 'error')
             return render_template(
@@ -375,16 +374,15 @@ def delete(equipment_id):
         return jsonify({'success': False, 'message': '未登录'})
 
     equipment_service = _equipment_resources_service()
-    equipment = equipment_service.get_equipment(equipment_id)
-    equipment_name = equipment['name'] if equipment else equipment_id
     try:
-        equipment_service.delete_equipment(equipment_id)
+        identity = current_identity()
+        equipment_service.delete_equipment(
+            equipment_id,
+            actor_user_id=identity.user_id if identity else None,
+            request_id=getattr(request, 'request_id', 'equipment-delete'),
+        )
     except ResourceServiceError as error:
         return jsonify({'success': False, 'message': error.message}), error.status_code
-
-    # 记录操作日志
-    log_model = OperationLogModel()
-    log_model.add(module='equipment', operation_type='删除设备', file_name=equipment_name, operator=session.get('user', '未知'))
 
     return jsonify({'success': True, 'message': '删除成功'})
 
@@ -1111,16 +1109,14 @@ def logs(module_name):
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
 
-    log_model = OperationLogModel()
-
-    logs = log_model.search(
-        module=module_name,
-        operation_type=operation_type,
+    logs = _equipment_resources_service().list_logs(
+        module_name,
+        operation=operation_type,
         operator=operator,
         file_name=file_name,
         start_date=start_date,
         end_date=end_date,
-        limit=100)
+    )
 
     module_names = {
         'equipment': '设备知识库',

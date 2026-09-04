@@ -35,6 +35,7 @@ EVENT_PROPERTIES = {
     "expert_sensitive_accessed": {"operation", "record_count"},
     "file_operation_completed": {"operation", "file_type", "size_bucket"},
     "reference_library_operation": {"operation"},
+    "equipment_operation": {"operation", "resource_name"},
     "expense_operation": {"operation", "object_count"},
     "import_batch_completed": {"module", "valid_count", "error_count", "duplicate_count"},
     "assistant_generation_completed": {"adapter_kind", "model_version", "prompt_version", "input_token_count", "output_token_count", "schema_valid", "remote_input_confirmed"},
