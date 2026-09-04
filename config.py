@@ -3,16 +3,22 @@ import os
 from datetime import timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_DATA_ROOT = os.environ.get('APP_DATA_ROOT')
+RUNTIME_ROOT = (
+    os.path.abspath(os.path.expanduser(APP_DATA_ROOT))
+    if APP_DATA_ROOT
+    else BASE_DIR
+)
 
 # Flask配置
 SECRET_KEY = None
 DEBUG = False
 
 # 路径配置
-DATA_DIR = os.path.join(BASE_DIR, 'data')
-UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
-DOCUMENTS_DIR = os.path.join(BASE_DIR, 'documents')
-BACKUP_DIR = os.path.join(BASE_DIR, 'backups')
+DATA_DIR = os.path.join(RUNTIME_ROOT, 'data')
+UPLOAD_DIR = os.path.join(RUNTIME_ROOT, 'uploads')
+DOCUMENTS_DIR = os.path.join(RUNTIME_ROOT, 'documents')
+BACKUP_DIR = os.path.join(RUNTIME_ROOT, 'backups')
 SESSION_FILE_DIR = os.path.join(DATA_DIR, 'flask_sessions')
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'

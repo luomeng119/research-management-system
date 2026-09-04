@@ -3,6 +3,7 @@ import logging
 import sqlite3
 
 import pytest
+import sqlalchemy as sa
 
 from app import create_app
 
@@ -56,9 +57,17 @@ def test_factory_rejects_production_without_flask_secret_key(tmp_path, monkeypat
 def test_factory_uses_explicit_stable_flask_secret_key_in_production(tmp_path, monkeypatch):
     deployment_key = "stable-deployment-secret-key"
     monkeypatch.setenv("FLASK_SECRET_KEY", deployment_key)
+    engine = sa.create_engine("sqlite+pysqlite:///:memory:")
 
-    first = create_app(app_config(tmp_path, TESTING=False, SECRET_KEY=None))
-    second = create_app(app_config(tmp_path, TESTING=False, SECRET_KEY=None))
+    config = app_config(
+        tmp_path,
+        TESTING=False,
+        SECRET_KEY=None,
+        DATABASE_ENGINE=engine,
+        SECURITY_AUTH_ENABLED=False,
+    )
+    first = create_app(config)
+    second = create_app(config)
 
     assert first.config["SECRET_KEY"] == deployment_key
     assert second.config["SECRET_KEY"] == deployment_key

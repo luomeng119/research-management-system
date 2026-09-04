@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 import uuid
+from pathlib import Path
 
 from flask import Flask, jsonify, redirect, request, session, url_for
 
-PUBLIC_ENDPOINTS = frozenset({"auth.login", "healthz", "static"})
+PUBLIC_ENDPOINTS = frozenset({"auth.login", "health_live", "health_ready", "healthz", "static"})
 PASSWORD_CHANGE_ENDPOINTS = frozenset({"auth.logout", "users.change_password", "static"})
 
 
@@ -38,7 +40,9 @@ def create_app(test_config=None):
 
     engine = app.config.get("DATABASE_ENGINE")
     database_url = app.config.get("DATABASE_URL") or os.environ.get("DATABASE_URL")
-    if engine is None and database_url and not app.config.get("TESTING"):
+    if engine is None and not app.config.get("TESTING"):
+        if not database_url:
+            raise RuntimeError("DATABASE_URL must be configured for non-testing environments")
         from app.db import initialize_runtime_database
 
         engine = initialize_runtime_database(database_url)
@@ -305,6 +309,67 @@ def create_app(test_config=None):
     @app.route("/healthz")
     def healthz():
         return {"status": "ok"}
+
+    @app.route("/health/live")
+    def health_live():
+        return {"status": "alive"}
+
+    @app.route("/health/ready")
+    def health_ready():
+        import sqlalchemy as sa
+
+        engine = app.extensions.get("database_engine")
+        checks = {
+            "database": "missing" if engine is None else "not_checked",
+            "schema": "not_checked",
+            "storage": "not_checked",
+        }
+        if engine is None:
+            return {"status": "not_ready", "checks": checks}, 503
+
+        try:
+            with engine.connect() as connection:
+                connection.execute(sa.text("SELECT 1")).scalar_one()
+        except sa.exc.SQLAlchemyError:
+            checks["database"] = "unavailable"
+            return {"status": "not_ready", "checks": checks}, 503
+        checks["database"] = "ok"
+
+        from app.db import check_schema_version
+
+        try:
+            check_schema_version(engine)
+        except RuntimeError as exc:
+            if isinstance(exc.__cause__, sa.exc.SQLAlchemyError):
+                checks["database"] = "unavailable"
+            else:
+                checks["schema"] = "mismatch"
+            return {"status": "not_ready", "checks": checks}, 503
+        checks["schema"] = "ok"
+
+        try:
+            for setting in (
+                "DATA_DIR",
+                "FILE_STORAGE_ROOT",
+                "SESSION_FILE_DIR",
+                "UPLOAD_DIR",
+                "DOCUMENTS_DIR",
+                "BACKUP_DIR",
+            ):
+                path = Path(app.config[setting])
+                path.mkdir(parents=True, exist_ok=True)
+                if not path.is_dir():
+                    raise OSError(f"{setting} is not a directory")
+                with tempfile.TemporaryFile(dir=path) as probe:
+                    probe.write(b"ready")
+                    probe.seek(0)
+                    if probe.read() != b"ready":
+                        raise OSError(f"{setting} is not readable")
+        except (OSError, TypeError, ValueError):
+            checks["storage"] = "unwritable"
+            return {"status": "not_ready", "checks": checks}, 503
+        checks["storage"] = "ok"
+        return {"status": "ready", "checks": checks}
 
     @app.before_request
     def establish_request_context():
