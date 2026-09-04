@@ -261,6 +261,7 @@ def equipment_service(expert_engine):
 
 @pytest.fixture
 def equipment_routes(expert_engine, equipment_service, tmp_path):
+    from app.routes.api import bp as api_bp
     from app.routes.equipment import bp as equipment_bp
     from app.routes.equipment_groups import bp as groups_bp
     from app.routes.host_devices import bp as hosts_bp
@@ -287,6 +288,7 @@ def equipment_routes(expert_engine, equipment_service, tmp_path):
     app.add_url_rule("/test/users", endpoint="users.index", view_func=lambda: "")
     app.add_url_rule("/test/password", endpoint="users.change_password", view_func=lambda: "")
     app.register_blueprint(equipment_bp)
+    app.register_blueprint(api_bp)
     app.register_blueprint(groups_bp)
     app.register_blueprint(hosts_bp)
     app.register_blueprint(projects_bp)
@@ -337,8 +339,13 @@ def test_expert_runtime_has_no_sqlite_or_temp_file_fallback():
 
 def test_equipment_runtime_has_no_legacy_operation_log_fallback():
     equipment_source = (ROOT / "app/routes/equipment.py").read_text(encoding="utf-8")
+    api_source = (ROOT / "app/routes/api.py").read_text(encoding="utf-8")
+    fuzzy_source = (ROOT / "app/utils/fuzzy_match.py").read_text(encoding="utf-8")
 
     assert "OperationLogModel" not in equipment_source
+    assert "EquipmentModel" not in api_source
+    assert "OperationLogModel" not in api_source
+    assert "get_db" not in fuzzy_source
 
 
 def test_equipment_stats_merge_null_category_into_general(equipment_service):
@@ -454,6 +461,56 @@ def test_equipment_log_route_keeps_the_existing_url(equipment_routes):
 
     assert response.status_code == 200
     assert "设备知识库 - 操作日志" in response.get_data(as_text=True)
+
+
+def test_equipment_api_search_and_logs_use_the_resource_service(
+    equipment_routes, equipment_service, monkeypatch
+):
+    equipment = equipment_service.create_equipment({
+        "name": "API科研设备", "model": "API-1", "category": "通用设备"
+    })
+    host = equipment_service.create_host_device({
+        "name": "API宿主设备", "model": "HOST-1", "category": "服务器"
+    })
+
+    search = equipment_routes.get(
+        "/api/equipment/hosts/search?keyword=API科研&page=1"
+    ).get_json()
+    fuzzy_equipment = equipment_routes.get(
+        "/api/fuzzy-match/equipment?q=API科研"
+    ).get_json()
+    fuzzy_host = equipment_routes.get(
+        "/api/fuzzy-match/host-device?q=API宿主"
+    ).get_json()
+    monkeypatch.setattr(equipment_service, "list_logs", lambda *_args, **_kwargs: [
+        {
+            "timestamp": datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc),
+            "operator": "李老师", "operation_type": "更新设备",
+            "file_name": "API科研设备（新名）", "detail": "",
+        },
+        {
+            "timestamp": datetime(2026, 9, 4, 9, 0, tzinfo=timezone.utc),
+            "operator": "张老师", "operation_type": "添加设备",
+            "file_name": "API科研设备", "detail": "",
+        },
+    ])
+    logs = equipment_routes.get("/api/logs/equipment").get_json()
+    all_logs = equipment_routes.get("/api/logs").get_json()
+
+    assert search["data"][0]["equipment_id"] == equipment["equipment_id"]
+    assert fuzzy_equipment["data"][0]["id"] == equipment["equipment_id"]
+    assert fuzzy_host["data"][0]["id"] == host["host_id"]
+    assert logs["code"] == 0
+    assert logs["data"] == all_logs["data"]
+    assert [row["operation_type"] for row in logs["data"]] == [
+        "添加设备", "更新设备",
+    ]
+    assert set(logs["data"][0]) == {
+        "id", "timestamp", "module", "module_name", "operation_type",
+        "file_name", "operator", "detail",
+    }
+    assert logs["data"][0]["module"] == "equipment"
+    assert logs["data"][0]["module_name"] == "设备知识库"
 
 
 def test_equipment_dictionaries_are_database_backed(equipment_service):

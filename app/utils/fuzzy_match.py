@@ -4,7 +4,7 @@
 给定任意设备名称/型号字符串，匹配到 host_devices 或 equipment 表中对应记录
 """
 import re
-from app.models import get_db
+from flask import current_app
 
 # 去噪声词列表
 NOISE_PATTERNS = [
@@ -61,131 +61,20 @@ def _levenshtein(s1: str, s2: str) -> int:
     return prev_row[-1]
 
 
-def _match(text: str, table: str, id_col: str, name_col: str, model_col: str) -> dict:
-    """
-    通用匹配逻辑
+def _resource_service():
+    service = current_app.extensions.get('equipment_resources_service')
+    if service is None:
+        raise RuntimeError('equipment resources service is not configured')
+    return service
 
-    参数:
-        table: 表名 ('equipment' 或 'host_devices')
-        id_col: ID列名
-        name_col: name列名
-        model_col: model列名
 
-    返回:
-        dict: {
-            'original': 原始字符串,
-            'devices': [
-                {
-                    'name': 子串,
-                    'exact': [命中的设备dict列表],
-                    'fuzzy': [模糊候选dict列表],
-                    'status': 'exact' | 'fuzzy' | 'unmatched',
-                    'selected': 命中的dict或None
-                }
-            ]
-        }
-    """
-    names = split_device_names(text)
-    if not names:
-        return {'original': text, 'devices': []}
-
-    result = {'original': text, 'devices': []}
-
-    for sub_name in names:
-        sub_name = sub_name.strip()
-        if not sub_name:
-            continue
-
-        exact = []
-        fuzzy = []
-
-        with get_db() as conn:
-            c = conn.cursor()
-
-            # 1. 精确匹配: name = sub_name or model = sub_name
-            c.execute(
-                f"SELECT * FROM {table} WHERE {name_col} = ? OR {model_col} = ?",
-                (sub_name, sub_name)
-            )
-            exact = [dict(row) for row in c.fetchall()]
-
-            if exact:
-                result['devices'].append({
-                    'name': sub_name,
-                    'exact': exact,
-                    'fuzzy': [],
-                    'status': 'exact',
-                    'selected': exact[0]
-                })
-                continue
-
-            # 2. 去噪声匹配
-            cleaned = _normalize(sub_name)
-            if cleaned and cleaned != sub_name:
-                c.execute(
-                    f"SELECT * FROM {table} WHERE {name_col} LIKE ? OR {model_col} LIKE ?",
-                    (f'%{cleaned}%', f'%{cleaned}%')
-                )
-                noise_matches = [dict(row) for row in c.fetchall()]
-                if noise_matches:
-                    exact = noise_matches
-                    result['devices'].append({
-                        'name': sub_name,
-                        'exact': [],
-                        'fuzzy': exact,
-                        'status': 'fuzzy',
-                        'selected': None
-                    })
-                    continue
-
-            # 3. 模糊相似度匹配: 编辑距离 < 3 且长度 > 5，或包含匹配
-            c.execute(f"SELECT * FROM {table}")
-            all_rows = [dict(row) for row in c.fetchall()]
-
-            for row in all_rows:
-                row_name = row.get(name_col, '') or ''
-                row_model = row.get(model_col, '') or ''
-                # 包含匹配
-                if (cleaned and (
-                    cleaned in row_name or cleaned in row_model or
-                    row_name in cleaned or row_model in cleaned
-                )):
-                    fuzzy.append(row)
-                    continue
-                # 编辑距离 < 3 且长度 > 5
-                if len(sub_name) > 5 and len(cleaned) > 5:
-                    if (_levenshtein(sub_name, row_name) < 3 or
-                        _levenshtein(cleaned, row_name) < 3 or
-                        _levenshtein(sub_name, row_model) < 3):
-                        fuzzy.append(row)
-
-            # 去重
-            seen_ids = set()
-            fuzzy_unique = []
-            for f in fuzzy:
-                fid = f.get(id_col)
-                if fid not in seen_ids:
-                    seen_ids.add(fid)
-                    fuzzy_unique.append(f)
-
-            if fuzzy_unique:
-                result['devices'].append({
-                    'name': sub_name,
-                    'exact': [],
-                    'fuzzy': fuzzy_unique,
-                    'status': 'fuzzy',
-                    'selected': None
-                })
-            else:
-                result['devices'].append({
-                    'name': sub_name,
-                    'exact': [],
-                    'fuzzy': [],
-                    'status': 'unmatched',
-                    'selected': None
-                })
-
-    return result
+def _match(text: str, table: str, _id_col: str, _name_col: str, _model_col: str) -> dict:
+    """Compatibility entry point backed by the current resource service."""
+    if table == 'equipment':
+        return _resource_service().match_equipment_text(text)
+    if table == 'host_devices':
+        return _resource_service().match_host_device_text(text)
+    raise ValueError('unsupported resource table')
 
 
 def match_equipment(text: str) -> dict:
@@ -208,59 +97,26 @@ def fuzzy_search_equipment(keyword: str, limit: int = 10) -> list[dict]:
     """供 API 调用，返回简单列表"""
     if not keyword or len(keyword.strip()) < 1:
         return []
-    keyword = keyword.strip()
-    results = []
-    with get_db() as conn:
-        c = conn.cursor()
-        # 精确优先，再模糊
-        c.execute(
-            "SELECT equipment_id, name, model FROM equipment "
-            "WHERE name LIKE ? OR model LIKE ? "
-            "LIMIT ?",
-            (f'%{keyword}%', f'%{keyword}%', limit * 2)
-        )
-        seen = set()
-        for row in c.fetchall():
-            rid = row['equipment_id']
-            if rid not in seen:
-                seen.add(rid)
-                results.append({
-                    'id': rid,
-                    'name': row['name'],
-                    'model': row['model'] or ''
-                })
-                if len(results) >= limit:
-                    break
-    return results
+    rows = _resource_service().list_equipment(
+        page=1, page_size=min(max(int(limit), 1), 100), keyword=keyword.strip()
+    )['items']
+    return [{
+        'id': row['equipment_id'], 'name': row['name'],
+        'model': row.get('model') or '',
+    } for row in rows]
 
 
 def fuzzy_search_host_device(keyword: str, limit: int = 10) -> list[dict]:
     """供 API 调用，返回简单列表"""
     if not keyword or len(keyword.strip()) < 1:
         return []
-    keyword = keyword.strip()
-    results = []
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute(
-            "SELECT host_id, name, model FROM host_devices "
-            "WHERE name LIKE ? OR model LIKE ? "
-            "LIMIT ?",
-            (f'%{keyword}%', f'%{keyword}%', limit * 2)
-        )
-        seen = set()
-        for row in c.fetchall():
-            rid = row['host_id']
-            if rid not in seen:
-                seen.add(rid)
-                results.append({
-                    'id': rid,
-                    'name': row['name'],
-                    'model': row['model'] or ''
-                })
-                if len(results) >= limit:
-                    break
-    return results
+    rows = _resource_service().list_host_devices(
+        page=1, page_size=min(max(int(limit), 1), 100), keyword=keyword.strip()
+    )['items']
+    return [{
+        'id': row['host_id'], 'name': row['name'],
+        'model': row.get('model') or '',
+    } for row in rows]
 
 
 def match_research_unit(unit_name: str, model) -> dict:

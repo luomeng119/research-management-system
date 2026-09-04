@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, jsonify, session, current_app, request
-from app.models import ProjectModel, EquipmentModel, StandardModel, DIRECTORIES, OperationLogModel, SecurityProjectModel, CryptoProjectModel, ExpertModel
+from app.models import ProjectModel, DIRECTORIES, SecurityProjectModel, CryptoProjectModel
 from app.routes._project_bridge import all_legacy_projects
+from app.services.resources import ResourceServiceError
 from config import VERSION
 from app.security.auth import maintenance_required
 import os
@@ -12,20 +13,74 @@ def get_user_directories():
     """All authenticated V1 business accounts receive the same navigation."""
     return DIRECTORIES
 
+
+def _equipment_resources_service():
+    service = current_app.extensions.get('equipment_resources_service')
+    if service is None:
+        raise ResourceServiceError(
+            'RESOURCE_SERVICE_UNAVAILABLE', '科研资源服务未就绪', 503
+        )
+    return service
+
+
+LOG_MODULE_NAMES = {
+    'equipment': '设备知识库',
+    'standards': '标准法规库',
+    'templates': '科研模板',
+    'security': '安全保密项目',
+    'crypto': '密码应用项目',
+}
+
+
+def _current_logs(module_name):
+    filters = {
+        'operator': request.args.get('operator'),
+        'file_name': request.args.get('file_name'),
+        'start_date': request.args.get('start_date'),
+        'end_date': request.args.get('end_date'),
+        'operation': request.args.get('operation_type'),
+    }
+    if module_name == 'equipment':
+        return _equipment_resources_service().list_logs(module_name, **filters)
+    if module_name in {'standards', 'templates'}:
+        service = current_app.extensions.get('reference_library_service')
+        return service.list_logs(module_name, **filters) if service is not None else []
+    return []
+
+
+def _api_logs(module_name=None):
+    modules = [module_name] if module_name else list(LOG_MODULE_NAMES)
+    collected = [
+        (module, item)
+        for module in modules
+        for item in _current_logs(module)
+    ]
+    collected.sort(key=lambda pair: str(pair[1].get('timestamp') or ''))
+    result = []
+    for index, (module, item) in enumerate(collected[-100:], start=1):
+        timestamp = item.get('timestamp')
+        if hasattr(timestamp, 'strftime'):
+            timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        result.append({
+            'id': index,
+            'timestamp': str(timestamp or ''),
+            'module': module,
+            'module_name': LOG_MODULE_NAMES.get(module, module),
+            'operation_type': item.get('operation_type') or '',
+            'file_name': item.get('file_name') or '',
+            'operator': item.get('operator') or '',
+            'detail': item.get('detail') or '',
+        })
+    return result
+
 @bp.route('/tree')
 def tree():
     """获取目录树结构（根据用户权限过滤）"""
-    equipment_model = EquipmentModel()
-    standard_model = StandardModel()
-    
     project_service = current_app.extensions.get('project_service')
     projects = (
         all_legacy_projects(project_service, 'GENERAL_RESEARCH')
         if project_service is not None else ProjectModel().get_all()
     )
-    equipment = equipment_model.get_all()
-    standards = standard_model.get_all()
-    
     # 获取用户可见的目录
     visible_dirs = get_user_directories()
     
@@ -423,22 +478,11 @@ def get_logs():
         return jsonify({'code': 1, 'msg': '未登录'})
     
     module = request.args.get('module')
-    operator = request.args.get('operator')
-    file_name = request.args.get('file_name')
-    start_date = request.args.get('start_date')
-    end_date = request.args.get('end_date')
-    
-    log_model = OperationLogModel()
-    logs = log_model.search(
-        module=module,
-        operator=operator,
-        file_name=file_name,
-        start_date=start_date,
-        end_date=end_date,
-        limit=100
-    )
-    
-    return jsonify({'code': 0, 'data': logs})
+    try:
+        logs = _api_logs(module)
+        return jsonify({'code': 0, 'data': logs})
+    except ResourceServiceError as error:
+        return jsonify({'code': 2, 'msg': error.message}), error.status_code
 
 @bp.route('/logs/<module_name>')
 def get_module_logs(module_name):
@@ -446,10 +490,10 @@ def get_module_logs(module_name):
     if 'user' not in session:
         return jsonify({'code': 1, 'msg': '未登录'})
     
-    log_model = OperationLogModel()
-    logs = log_model.get_by_module(module_name, limit=100)
-    
-    return jsonify({'code': 0, 'data': logs})
+    try:
+        return jsonify({'code': 0, 'data': _api_logs(module_name)})
+    except ResourceServiceError as error:
+        return jsonify({'code': 2, 'msg': error.message}), error.status_code
 
 
 # ============ LLM / AI 功能接口 ============
@@ -564,26 +608,24 @@ def equipment_hosts_search():
     page = int(request.args.get('page', 1))
     per_page = 20
 
-    equipment_model = EquipmentModel()
-    all_equipment = equipment_model.search(category=category if category else None, keyword=keyword if keyword else None)
-
-    total = len(all_equipment)
+    try:
+        result = _equipment_resources_service().list_equipment(
+            page=page, page_size=per_page, category=category, keyword=keyword
+        )
+    except ResourceServiceError as error:
+        return jsonify({'code': 2, 'msg': error.message}), error.status_code
+    all_equipment = result['items']
+    total = result['total']
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
-    start = (page - 1) * per_page
-    end = start + per_page
     data = [{
         'equipment_id': e['equipment_id'],
         'name': e['name'],
         'model': e['model'],
         'category': e['category'],
         'tech_status': e.get('tech_status', '')
-    } for e in all_equipment[start:end]]
+    } for e in all_equipment]
 
     return jsonify({'code': 0, 'data': data, 'total': total, 'page': page, 'total_pages': total_pages})
-
-
-# ---------- 模糊匹配 API ----------
-from app.utils.fuzzy_match import fuzzy_search_equipment, fuzzy_search_host_device
 
 
 @bp.route('/fuzzy-match/equipment')
@@ -594,7 +636,16 @@ def fuzzy_match_equipment():
     keyword = request.args.get('q', '') or request.args.get('keyword', '')
     if len(keyword) < 1:
         return jsonify({'success': True, 'data': []})
-    results = fuzzy_search_equipment(keyword, limit=20)
+    try:
+        rows = _equipment_resources_service().list_equipment(
+            page=1, page_size=20, keyword=keyword
+        )['items']
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
+    results = [{
+        'id': row['equipment_id'], 'name': row['name'],
+        'model': row.get('model') or '',
+    } for row in rows]
     return jsonify({'success': True, 'data': results})
 
 
@@ -606,5 +657,14 @@ def fuzzy_match_host_device():
     keyword = request.args.get('q', '') or request.args.get('keyword', '')
     if len(keyword) < 1:
         return jsonify({'success': True, 'data': []})
-    results = fuzzy_search_host_device(keyword, limit=20)
+    try:
+        rows = _equipment_resources_service().list_host_devices(
+            page=1, page_size=20, keyword=keyword
+        )['items']
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
+    results = [{
+        'id': row['host_id'], 'name': row['name'],
+        'model': row.get('model') or '',
+    } for row in rows]
     return jsonify({'success': True, 'data': results})
