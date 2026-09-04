@@ -190,12 +190,13 @@ def create_app(test_config=None):
             "equipment", "knowledge_subclasses", "research_units",
             "equipment_groups", "equipment_group_members", "host_devices",
             "host_device_categories", "device_host_relations",
+            "equipment_import_batches",
         )):
             from app.repositories.resources import EquipmentResourcesRepository
             from app.services.resources import EquipmentResourcesService
 
             equipment_resources_service = EquipmentResourcesService(
-                EquipmentResourcesRepository(engine)
+                EquipmentResourcesRepository(engine), audit_service
             )
     if equipment_resources_service is not None:
         app.extensions["equipment_resources_service"] = equipment_resources_service

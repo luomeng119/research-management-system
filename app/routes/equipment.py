@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify, send_file, current_app, Response, stream_with_context
-from app.models import EquipmentModel, OperationLogModel, DeviceHostRelationModel, HostDeviceModel, ResearchUnitModel, KnowledgeSubclassModel, get_db
+from app.models import OperationLogModel
 import os
 import re
 import csv
@@ -8,8 +8,6 @@ import io
 import json
 import threading
 import time
-import uuid
-from datetime import datetime
 
 from app.utils import import_progress as ip
 from app.security.auth import BUSINESS_USER, current_identity
@@ -483,7 +481,6 @@ def export():
 
 
 # ---------- 三步导入流程 ----------
-from app.utils.fuzzy_match import match_host_device, match_research_unit, match_subclass
 
 
 @bp.route('/import', methods=['GET'])
@@ -520,13 +517,16 @@ def import_preview():
     preview_only = request.form.get('preview_only', '') == '1'
 
     try:
-        stream = BytesIO(file.read())
-        workbook = openpyxl.load_workbook(stream, data_only=True)
+        source_bytes = file.read()
+        stream = BytesIO(source_bytes)
+        workbook = openpyxl.load_workbook(stream, data_only=True, read_only=True)
         ws = workbook.active
 
         all_rows = []
         for row in ws.iter_rows(values_only=True):
             all_rows.append(list(row))
+            if len(all_rows) >= (11 if preview_only else 1002):
+                break
 
         if len(all_rows) < 2:
             return jsonify({'success': False, 'message': '文件数据少于2行'})
@@ -541,6 +541,8 @@ def import_preview():
                 'headers': header,
                 'preview_rows': [[str(c) if c is not None else '' for c in row] for row in preview_rows],
             })
+        if len(data_rows) > 1000:
+            return jsonify({'success': False, 'message': '单次导入不能超过 1000 条'}), 422
 
         # 完整解析模式
         try:
@@ -556,8 +558,7 @@ def import_preview():
         if default_category not in valid_categories:
             return jsonify({'success': False, 'message': f'无效的分类：{default_category}（仅支持 安全设备/密码设备/通用设备）'}), 400
 
-        equipment_model = EquipmentModel()
-        rel_model = DeviceHostRelationModel()
+        equipment_service = _equipment_resources_service()
         related_col_idx = column_mapping.get('related_host_devices')
 
         processed = []
@@ -597,14 +598,13 @@ def import_preview():
             duplicate_status = None
             existing_eq = None
             if equipment_id_raw:
-                existing_eq = equipment_model.get_by_id(str(equipment_id_raw))
+                existing_eq = equipment_service.find_import_duplicate(
+                    equipment_id=equipment_id_raw
+                )
             else:
-                # 按 name+model 查找
-                all_eq = equipment_model.get_all()
-                for eq in all_eq:
-                    if eq.get('name') == name and (not model or eq.get('model') == model):
-                        existing_eq = eq
-                        break
+                existing_eq = equipment_service.find_import_duplicate(
+                    name=name, model=model
+                )
 
             if existing_eq:
                 duplicate_status = 'exists'
@@ -619,7 +619,7 @@ def import_preview():
             related_result = {'original': '', 'devices': []}
             if related_col_idx is not None and related_col_idx < len(row):
                 related_text = str(row[related_col_idx] or '').strip()
-                related_result = match_host_device(related_text)
+                related_result = equipment_service.match_host_device_text(related_text)
 
                 for dev in related_result['devices']:
                     if dev['status'] == 'exact':
@@ -631,7 +631,6 @@ def import_preview():
 
             # 研制单位模糊匹配
             manufacturer_result = {'original': manufacturer, 'units': []}
-            ru_model = ResearchUnitModel()
             if manufacturer:
                 # 按 、 ， ； 分隔
                 parts = re.split(r'[、，；]', manufacturer)
@@ -639,7 +638,7 @@ def import_preview():
                     part = part.strip()
                     if not part:
                         continue
-                    mru = match_research_unit(part, ru_model)
+                    mru = equipment_service.match_research_unit_name(part)
                     unit_entry = {
                         'original': part,
                         'matched': mru['matched'],
@@ -657,9 +656,8 @@ def import_preview():
 
             # 设备子类模糊匹配
             subclass_result = {'original': subclass, 'matched': None, 'exact': False, 'method': 'none'}
-            sc_model = KnowledgeSubclassModel()
             if subclass:
-                ms = match_subclass(subclass, sc_model, category)
+                ms = equipment_service.match_subclass_name(subclass, category)
                 subclass_result = {
                     'original': subclass,
                     'matched': ms['matched'],
@@ -698,7 +696,11 @@ def import_preview():
                 'is_new_category': is_new_category,
                 'price_error': price_error,
                 'duplicate_status': duplicate_status,
-                'existing_equipment': dict(existing_eq) if existing_eq else None,
+                'existing_equipment': ({
+                    'equipment_id': str(existing_eq.get('equipment_id') or ''),
+                    'name': str(existing_eq.get('name') or ''),
+                    'model': str(existing_eq.get('model') or ''),
+                } if existing_eq else None),
                 'related_result': related_result,
                 'manufacturer_result': manufacturer_result,
                 'subclass_result': subclass_result,
@@ -716,12 +718,16 @@ def import_preview():
             'new_category': new_category_count,
         }
 
-        session['equipment_import_preview'] = {
-            'filename': file.filename,
-            'column_mapping': column_mapping,
-            'processed': processed,
-            'statistics': statistics,
-        }
+        identity = current_identity()
+        if identity is None:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        batch = equipment_service.create_equipment_import_preview(
+            source_name=file.filename, source_bytes=source_bytes,
+            rows=processed, statistics=statistics,
+            owner_user_id=identity.user_id,
+        )
+        session['equipment_import_batch_id'] = batch['batchId']
+        session.pop('equipment_import_preview', None)
 
         return jsonify({'success': True, 'redirect': url_for('equipment.import_preview_page')})
 
@@ -741,15 +747,11 @@ def _eq_get_row_value(row, column_mapping, field):
 
 @bp.route('/import/save_row', methods=['POST'])
 def import_save_row():
-    """[REQ-013] AJAX: 保存单行修改到 session（用户翻页前自动同步）
-
-    请求: form 字段 row_idx=N, field=name|model|category|..., value=xxx
-    效果: 更新 session['equipment_import_preview']['processed'][idx][field] = value
-    """
+    """AJAX: 将单行修改写回当前用户的持久化导入批次。"""
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'}), 401
-    preview_data = session.get('equipment_import_preview')
-    if not preview_data:
+    batch_id = session.get('equipment_import_batch_id')
+    if not batch_id:
         return jsonify({'success': False, 'message': '会话过期'}), 400
 
     try:
@@ -759,40 +761,17 @@ def import_save_row():
 
     field = request.form.get('field', '').strip()
     value = request.form.get('value', '').strip()
-    # 允许的字段
-    allowed_fields = {'name', 'model', 'category', 'form', 'price', 'tech_index',
-                      'tech_status', 'manufacturer', 'main_purpose', 'former_name',
-                      'resource_guarantee', 'installation_requirements',
-                      'subclass', 'subclass_action', 'dup_action'}
-    if field not in allowed_fields:
-        return jsonify({'success': False, 'message': f'不允许的字段: {field}'}), 400
-
-    # 找到对应行并更新
-    target = None
-    for r in preview_data['processed']:
-        if r.get('row_idx') == row_idx:
-            target = r
-            break
-    if not target:
-        return jsonify({'success': False, 'message': f'行 {row_idx} 不存在'}), 404
-
-    # price 特殊处理
-    if field == 'price':
-        try:
-            target['price'] = float(value) if value else None
-        except ValueError:
-            target['price_error'] = '价格格式错误'
-    elif field == 'subclass_action':
-        target.setdefault('_user_actions', {})[field] = value
-    elif field == 'dup_action':
-        target.setdefault('_user_actions', {})[field] = value
-    else:
-        target[field] = value
-
-    # session 写回
-    session['equipment_import_preview'] = preview_data
-    session.modified = True
-    return jsonify({'success': True, 'row_idx': row_idx, 'field': field, 'value': value})
+    identity = current_identity()
+    if identity is None:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    try:
+        _equipment_resources_service().update_equipment_import_row(
+            batch_id, owner_user_id=identity.user_id, row_idx=row_idx,
+            field=field, value=value,
+        )
+        return jsonify({'success': True, 'row_idx': row_idx, 'field': field, 'value': value})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
 @bp.route('/import/preview', methods=['GET'])
@@ -806,10 +785,25 @@ def import_preview_page():
     """
     if 'user' not in session:
         return redirect(url_for('auth.login'))
-    preview_data = session.get('equipment_import_preview')
-    if not preview_data:
+    batch_id = session.get('equipment_import_batch_id')
+    if not batch_id:
         flash('请先上传文件', 'error')
         return redirect(url_for('equipment.import_page'))
+    identity = current_identity()
+    if identity is None:
+        return redirect(url_for('auth.login'))
+    try:
+        batch = _equipment_resources_service().get_equipment_import_batch(
+            batch_id, owner_user_id=identity.user_id
+        )
+    except ResourceServiceError:
+        session.pop('equipment_import_batch_id', None)
+        flash('导入批次不存在或已过期', 'error')
+        return redirect(url_for('equipment.import_page'))
+    preview_data = {
+        'filename': batch['sourceName'], 'processed': batch['rows'],
+        'statistics': batch['statistics'],
+    }
 
     # 读取分页/筛选参数
     try:
@@ -885,26 +879,41 @@ def import_commit():
     """
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录', 'redirect': url_for('auth.login')}), 401
-    preview_data = session.get('equipment_import_preview')
-    if not preview_data:
+    batch_id = session.get('equipment_import_batch_id')
+    if not batch_id:
         return jsonify({'success': False, 'message': '会话过期，请重新上传'}), 400
 
     # [REQ-014-fix] 改用 JSON body（form 受 Flask max_form_memory_size 限制，大数据量 413）
     form_data = request.get_json(silent=True) or {}
 
-    total = len(preview_data.get('processed', []))
+    identity = current_identity()
+    if identity is None:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    try:
+        batch = _equipment_resources_service().get_equipment_import_batch(
+            batch_id, owner_user_id=identity.user_id
+        )
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
+    total = len(batch.get('rows', []))
 
     # 创建进度任务
-    task_id = ip.create_task(total=total, user=session.get('user', ''))
+    task_id = ip.create_task(
+        total=total, user=session.get('user', ''),
+        owner_user_id=identity.user_id,
+    )
 
     # 关键：路由内立即 pop session，避免重复提交
-    session.pop('equipment_import_preview', None)
-    # 防止 Flask session 大小超限（文件系统 session 不怕大，但保险起见）
+    session.pop('equipment_import_batch_id', None)
 
     # 启动后台线程跑导入
     t = threading.Thread(
         target=_do_import_thread,
-        args=(task_id, preview_data, form_data),
+        args=(
+            task_id, _equipment_resources_service(), batch_id, form_data,
+            identity.user_id,
+            getattr(request, 'request_id', 'equipment-import'),
+        ),
         daemon=True,
         name=f'import-{task_id[:8]}',
     )
@@ -935,169 +944,26 @@ def api_search():
         return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
-def _do_import_thread(task_id: str, preview_data: dict, form_data: dict):
-    """后台线程：实际执行导入（事务原子 + 进度更新 + 可取消）
-
-    [REQ-014] 关键改进：
-    - 整批 1 个 connection + 1 个事务（旧版 1000 行 = 3000 个连接/事务）
-    - 失败时 ROLLBACK 全部回滚（旧版半成品）
-    - 每条 update_progress，每 10 行检查 cancel_requested
-    """
-    processed = preview_data.get('processed', [])
-    total = len(processed)
-
-    imported_new = 0
-    imported_overwrite = 0
-    skipped = 0
-    relations_created = 0
-    skipped_relations = []
-
-    # 写操作日志用
-    operation_log = OperationLogModel()
-    # [Bug fix 2026-06-25] 后台线程不能读 flask session（RuntimeError）
-    # 从 progress 字典里读 user（路由里 ip.create_task 时已传入）
-    _p = ip.get_progress(task_id)
-    user = _p.get('user', 'unknown') if _p else 'unknown'
-
-    conn = None
-    i = 0
-    current_name = ''
+def _do_import_thread(
+    task_id, service, batch_id, form_data, owner_user_id, request_id
+):
+    """在无 Flask 请求上下文的后台线程中执行原子导入。"""
     try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute('BEGIN IMMEDIATE')  # 写锁，避免并发冲突
-
-        for i, row_data in enumerate(processed):
-            # 检查取消
-            if i > 0 and i % 10 == 0 and ip.is_cancel_requested(task_id):
-                conn.rollback()
-                conn.close()
-                ip.mark_cancelled(task_id, saved_count=i)
-                return
-
-            row_idx = row_data['row_idx']
-            current_name = ''
-
-            # 解析单行 form
-            name = form_data.get(f'name_{row_idx}', row_data.get('name', '')).strip()
-            if not name:
-                skipped += 1
-                ip.update_progress(task_id, i + 1, '<跳过（无名称）>')
-                continue
-
-            model = form_data.get(f'model_{row_idx}', row_data.get('model', '')).strip()
-            category = form_data.get(f'category_{row_idx}', row_data.get('category', '')).strip()
-            if not category or category not in {'安全设备', '密码设备', '通用设备', '其他设备'}:
-                category = '其他设备'
-            form_val = form_data.get(f'form_{row_idx}', row_data.get('form', '')).strip()
-            price_str = form_data.get(f'price_{row_idx}', row_data.get('price', '') or '').strip()
-            # [REQ-014] 单价默认 0（不是 None / NULL）
-            price = 0.0
-            if price_str:
-                try:
-                    price = float(price_str)
-                except (ValueError, TypeError):
-                    price = 0.0
-            tech_index = form_data.get(f'tech_index_{row_idx}', row_data.get('tech_index', '')).strip()
-            tech_status = form_data.get(f'tech_status_{row_idx}', row_data.get('tech_status', '')).strip() or '货架产品'
-            manufacturer = form_data.get(f'manufacturer_{row_idx}', row_data.get('manufacturer', '')).strip()
-            main_purpose = form_data.get(f'main_purpose_{row_idx}', row_data.get('main_purpose', '')).strip()
-            former_name = form_data.get(f'former_name_{row_idx}', row_data.get('former_name', '')).strip()
-            resource_guarantee = form_data.get(f'resource_guarantee_{row_idx}', row_data.get('resource_guarantee', '')).strip()
-            installation_requirements = form_data.get(f'installation_requirements_{row_idx}', row_data.get('installation_requirements', '')).strip()
-            subclass = form_data.get(f'subclass_{row_idx}', '').strip()
-            subclass_action = form_data.get(f'subclass_action_{row_idx}', '').strip()
-            dup_action = form_data.get(f'dup_action_{row_idx}', '')
-
-            # 处理新增子类确认
-            if subclass_action == 'confirm' and subclass:
-                sc_model = KnowledgeSubclassModel()
-                # 用同一个 conn 而不是新开连接（事务原子性关键）
-                try:
-                    # 复制 KnowledgeSubclassModel.add 的逻辑但用现有 conn
-                    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    c.execute('SELECT 1 FROM knowledge_subclasses WHERE parent_category = ? AND subclass_name = ? LIMIT 1',
-                              (category, subclass))
-                    if not c.fetchone():
-                        c.execute('INSERT INTO knowledge_subclasses (parent_category, subclass_name, created_at) VALUES (?, ?, ?)',
-                                  (category, subclass, now))
-                except Exception:
-                    pass  # 已存在则忽略
-
-            current_name = name
-            saved_eq_id = None
-
-            # 插设备
-            if row_data.get('duplicate_status') == 'exists':
-                if dup_action == 'skip':
-                    skipped += 1
-                elif dup_action == 'overwrite':
-                    eq_id = row_data['existing_equipment']['equipment_id']
-                    # 直接 UPDATE，不用 model.update（避免新连接）
-                    c.execute('''UPDATE equipment SET name=?, model=?, category=?, form=?, price=?,
-                                  tech_index=?, tech_status=?, manufacturer=?, main_purpose=?,
-                                  former_name=?, resource_guarantee=?, installation_requirements=?, subclass=?
-                                  WHERE equipment_id=?''',
-                              (name, model, category, form_val, price, tech_index, tech_status,
-                               manufacturer, main_purpose, former_name, resource_guarantee,
-                               installation_requirements, subclass, eq_id))
-                    saved_eq_id = eq_id
-                    imported_overwrite += 1
-                else:  # 'new' 或空都视为新建
-                    saved_eq_id = _insert_equipment(c, name, model, category, form_val, price,
-                                                     tech_index, tech_status, manufacturer, main_purpose,
-                                                     former_name, resource_guarantee, installation_requirements, subclass)
-                    imported_new += 1
-            else:
-                saved_eq_id = _insert_equipment(c, name, model, category, form_val, price,
-                                                 tech_index, tech_status, manufacturer, main_purpose,
-                                                 former_name, resource_guarantee, installation_requirements, subclass)
-                imported_new += 1
-
-            # 关联关系
-            related_result = row_data.get('related_result', {})
-            for dev_idx, dev_match in enumerate(related_result.get('devices', [])):
-                selected_id = form_data.get(f'related_select_{row_idx}_{dev_idx}', '').strip()
-                if selected_id == '_skip_':
-                    skipped_relations.append({'name': name, 'device': dev_match.get('name', '')})
-                    continue
-                if not selected_id:
-                    if dev_match.get('selected'):
-                        selected_id = dev_match['selected'].get('host_id')
-                    elif dev_match.get('exact'):
-                        selected_id = dev_match['exact'][0].get('host_id')
-                    elif dev_match.get('fuzzy'):
-                        selected_id = dev_match['fuzzy'][0].get('host_id')
-
-                if selected_id and saved_eq_id:
-                    try:
-                        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        c.execute('''INSERT INTO device_host_relations (device_id, host_id, quantity, created_at, updated_at)
-                                     VALUES (?, ?, 1, ?, ?)''',
-                                  (saved_eq_id, selected_id, now, now))
-                        relations_created += 1
-                    except Exception:
-                        # UNIQUE 冲突 → 跳过
-                        pass
-
-            # 推进度
-            ip.update_progress(task_id, i + 1, current_name)
-
-        # 全部成功 → 提交事务
-        conn.commit()
-        conn.close()
-
-        # 写操作日志
-        try:
-            operation_log.add('equipment', 'batch_import',
-                              f'导入 {total} 条 (新增 {imported_new}, 覆盖 {imported_overwrite}, 跳过 {skipped}, 关联 {relations_created})',
-                              user, f'task_id={task_id}')
-        except Exception:
-            pass
-
-        ip.mark_done(task_id, saved_new=imported_new, saved_overwrite=imported_overwrite,
-                     skipped=skipped, relations_created=relations_created,
-                     skipped_relations=skipped_relations)
+        result = service.commit_equipment_import(
+            batch_id, form_data=form_data, owner_user_id=owner_user_id,
+            request_id=request_id,
+            cancel_check=lambda: ip.is_cancel_requested(task_id),
+            begin_commit_callback=lambda: ip.begin_commit(task_id),
+            progress_callback=lambda current, name: ip.update_progress(
+                task_id, current, name
+            ),
+        )
+        ip.mark_done(
+            task_id, saved_new=result['saved_new'],
+            saved_overwrite=result['saved_overwrite'], skipped=result['skipped'],
+            relations_created=result['relations_created'],
+            skipped_relations=result['skipped_relations'],
+        )
 
         # 5 分钟后清理进度
         def _delayed_cleanup():
@@ -1105,33 +971,13 @@ def _do_import_thread(task_id: str, preview_data: dict, form_data: dict):
             ip.cleanup_task(task_id)
         threading.Thread(target=_delayed_cleanup, daemon=True).start()
 
-    except Exception as e:
-        # 失败 → 回滚
-        if conn:
-            try:
-                conn.rollback()
-                conn.close()
-            except Exception:
-                pass
-        failed_row = {'row_idx': i, 'name': current_name}
-        ip.mark_failed(task_id, error=f'{type(e).__name__}: {e}', failed_row=failed_row)
-
-
-def _insert_equipment(c, name, model, category, form, price, tech_index, tech_status,
-                       manufacturer, main_purpose, former_name, resource_guarantee,
-                       installation_requirements, subclass):
-    """直接用传入 cursor 插入设备，返回 equipment_id（不 commit）"""
-    equipment_id = 'EQP' + datetime.now().strftime('%Y%m%d%H%M%S%f')
-    created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    c.execute('''INSERT INTO equipment
-                  (equipment_id, name, model, category, form, price, tech_index, tech_status,
-                   manufacturer, equipment_image, related_files, created_at,
-                   main_purpose, former_name, resource_guarantee, installation_requirements, subclass)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-              (equipment_id, name, model, category, form, price, tech_index, tech_status,
-               manufacturer, '', '', created_at, main_purpose, former_name,
-               resource_guarantee, installation_requirements, subclass))
-    return equipment_id
+    except ResourceServiceError as error:
+        if error.code == 'IMPORT_CANCELLED':
+            ip.mark_cancelled(task_id, saved_count=0)
+        else:
+            ip.mark_failed(task_id, error=f'{error.code}: {error.message}', failed_row=None)
+    except Exception as error:
+        ip.mark_failed(task_id, error=f'{type(error).__name__}: {error}', failed_row=None)
 
 
 @bp.route('/import/progress/<task_id>')
@@ -1143,13 +989,16 @@ def import_progress_stream(task_id):
     """
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'}), 401
+    identity = current_identity()
+    if identity is None or ip.get_progress(task_id, identity.user_id) is None:
+        return jsonify({'success': False, 'message': '任务不存在'}), 404
 
     def generate():
         # 最多推送 5 分钟（防止泄漏）
         max_iterations = 5 * 60 / 0.2  # 1500
         seen_status = None
         for _ in range(int(max_iterations)):
-            p = ip.get_progress(task_id)
+            p = ip.get_progress(task_id, identity.user_id)
             if p is None:
                 # 任务不存在或已清理
                 yield f"data: {json.dumps({'status': 'not_found', 'error': '任务不存在或已清理'})}\n\n"
@@ -1175,11 +1024,14 @@ def import_cancel_task(task_id):
     """
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'}), 401
+    identity = current_identity()
+    if identity is None:
+        return jsonify({'success': False, 'message': '未登录'}), 401
 
-    if ip.request_cancel(task_id):
+    if ip.request_cancel(task_id, identity.user_id):
         return jsonify({'success': True, 'message': '已发送取消请求'})
     else:
-        p = ip.get_progress(task_id)
+        p = ip.get_progress(task_id, identity.user_id)
         if p is None:
             return jsonify({'success': False, 'message': '任务不存在'}), 404
         return jsonify({'success': False, 'message': f"任务状态 {p['status']}，无法取消"})
@@ -1221,26 +1073,28 @@ def import_csv():
     if not file.filename.endswith('.csv'):
         return jsonify({'success': False, 'message': '请上传CSV文件'})
     try:
-        content = file.read().decode('utf-8')
+        content = file.read().decode('utf-8-sig')
         reader = csv.DictReader(io.StringIO(content))
-        equipment_model = EquipmentModel()
-        count = 0
+        rows = []
         for row in reader:
-            equipment_model.add(
-                name=row.get('设备名称', ''),
-                model=row.get('型号', ''),
-                category=row.get('分类', '通用设备'),
-                form=row.get('形态', ''),
-                price=row.get('单价', ''),
-                tech_index=row.get('功能技术指标', ''),
-                status=row.get('技术状态', '货架产品'),
-                manufacturer=row.get('研制单位', ''),
-                main_purpose=row.get('主要用途', ''),
-                former_name=row.get('曾用名', ''),
-                resource_guarantee=row.get('资源保障要求', '')
-            )
-            count += 1
+            rows.append({
+                'name': row.get('设备名称', ''), 'model': row.get('型号', ''),
+                'category': row.get('分类', '通用设备'), 'form': row.get('形态', ''),
+                'price': row.get('单价', ''), 'tech_index': row.get('功能技术指标', ''),
+                'tech_status': row.get('技术状态', '货架产品'),
+                'manufacturer': row.get('研制单位', ''),
+                'main_purpose': row.get('主要用途', ''),
+                'former_name': row.get('曾用名', ''),
+                'resource_guarantee': row.get('资源保障要求', ''),
+            })
+            if len(rows) > 1000:
+                return jsonify({'success': False, 'message': '单次导入不能超过 1000 条'}), 422
+        count = _equipment_resources_service().import_equipment_rows(rows)
         return jsonify({'success': True, 'message': f'成功导入 {count} 条记录'})
+    except UnicodeDecodeError:
+        return jsonify({'success': False, 'message': 'CSV 文件必须使用 UTF-8 编码'}), 422
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
     except Exception as e:
         return jsonify({'success': False, 'message': f'导入失败: {str(e)}'})
 

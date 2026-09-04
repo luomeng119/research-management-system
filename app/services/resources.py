@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
+import re
 import uuid
 
 import sqlalchemy as sa
@@ -612,8 +613,9 @@ class EquipmentResourcesService:
         "resource_guarantee": "resource_guarantee",
     }
 
-    def __init__(self, repository) -> None:
+    def __init__(self, repository, audit_service=None) -> None:
         self.repository = repository
+        self.audit_service = audit_service
 
     def _values(self, payload, *, require_name=False):
         payload = payload or {}
@@ -674,6 +676,347 @@ class EquipmentResourcesService:
             "total": total,
         }
 
+    def find_import_duplicate(self, *, equipment_id="", name="", model=""):
+        with self.repository.engine.connect() as connection:
+            row = self.repository.import_duplicate(
+                connection, str(equipment_id or "").strip(),
+                str(name or "").strip(), str(model or "").strip(),
+            )
+        return dict(row) if row else None
+
+    def match_host_device_text(self, text):
+        from app.utils.fuzzy_match import _levenshtein, _normalize, split_device_names
+
+        result = {"original": str(text or ""), "devices": []}
+        with self.repository.engine.connect() as connection:
+            for name in split_device_names(text):
+                exact, candidates = self.repository.host_match_candidates(
+                    connection, name, limit=100
+                )
+                if exact:
+                    result["devices"].append({
+                        "name": name, "exact": exact, "fuzzy": [],
+                        "status": "exact", "selected": exact[0],
+                    })
+                    continue
+                cleaned = _normalize(name)
+                fuzzy = []
+                for row in candidates:
+                    row_name = str(row.get("name") or "")
+                    row_model = str(row.get("model") or "")
+                    if cleaned and (
+                        cleaned in row_name or cleaned in row_model
+                        or row_name in cleaned or row_model in cleaned
+                    ):
+                        fuzzy.append(row)
+                    elif len(name) > 5 and len(cleaned) > 5 and (
+                        _levenshtein(name, row_name) < 3
+                        or _levenshtein(cleaned, row_name) < 3
+                        or _levenshtein(name, row_model) < 3
+                    ):
+                        fuzzy.append(row)
+                result["devices"].append({
+                    "name": name, "exact": [], "fuzzy": fuzzy,
+                    "status": "fuzzy" if fuzzy else "unmatched", "selected": None,
+                })
+        return result
+
+    def match_research_unit_name(self, name):
+        from app.utils.fuzzy_match import match_research_unit
+
+        class Rows:
+            def __init__(self, values):
+                self.values = values
+
+            def get_all(self):
+                return self.values
+
+        with self.repository.engine.connect() as connection:
+            rows = self.repository.import_match_units(connection, limit=100)
+        return match_research_unit(name, Rows(rows))
+
+    def match_subclass_name(self, name, parent_category=None):
+        from app.utils.fuzzy_match import match_subclass
+
+        class Rows:
+            def __init__(self, values):
+                self.values = values
+
+            def get_all(self):
+                return self.values
+
+        with self.repository.engine.connect() as connection:
+            rows = self.repository.import_match_subclasses(connection, limit=100)
+        return match_subclass(name, Rows(rows), parent_category)
+
+    @staticmethod
+    def _equipment_import_batch(row):
+        return {
+            "batchId": str(row["id"]), "sourceName": row["source_name"],
+            "status": row["status"], "rows": row["rows"],
+            "statistics": row["statistics"], "result": row.get("result"),
+            "version": int(row["version"]),
+        }
+
+    def create_equipment_import_preview(
+        self, *, source_name, source_bytes, rows, statistics, owner_user_id
+    ):
+        if not isinstance(rows, list) or len(rows) > 1000:
+            raise ResourceServiceError(
+                "VALIDATION_ERROR", "单次导入不能超过 1000 条", 422
+            )
+        if not isinstance(statistics, Mapping):
+            raise ResourceServiceError("VALIDATION_ERROR", "导入统计格式无效", 422)
+        now = datetime.now(timezone.utc)
+        batch_id = uuid.uuid4()
+        values = {
+            "id": batch_id, "owner_user_id": int(owner_user_id),
+            "source_name": str(source_name or "").strip() or "unnamed.xlsx",
+            "source_sha256": hashlib.sha256(bytes(source_bytes)).hexdigest(),
+            "status": "PREVIEW", "rows": rows, "statistics": dict(statistics),
+            "result": None, "created_at": now, "updated_at": now,
+            "committed_at": None, "version": 1,
+        }
+        with self.repository.engine.begin() as connection:
+            self.repository.insert_equipment_import_batch(connection, values)
+            row = self.repository.get_equipment_import_batch(connection, batch_id)
+        return self._equipment_import_batch(dict(row))
+
+    def get_equipment_import_batch(self, batch_id, *, owner_user_id):
+        with self.repository.engine.connect() as connection:
+            row = self.repository.get_equipment_import_batch(connection, batch_id)
+        if row is None or int(row["owner_user_id"]) != int(owner_user_id):
+            raise ResourceServiceError("IMPORT_BATCH_NOT_FOUND", "导入批次不存在", 404)
+        return self._equipment_import_batch(dict(row))
+
+    def update_equipment_import_row(
+        self, batch_id, *, owner_user_id, row_idx, field, value
+    ):
+        allowed = {
+            "name", "model", "category", "form", "price", "tech_index",
+            "tech_status", "manufacturer", "main_purpose", "former_name",
+            "resource_guarantee", "installation_requirements", "subclass",
+            "subclass_action", "dup_action",
+        }
+        relation_match = re.fullmatch(r"related_select_(\d+)", field)
+        if field not in allowed and relation_match is None:
+            raise ResourceServiceError("VALIDATION_ERROR", f"不允许的字段: {field}", 422)
+        with self.repository.engine.begin() as connection:
+            batch = self.repository.get_equipment_import_batch(
+                connection, batch_id, lock=True
+            )
+            if batch is None or int(batch["owner_user_id"]) != int(owner_user_id):
+                raise ResourceServiceError("IMPORT_BATCH_NOT_FOUND", "导入批次不存在", 404)
+            if batch["status"] != "PREVIEW":
+                raise ResourceServiceError("IMPORT_BATCH_CLOSED", "导入批次已结束", 409)
+            rows = [dict(item) for item in batch["rows"]]
+            target = next((item for item in rows if int(item.get("row_idx", -1)) == int(row_idx)), None)
+            if target is None:
+                raise ResourceServiceError("IMPORT_ROW_NOT_FOUND", "导入行不存在", 404)
+            if relation_match is not None:
+                relation_index = int(relation_match.group(1))
+                devices = (target.get("related_result") or {}).get("devices", [])
+                if relation_index >= len(devices):
+                    raise ResourceServiceError(
+                        "VALIDATION_ERROR", "关联设备序号无效", 422
+                    )
+                selected_id = str(value or "").strip()
+                if (
+                    selected_id not in {"", "_skip_"}
+                    and self.repository.get_host_device(connection, selected_id) is None
+                ):
+                    raise ResourceServiceError(
+                        "RESOURCE_NOT_FOUND", "关联宿主设备不存在", 409
+                    )
+                target.setdefault("_user_actions", {})[field] = selected_id
+            elif field in {"subclass_action", "dup_action"}:
+                target.setdefault("_user_actions", {})[field] = str(value or "").strip()
+            elif field == "price":
+                try:
+                    target["price"] = float(value) if str(value or "").strip() else None
+                    target["price_error"] = ""
+                except (TypeError, ValueError):
+                    target["price_error"] = "价格格式错误"
+            else:
+                target[field] = str(value or "").strip()
+            self.repository.update_equipment_import_batch(connection, batch_id, {
+                "rows": rows, "updated_at": datetime.now(timezone.utc),
+                "version": int(batch["version"]) + 1,
+            })
+        return {"batchId": str(batch_id), "rowIdx": int(row_idx), "field": field}
+
+    def commit_equipment_import(
+        self, batch_id, *, form_data, owner_user_id,
+        request_id, cancel_check=None, progress_callback=None,
+        begin_commit_callback=None,
+    ):
+        if not isinstance(form_data, Mapping):
+            raise ResourceServiceError("VALIDATION_ERROR", "导入提交格式无效", 422)
+        now = datetime.now(timezone.utc)
+        result = {
+            "new": 0, "overwrite": 0, "skip": 0,
+            "relations": 0, "skipped_relations": [],
+        }
+        try:
+            with self.repository.engine.begin() as connection:
+                batch = self.repository.get_equipment_import_batch(
+                    connection, batch_id, lock=True
+                )
+                if batch is None or int(batch["owner_user_id"]) != int(owner_user_id):
+                    raise ResourceServiceError("IMPORT_BATCH_NOT_FOUND", "导入批次不存在", 404)
+                if batch["status"] != "PREVIEW":
+                    raise ResourceServiceError("IMPORT_BATCH_CLOSED", "导入批次已结束", 409)
+                for position, row in enumerate(batch["rows"]):
+                    if cancel_check and cancel_check():
+                        raise ResourceServiceError("IMPORT_CANCELLED", "导入已取消", 409)
+                    row_idx = int(row["row_idx"])
+
+                    def value(field, default=""):
+                        raw = form_data.get(f"{field}_{row_idx}", row.get(field, default))
+                        return str(raw or "").strip()
+
+                    name = value("name")
+                    if not name:
+                        result["skip"] += 1
+                        if progress_callback:
+                            progress_callback(position + 1, "<跳过（无名称）>")
+                        continue
+                    category = value("category")
+                    if category not in {"安全设备", "密码设备", "通用设备", "其他设备"}:
+                        category = "其他设备"
+                    try:
+                        price = Decimal(value("price") or "0")
+                    except InvalidOperation:
+                        price = Decimal("0")
+                    subclass = value("subclass")
+                    actions = row.get("_user_actions") or {}
+                    subclass_action = value("subclass_action", actions.get("subclass_action", ""))
+                    dup_action = value("dup_action", actions.get("dup_action", ""))
+                    if subclass_action == "confirm" and subclass and not self.repository.get_subclass(
+                        connection, category, subclass
+                    ):
+                        self.repository.insert_subclass(connection, {
+                            "parent_category": category, "subclass_name": subclass,
+                            "created_at": now,
+                        })
+                    values = {
+                        "name": name, "model": value("model"), "category": category,
+                        "form": value("form"), "price": price,
+                        "tech_index": value("tech_index"),
+                        "tech_status": value("tech_status") or "货架产品",
+                        "manufacturer": value("manufacturer"),
+                        "main_purpose": value("main_purpose"),
+                        "former_name": value("former_name"),
+                        "resource_guarantee": value("resource_guarantee"),
+                        "installation_requirements": value("installation_requirements"),
+                        "subclass": subclass, "updated_at": now,
+                    }
+                    existing = row.get("existing_equipment") or {}
+                    saved_id = None
+                    if row.get("duplicate_status") == "exists" and dup_action == "skip":
+                        result["skip"] += 1
+                    elif row.get("duplicate_status") == "exists" and dup_action == "overwrite":
+                        saved_id = str(existing.get("equipment_id") or "").strip()
+                        if not saved_id or not self.repository.update_equipment(
+                            connection, saved_id, values
+                        ):
+                            raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "待覆盖设备不存在", 409)
+                        result["overwrite"] += 1
+                    else:
+                        saved_id = "EQP" + now.strftime("%Y%m%d") + uuid.uuid4().hex[:10].upper()
+                        self.repository.insert_equipment(connection, {
+                            **values, "equipment_id": saved_id, "related_files": [],
+                            "created_at": now,
+                        })
+                        result["new"] += 1
+                    for relation_index, matched in enumerate(
+                        (row.get("related_result") or {}).get("devices", [])
+                    ):
+                        form_key = f"related_select_{row_idx}_{relation_index}"
+                        saved_key = f"related_select_{relation_index}"
+                        selected_id = str(
+                            form_data.get(form_key, actions.get(saved_key, "")) or ""
+                        ).strip()
+                        if not selected_id:
+                            selected = matched.get("selected")
+                            exact = matched.get("exact") or []
+                            fuzzy = matched.get("fuzzy") or []
+                            selected_id = str((selected or (exact[0] if exact else None)
+                                               or (fuzzy[0] if fuzzy else None) or {}).get("host_id") or "")
+                        if selected_id == "_skip_":
+                            result["skipped_relations"].append({
+                                "name": name, "device": matched.get("name", ""),
+                            })
+                            continue
+                        if selected_id and saved_id:
+                            if self.repository.get_host_device(connection, selected_id) is None:
+                                raise ResourceServiceError("RESOURCE_NOT_FOUND", "关联宿主设备不存在", 409)
+                            if self.repository.add_import_relation(
+                                connection, saved_id, selected_id, now
+                            ):
+                                result["relations"] += 1
+                    if progress_callback:
+                        progress_callback(position + 1, name)
+                if cancel_check and cancel_check():
+                    raise ResourceServiceError("IMPORT_CANCELLED", "导入已取消", 409)
+                if begin_commit_callback is not None and not begin_commit_callback():
+                    raise ResourceServiceError("IMPORT_CANCELLED", "导入已取消", 409)
+                result_payload = {
+                    "saved_new": result["new"],
+                    "saved_overwrite": result["overwrite"],
+                    "skipped": result["skip"],
+                    "relations_created": result["relations"],
+                    "skipped_relations": result["skipped_relations"],
+                }
+                self.repository.update_equipment_import_batch(connection, batch_id, {
+                    "status": "COMMITTED", "result": result_payload,
+                    "committed_at": now, "updated_at": now,
+                    "version": int(batch["version"]) + 1,
+                })
+                if self.audit_service is not None:
+                    self.audit_service.record(
+                        connection, event_name="import_batch_completed",
+                        user_id=owner_user_id, object_type="IMPORT_BATCH",
+                        object_id=str(batch_id), result="SUCCESS", request_id=request_id,
+                        duration_ms=0, properties={
+                            "module": "equipment",
+                            "saved_new": result_payload["saved_new"],
+                            "saved_overwrite": result_payload["saved_overwrite"],
+                            "skipped": result_payload["skipped"],
+                            "relations_created": result_payload["relations_created"],
+                            "skipped_relation_count": len(result_payload["skipped_relations"]),
+                        },
+                    )
+            return {"batchId": str(batch_id), "status": "COMMITTED", **result_payload}
+        except ResourceServiceError as error:
+            target_status = "CANCELLED" if error.code == "IMPORT_CANCELLED" else "FAILED"
+            with self.repository.engine.begin() as connection:
+                batch = self.repository.get_equipment_import_batch(connection, batch_id, lock=True)
+                if (
+                    batch and int(batch["owner_user_id"]) == int(owner_user_id)
+                    and batch["status"] == "PREVIEW"
+                ):
+                    self.repository.update_equipment_import_batch(connection, batch_id, {
+                        "status": target_status,
+                        "result": {**result, "error_code": error.code},
+                        "updated_at": datetime.now(timezone.utc),
+                        "version": int(batch["version"]) + 1,
+                    })
+            raise
+        except Exception:
+            with self.repository.engine.begin() as connection:
+                batch = self.repository.get_equipment_import_batch(connection, batch_id, lock=True)
+                if (
+                    batch and int(batch["owner_user_id"]) == int(owner_user_id)
+                    and batch["status"] == "PREVIEW"
+                ):
+                    self.repository.update_equipment_import_batch(connection, batch_id, {
+                        "status": "FAILED", "result": result,
+                        "updated_at": datetime.now(timezone.utc),
+                        "version": int(batch["version"]) + 1,
+                    })
+            raise
+
     def get_equipment(self, equipment_id):
         with self.repository.engine.connect() as connection:
             row = self.repository.get_equipment(connection, str(equipment_id).strip())
@@ -689,6 +1032,31 @@ class EquipmentResourcesService:
             self.repository.insert_equipment(connection, values)
             row = self.repository.get_equipment(connection, equipment_id)
         return dict(row)
+
+    def import_equipment_rows(self, rows):
+        """Compatibility CSV import backed by the same atomic resource store."""
+        if not isinstance(rows, list) or len(rows) > 1000:
+            raise ResourceServiceError(
+                "VALIDATION_ERROR", "单次导入不能超过 1000 条", 422
+            )
+        now = datetime.now(timezone.utc)
+        values_list = []
+        for payload in rows:
+            if not str((payload or {}).get("name") or "").strip():
+                continue
+            values = self._values(payload, require_name=True)
+            values.setdefault("category", "通用设备")
+            values.setdefault("tech_status", "货架产品")
+            values.setdefault("related_files", [])
+            values.update(
+                equipment_id="EQP" + now.strftime("%Y%m%d") + uuid.uuid4().hex[:10].upper(),
+                created_at=now, updated_at=now,
+            )
+            values_list.append(values)
+        with self.repository.engine.begin() as connection:
+            for values in values_list:
+                self.repository.insert_equipment(connection, values)
+        return len(values_list)
 
     def update_equipment(self, equipment_id, payload):
         equipment_id = str(equipment_id or "").strip()

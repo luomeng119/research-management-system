@@ -298,6 +298,8 @@
 
                                     {% if row.related_result.devices %}
                                         {% for dev in row.related_result.devices %}
+                                        {% set relation_index = loop.index0 %}
+                                        {% set saved_relation = (row.get('_user_actions') or {}).get('related_select_' ~ relation_index, '') %}
                                         <div class="device-match-row match-{{ dev.status }}"
                                              style="margin-bottom:4px; padding:2px 6px; border-radius:4px; background:{% if dev.status == 'exact' %}#f6ffed{% elif dev.status == 'fuzzy' %}#fff7e6{% else %}#fff2f0{% endif %};">
                                             <span class="match-icon">
@@ -314,14 +316,16 @@
 
                                             {% elif dev.status == 'fuzzy' %}
                                                 <select name="related_select_{{ row.row_idx }}_{{ loop.index0 }}"
+                                                        data-row-idx="{{ row.row_idx }}"
+                                                        data-field="related_select_{{ relation_index }}"
                                                         class="form-select form-select-sm"
                                                         style="width:auto; min-width:140px; display:inline-block; margin-left:4px;"
                                                         onchange="onFuzzyChange(this)">
                                                     <option value="">-- 选择 --</option>
                                                     {% for cand in dev.fuzzy %}
-                                                    <option value="{{ cand.host_id }}">{{ cand.name }} ({{ cand.model or cand.host_id }})</option>
+                                                    <option value="{{ cand.host_id }}" {% if saved_relation == cand.host_id %}selected{% endif %}>{{ cand.name }} ({{ cand.model or cand.host_id }})</option>
                                                     {% endfor %}
-                                                    <option value="_skip_">跳过此关联</option>
+                                                    <option value="_skip_" {% if saved_relation == '_skip_' %}selected{% endif %}>跳过此关联</option>
                                                 </select>
                                                 <div style="font-size:11px; color:#fa8c16; margin-top:2px;">
                                                     候选: {% for c in dev.fuzzy %}{{ c.name }}{% if not loop.last %} / {% endif %}{% endfor %}
@@ -335,10 +339,15 @@
                                                        placeholder="搜索..."
                                                        oninput="debounceSearch(this, '{{ row.row_idx }}', '{{ loop.index0 }}')">
                                                 <select name="related_select_{{ row.row_idx }}_{{ loop.index0 }}"
+                                                        data-row-idx="{{ row.row_idx }}"
+                                                        data-field="related_select_{{ relation_index }}"
                                                         class="form-select form-select-sm"
                                                         style="width:auto; min-width:140px; display:inline-block; margin-left:2px;">
                                                     <option value="">-- 选择 --</option>
-                                                    <option value="_skip_">跳过此关联</option>
+                                                    {% if saved_relation and saved_relation != '_skip_' %}
+                                                    <option value="{{ saved_relation }}" selected>已选择 {{ saved_relation }}</option>
+                                                    {% endif %}
+                                                    <option value="_skip_" {% if saved_relation == '_skip_' %}selected{% endif %}>跳过此关联</option>
                                                 </select>
                                             {% endif %}
                                         </div>
@@ -411,7 +420,7 @@ const TOTAL_PAGES = {{ total_pages }};
 
 // [REQ-013-fix] 分页/筛选 导航函数
 function changePerPage(val) {
-    window.location.href = '?p=1&per_page=' + val + '&filter=' + currentFilter;
+    saveAllBeforeNavigate('?p=1&per_page=' + val + '&filter=' + currentFilter);
 }
 
 function jumpToPage() {
@@ -464,13 +473,15 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('tr.data-row input, tr.data-row select').forEach(inp => {
         inp.dataset.originalValue = inp.value;
         const nameMatch = inp.name && inp.name.match(/^(\w+)_(\d+)$/);
-        if (nameMatch) {
-            inp.dataset.rowIdx = nameMatch[2];
-            inp.dataset.field = nameMatch[1];
+        const rowIdx = inp.dataset.rowIdx || (nameMatch ? nameMatch[2] : null);
+        const field = inp.dataset.field || (nameMatch ? nameMatch[1] : null);
+        if (rowIdx !== null && field) {
+            inp.dataset.rowIdx = rowIdx;
+            inp.dataset.field = field;
             inp.addEventListener('change', () => {
                 clearTimeout(saveTimer);
                 saveTimer = setTimeout(() => {
-                    saveRowAjax(nameMatch[2], nameMatch[1], inp.value);
+                    saveRowAjax(rowIdx, field, inp.value);
                 }, 300);
             });
         }

@@ -14,7 +14,7 @@
 - threading.Lock 保护并发读写
 - task_id 用 uuid4 hex，无碰撞
 - 任务结束后 5 分钟自动清理（防止内存泄漏）
-- 进度状态：pending / running / done / failed / cancelled
+- 进度状态：pending / running / committing / done / failed / cancelled
 
 注意：
 - 这是简化的 V1 实现，V2 改用 Redis（跨进程/重启保留任务）
@@ -30,13 +30,15 @@ _lock = threading.Lock()
 _progress_store: Dict[str, Dict[str, Any]] = {}
 
 
-def create_task(total: int, user: str = '', extra: Optional[dict] = None) -> str:
+def create_task(total: int, user: str = '', extra: Optional[dict] = None,
+                owner_user_id: Optional[int] = None) -> str:
     """创建导入任务，返回 task_id"""
     task_id = uuid.uuid4().hex
     with _lock:
         _progress_store[task_id] = {
             'task_id': task_id,
             'user': user,
+            'owner_user_id': owner_user_id,
             'status': 'pending',
             'current': 0,
             'total': total,
@@ -107,7 +109,7 @@ def mark_cancelled(task_id: str, saved_count: int = 0) -> None:
             p['saved_overwrite'] = 0
 
 
-def request_cancel(task_id: str) -> bool:
+def request_cancel(task_id: str, owner_user_id: Optional[int] = None) -> bool:
     """请求取消任务（导入循环每 10 行检查此标志）
 
     返回 True 表示成功标记，False 表示任务不存在
@@ -115,6 +117,8 @@ def request_cancel(task_id: str) -> bool:
     with _lock:
         if task_id in _progress_store:
             p = _progress_store[task_id]
+            if owner_user_id is not None and p.get('owner_user_id') != owner_user_id:
+                return False
             if p['status'] in ('pending', 'running'):
                 p['cancel_requested'] = True
                 p['updated_at'] = time.time()
@@ -122,10 +126,26 @@ def request_cancel(task_id: str) -> bool:
     return False
 
 
-def get_progress(task_id: str) -> Optional[Dict[str, Any]]:
+def begin_commit(task_id: str) -> bool:
+    """关闭可取消窗口；返回 False 表示此前已收到取消请求。"""
+    with _lock:
+        p = _progress_store.get(task_id)
+        if p is None or p['status'] not in ('pending', 'running'):
+            return False
+        if p.get('cancel_requested'):
+            return False
+        p['status'] = 'committing'
+        p['updated_at'] = time.time()
+        return True
+
+
+def get_progress(task_id: str, owner_user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """读取当前进度（无锁 - 浅拷贝即可，调用方只读不写）"""
     with _lock:
         if task_id in _progress_store:
+            if (owner_user_id is not None
+                    and _progress_store[task_id].get('owner_user_id') != owner_user_id):
+                return None
             # 返回浅拷贝（避免外层修改内部状态）
             return dict(_progress_store[task_id])
     return None

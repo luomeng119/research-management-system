@@ -201,6 +201,21 @@ def _expert_schema(engine):
         sa.Column("updated_at", sa.DateTime(timezone=True)),
         sa.UniqueConstraint("device_id", "host_id"),
     )
+    sa.Table(
+        "equipment_import_batches", metadata,
+        sa.Column("id", sa.String(36), primary_key=True),
+        sa.Column("owner_user_id", sa.Integer, nullable=False),
+        sa.Column("source_name", sa.Text, nullable=False),
+        sa.Column("source_sha256", sa.String(64), nullable=False),
+        sa.Column("status", sa.Text, nullable=False),
+        sa.Column("rows", sa.JSON, nullable=False),
+        sa.Column("statistics", sa.JSON, nullable=False),
+        sa.Column("result", sa.JSON),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("committed_at", sa.DateTime(timezone=True)),
+        sa.Column("version", sa.Integer, nullable=False),
+    )
     metadata.create_all(engine)
     return metadata
 
@@ -329,6 +344,276 @@ def test_equipment_dictionaries_are_database_backed(equipment_service):
     with pytest.raises(ResourceServiceError) as caught:
         equipment_service.create_research_unit("第一研究室", "重复")
     assert caught.value.code == "RESOURCE_DUPLICATE"
+
+
+def test_equipment_import_preview_is_owner_bound_and_database_backed(equipment_service):
+    rows = [{"row_idx": 0, "name": "导入设备", "price": "10"}]
+    batch = equipment_service.create_equipment_import_preview(
+        source_name="equipment.xlsx", source_bytes=b"source",
+        rows=rows, statistics={"total": 1}, owner_user_id=7,
+    )
+    assert batch["status"] == "PREVIEW"
+    assert batch["rows"] == rows
+    assert equipment_service.get_equipment_import_batch(
+        batch["batchId"], owner_user_id=7
+    )["sourceName"] == "equipment.xlsx"
+    with pytest.raises(ResourceServiceError) as wrong_owner:
+        equipment_service.get_equipment_import_batch(
+            batch["batchId"], owner_user_id=8
+        )
+    assert wrong_owner.value.code == "IMPORT_BATCH_NOT_FOUND"
+
+    equipment_service.update_equipment_import_row(
+        batch["batchId"], owner_user_id=7, row_idx=0,
+        field="name", value="已修改设备",
+    )
+    updated = equipment_service.get_equipment_import_batch(
+        batch["batchId"], owner_user_id=7
+    )
+    assert updated["rows"][0]["name"] == "已修改设备"
+    with pytest.raises(ResourceServiceError, match="1000"):
+        equipment_service.create_equipment_import_preview(
+            source_name="too-many.xlsx", source_bytes=b"source",
+            rows=[{"row_idx": index} for index in range(1001)],
+            statistics={}, owner_user_id=7,
+        )
+
+
+def test_equipment_import_commit_is_atomic_and_persists_status(equipment_service):
+    host = equipment_service.create_host_device({"name": "导入宿主"})
+    row = {
+        "row_idx": 0, "name": "批量设备", "category": "通用设备",
+        "price": "12.5", "duplicate_status": None,
+        "related_result": {"devices": [{
+            "name": "导入宿主", "selected": {"host_id": host["host_id"]},
+            "exact": [], "fuzzy": [], "status": "exact",
+        }]},
+    }
+    batch = equipment_service.create_equipment_import_preview(
+        source_name="equipment.xlsx", source_bytes=b"source", rows=[row],
+        statistics={"total": 1}, owner_user_id=7,
+    )
+    progress = []
+    result = equipment_service.commit_equipment_import(
+        batch["batchId"], form_data={}, owner_user_id=7,
+        request_id="req-equipment-import", cancel_check=lambda: False,
+        progress_callback=lambda current, name: progress.append((current, name)),
+    )
+    assert result["saved_new"] == 1
+    assert result["relations_created"] == 1
+    created = equipment_service.list_equipment(keyword="批量设备")["items"][0]
+    assert equipment_service.get_hosts_by_device(created["equipment_id"])[0]["host_id"] == host["host_id"]
+    assert equipment_service.get_equipment_import_batch(
+        batch["batchId"], owner_user_id=7
+    )["status"] == "COMMITTED"
+    assert progress == [(1, "批量设备")]
+
+    failed = equipment_service.create_equipment_import_preview(
+        source_name="failed.xlsx", source_bytes=b"failed", rows=[{
+            **row, "row_idx": 1, "name": "不应留存的设备",
+            "related_result": {"devices": [{
+                "name": "不存在", "selected": {"host_id": "HD-NOT-FOUND"},
+                "exact": [], "fuzzy": [], "status": "exact",
+            }]},
+        }], statistics={
+            "total": 1, "exact": 0, "fuzzy": 1, "unmatched": 0,
+            "duplicate": 0, "new_category": 0,
+        }, owner_user_id=7,
+    )
+    with pytest.raises(ResourceServiceError, match="宿主设备不存在"):
+        equipment_service.commit_equipment_import(
+            failed["batchId"], form_data={}, owner_user_id=7,
+            request_id="req-failed", cancel_check=lambda: False,
+        )
+    assert equipment_service.list_equipment(keyword="不应留存的设备")["total"] == 0
+    assert equipment_service.get_equipment_import_batch(
+        failed["batchId"], owner_user_id=7
+    )["status"] == "FAILED"
+
+    cancelled = equipment_service.create_equipment_import_preview(
+        source_name="cancelled.xlsx", source_bytes=b"cancelled",
+        rows=[{**row, "row_idx": 2, "name": "取消设备"}],
+        statistics={"total": 1}, owner_user_id=7,
+    )
+    with pytest.raises(ResourceServiceError) as caught:
+        equipment_service.commit_equipment_import(
+            cancelled["batchId"], form_data={}, owner_user_id=7,
+            request_id="req-cancelled",
+            cancel_check=lambda: True,
+        )
+    assert caught.value.code == "IMPORT_CANCELLED"
+    assert equipment_service.list_equipment(keyword="取消设备")["total"] == 0
+    assert equipment_service.get_equipment_import_batch(
+        cancelled["batchId"], owner_user_id=7
+    )["status"] == "CANCELLED"
+
+    late_cancelled = equipment_service.create_equipment_import_preview(
+        source_name="late-cancelled.xlsx", source_bytes=b"late-cancelled",
+        rows=[{**row, "row_idx": 3, "name": "末行取消设备"}],
+        statistics={"total": 1}, owner_user_id=7,
+    )
+    cancel_after_row = {"requested": False}
+    with pytest.raises(ResourceServiceError) as late_caught:
+        equipment_service.commit_equipment_import(
+            late_cancelled["batchId"], form_data={}, owner_user_id=7,
+            request_id="req-late-cancelled",
+            cancel_check=lambda: cancel_after_row["requested"],
+            progress_callback=lambda *_args: cancel_after_row.update(requested=True),
+        )
+    assert late_caught.value.code == "IMPORT_CANCELLED"
+    assert equipment_service.list_equipment(keyword="末行取消设备")["total"] == 0
+
+
+def test_equipment_import_persists_relation_choice_across_pages(equipment_service):
+    first = equipment_service.create_host_device({"name": "候选宿主一"})
+    second = equipment_service.create_host_device({"name": "候选宿主二"})
+    batch = equipment_service.create_equipment_import_preview(
+        source_name="relations.xlsx", source_bytes=b"relations",
+        rows=[{
+            "row_idx": 101, "name": "分页关联设备", "category": "密码设备",
+            "related_result": {"devices": [{
+                "name": "候选宿主", "selected": None, "exact": [],
+                "fuzzy": [
+                    {"host_id": first["host_id"], "name": first["name"], "model": ""},
+                    {"host_id": second["host_id"], "name": second["name"], "model": ""},
+                ], "status": "fuzzy",
+            }]},
+        }], statistics={"total": 1}, owner_user_id=7,
+    )
+    equipment_service.update_equipment_import_row(
+        batch["batchId"], owner_user_id=7, row_idx=101,
+        field="related_select_0", value=second["host_id"],
+    )
+    persisted = equipment_service.get_equipment_import_batch(
+        batch["batchId"], owner_user_id=7
+    )
+    assert persisted["rows"][0]["_user_actions"]["related_select_0"] == second["host_id"]
+    result = equipment_service.commit_equipment_import(
+        batch["batchId"], form_data={}, owner_user_id=7,
+        request_id="req-persisted-relation",
+    )
+    assert result["relations_created"] == 1
+    equipment = equipment_service.list_equipment(keyword="分页关联设备")["items"][0]
+    hosts = equipment_service.get_hosts_by_device(equipment["equipment_id"])
+    assert [host["host_id"] for host in hosts] == [second["host_id"]]
+
+
+def test_equipment_import_route_keeps_rows_out_of_session_and_binds_owner(
+    equipment_routes,
+):
+    workbook = openpyxl.Workbook()
+    workbook.active.append(["设备名称", "型号"])
+    workbook.active.append(["导入路由设备", "R-1"])
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+
+    response = equipment_routes.post(
+        "/equipment/import/preview",
+        data={
+            "file": (stream, "equipment.xlsx"),
+            "column_mapping_json": '{"name": 0, "model": 1}',
+            "default_category": "通用设备",
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+    with equipment_routes.session_transaction() as active_session:
+        batch_id = active_session["equipment_import_batch_id"]
+        assert "equipment_import_preview" not in active_session
+        active_session["user_id"] = 8
+
+    wrong_owner = equipment_routes.get("/equipment/import/preview")
+    assert wrong_owner.status_code == 302
+    assert wrong_owner.headers["Location"].endswith("/equipment/import")
+    with equipment_routes.session_transaction() as active_session:
+        assert "equipment_import_batch_id" not in active_session
+    assert batch_id
+
+
+def test_equipment_import_progress_is_owner_bound(equipment_routes):
+    from app.utils import import_progress as progress
+
+    task_id = progress.create_task(total=1, user="zhang", owner_user_id=7)
+    try:
+        with equipment_routes.session_transaction() as active_session:
+            active_session["user_id"] = 8
+        assert equipment_routes.get(
+            f"/equipment/import/progress/{task_id}"
+        ).status_code == 404
+        assert equipment_routes.post(
+            f"/equipment/import/cancel/{task_id}"
+        ).status_code == 404
+        assert progress.get_progress(task_id, owner_user_id=7)["cancel_requested"] is False
+    finally:
+        progress.cleanup_task(task_id)
+
+    committing_task = progress.create_task(total=1, user="zhang", owner_user_id=7)
+    try:
+        assert progress.begin_commit(committing_task) is True
+        assert progress.request_cancel(committing_task, owner_user_id=7) is False
+        assert progress.get_progress(
+            committing_task, owner_user_id=7
+        )["status"] == "committing"
+    finally:
+        progress.cleanup_task(committing_task)
+
+
+def test_equipment_import_preview_renders_persisted_relation_choice(
+    equipment_routes, equipment_service,
+):
+    host = equipment_service.create_host_device({"name": "已选宿主"})
+    batch = equipment_service.create_equipment_import_preview(
+        source_name="page-two.xlsx", source_bytes=b"page-two",
+        rows=[{
+            "row_idx": 100, "name": "第二页设备", "model": "", "category": "密码设备",
+            "form": "", "price": "", "tech_index": "", "tech_status": "",
+            "manufacturer": "", "main_purpose": "", "former_name": "",
+            "resource_guarantee": "", "installation_requirements": "",
+            "duplicate_status": None, "existing_equipment": None,
+            "is_new_category": False, "price_error": "",
+            "manufacturer_result": {"original": "", "units": []},
+            "subclass_result": {
+                "original": "", "matched": None, "exact": False, "method": "none",
+            },
+            "related_result": {"devices": [{
+                "name": "宿主", "selected": None, "exact": [],
+                "fuzzy": [{
+                    "host_id": host["host_id"], "name": host["name"], "model": ""
+                }], "status": "fuzzy",
+            }]},
+            "_user_actions": {"related_select_0": host["host_id"]},
+        }], statistics={
+            "total": 1, "exact": 0, "fuzzy": 1, "unmatched": 0,
+            "duplicate": 0, "new_category": 0,
+        }, owner_user_id=7,
+    )
+    with equipment_routes.session_transaction() as active_session:
+        active_session["equipment_import_batch_id"] = batch["batchId"]
+    response = equipment_routes.get("/equipment/import/preview?p=2")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'data-field="related_select_0"' in html
+    assert f'value="{host["host_id"]}" selected' in html
+    assert "saveAllBeforeNavigate('?p=1&per_page=' + val" in html
+    assert "const rowIdx = inp.dataset.rowIdx ||" in html
+
+
+def test_equipment_csv_import_uses_primary_resource_store(equipment_routes, equipment_service):
+    response = equipment_routes.post(
+        "/equipment/import/csv",
+        data={"file": (
+            BytesIO("设备名称,型号,分类\nCSV设备,C-1,通用设备\n".encode("utf-8")),
+            "equipment.csv",
+        )},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+    stored = equipment_service.list_equipment(keyword="CSV设备")
+    assert stored["total"] == 1
+    assert stored["items"][0]["model"] == "C-1"
 
 
 def test_equipment_groups_preserve_quantity_and_location(equipment_service):
@@ -1346,6 +1631,23 @@ def test_postgresql_equipment_resource_runtime_contract(tmp_path):
             "name": f"PG导入宿主{suffix}", "category": "计算存储",
             "device_ids": [equipment["equipment_id"]], "action": "new",
         }])
+        equipment_batch = service.create_equipment_import_preview(
+            source_name="pg-equipment.xlsx", source_bytes=b"pg-equipment",
+            rows=[{
+                "row_idx": 0, "name": f"PG批量设备{suffix}",
+                "category": "通用设备", "price": "18.5",
+                "duplicate_status": None,
+                "related_result": {"devices": [{
+                    "name": host["name"], "selected": {"host_id": host["host_id"]},
+                    "exact": [], "fuzzy": [], "status": "exact",
+                }]},
+            }],
+            statistics={"total": 1}, owner_user_id=owner_id,
+        )
+        equipment_imported = service.commit_equipment_import(
+            equipment_batch["batchId"], form_data={}, owner_user_id=owner_id,
+            request_id=f"req-equipment-import-{suffix}",
+        )
         page = service.list_equipment(page=1, page_size=1, keyword=equipment_name)
         assert page["total"] == 1
         assert page["items"][0]["equipment_id"] == equipment["equipment_id"]
@@ -1378,6 +1680,11 @@ def test_postgresql_equipment_resource_runtime_contract(tmp_path):
             object_type="EQUIPMENT", object_id=equipment["equipment_id"]
         )} == {"PG试验报告.pdf", "PG设备图.png"}
         assert imported["new"] == 1
+        assert equipment_imported["saved_new"] == 1
+        assert equipment_imported["relations_created"] == 1
+        assert service.get_equipment_import_batch(
+            equipment_batch["batchId"], owner_user_id=owner_id
+        )["status"] == "COMMITTED"
         imported_host = service.list_host_devices(keyword=f"PG导入宿主{suffix}")["items"][0]
         assert service.get_devices_by_host(imported_host["host_id"])[0]["device_id"] == equipment["equipment_id"]
     finally:
@@ -1385,6 +1692,28 @@ def test_postgresql_equipment_resource_runtime_contract(tmp_path):
             "MIGRATION_DATABASE_URL", os.environ["T10_TEST_DATABASE_URL"]
         ))
         with cleanup.begin() as connection:
+            cleanup_metadata = sa.MetaData()
+            object_files = sa.Table(
+                "object_files", cleanup_metadata, autoload_with=cleanup
+            )
+            stored_file_versions = sa.Table(
+                "stored_file_versions", cleanup_metadata, autoload_with=cleanup
+            )
+            stored_files = sa.Table(
+                "stored_files", cleanup_metadata, autoload_with=cleanup
+            )
+            connection.execute(object_files.delete().where(
+                object_files.c.created_by == owner_id
+            ))
+            connection.execute(stored_file_versions.delete().where(
+                stored_file_versions.c.created_by == owner_id
+            ))
+            connection.execute(stored_files.delete().where(
+                stored_files.c.created_by == owner_id
+            ))
+            connection.execute(repository.equipment_import_batches.delete().where(
+                repository.equipment_import_batches.c.owner_user_id == owner_id
+            ))
             connection.execute(repository.device_host_relations.delete().where(
                 repository.device_host_relations.c.host_id == host["host_id"]
             ))
@@ -1406,8 +1735,11 @@ def test_postgresql_equipment_resource_runtime_contract(tmp_path):
                 repository.research_units.c.name == unit_name
             ))
             connection.execute(repository.equipment.delete().where(
-                repository.equipment.c.name == equipment_name
+                repository.equipment.c.name.in_([
+                    equipment_name, f"PG批量设备{suffix}"
+                ])
             ))
+            connection.execute(users.delete().where(users.c.id == owner_id))
         cleanup.dispose()
         engine.dispose()
 

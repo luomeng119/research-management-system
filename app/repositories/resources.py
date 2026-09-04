@@ -296,11 +296,20 @@ class EquipmentResourcesRepository:
         self.device_host_relations = sa.Table(
             "device_host_relations", metadata, autoload_with=engine
         )
+        self.equipment_import_batches = sa.Table(
+            "equipment_import_batches", metadata, autoload_with=engine
+        )
 
     @staticmethod
     def _pattern(value):
         escaped = str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return f"%{escaped}%"
+
+    @staticmethod
+    def _uuid(connection, value):
+        if connection.dialect.name == "postgresql":
+            return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+        return str(value)
 
     def list_equipment(self, connection, *, page, page_size, category=None,
                        form=None, tech_status=None, keyword=None, subclass=None):
@@ -573,6 +582,91 @@ class EquipmentResourcesRepository:
                 sa.select(self.equipment).order_by(self.equipment.c.id).limit(limit)
             ).mappings()]
         return [], fuzzy
+
+    def host_match_candidates(self, connection, value, *, limit=100):
+        value = str(value or "").strip()
+        exact = [dict(row) for row in connection.execute(
+            sa.select(self.host_devices).where(sa.or_(
+                self.host_devices.c.name == value, self.host_devices.c.model == value,
+            )).order_by(self.host_devices.c.id).limit(limit)
+        ).mappings()]
+        if exact:
+            return exact, []
+        pattern = self._pattern(value)
+        fuzzy = [dict(row) for row in connection.execute(
+            sa.select(self.host_devices).where(sa.or_(
+                self.host_devices.c.name.ilike(pattern, escape="\\"),
+                self.host_devices.c.model.ilike(pattern, escape="\\"),
+            )).order_by(self.host_devices.c.id).limit(limit)
+        ).mappings()]
+        if not fuzzy:
+            fuzzy = [dict(row) for row in connection.execute(
+                sa.select(self.host_devices).order_by(self.host_devices.c.id).limit(limit)
+            ).mappings()]
+        return [], fuzzy
+
+    def import_duplicate(self, connection, equipment_id, name, model):
+        if equipment_id:
+            return self.get_equipment(connection, equipment_id)
+        conditions = [self.equipment.c.name == name]
+        if model:
+            conditions.append(self.equipment.c.model == model)
+        return connection.execute(
+            sa.select(self.equipment).where(*conditions).order_by(
+                self.equipment.c.id
+            ).limit(1)
+        ).mappings().first()
+
+    def import_match_units(self, connection, *, limit=100):
+        return [dict(row) for row in connection.execute(
+            sa.select(self.research_units).order_by(
+                self.research_units.c.name, self.research_units.c.id
+            ).limit(limit)
+        ).mappings()]
+
+    def import_match_subclasses(self, connection, *, limit=100):
+        return [dict(row) for row in connection.execute(
+            sa.select(self.knowledge_subclasses).order_by(
+                self.knowledge_subclasses.c.parent_category,
+                self.knowledge_subclasses.c.subclass_name,
+                self.knowledge_subclasses.c.id,
+            ).limit(limit)
+        ).mappings()]
+
+    def insert_equipment_import_batch(self, connection, values):
+        payload = dict(values)
+        payload["id"] = self._uuid(connection, payload["id"])
+        connection.execute(self.equipment_import_batches.insert().values(**payload))
+
+    def get_equipment_import_batch(self, connection, batch_id, *, lock=False):
+        statement = sa.select(self.equipment_import_batches).where(
+            self.equipment_import_batches.c.id == self._uuid(connection, batch_id)
+        )
+        if lock and connection.dialect.name == "postgresql":
+            statement = statement.with_for_update(of=self.equipment_import_batches)
+        return connection.execute(statement).mappings().first()
+
+    def update_equipment_import_batch(self, connection, batch_id, values):
+        return connection.execute(
+            self.equipment_import_batches.update().where(
+                self.equipment_import_batches.c.id == self._uuid(connection, batch_id)
+            ).values(**values)
+        ).rowcount
+
+    def add_import_relation(self, connection, device_id, host_id, now):
+        exists = connection.scalar(sa.select(sa.literal(1)).select_from(
+            self.device_host_relations
+        ).where(sa.and_(
+            self.device_host_relations.c.device_id == device_id,
+            self.device_host_relations.c.host_id == host_id,
+        )).limit(1))
+        if exists:
+            return False
+        connection.execute(self.device_host_relations.insert().values(
+            device_id=device_id, host_id=host_id, quantity=1,
+            created_at=now, updated_at=now,
+        ))
+        return True
 
     def insert_host_device(self, connection, values):
         connection.execute(self.host_devices.insert().values(**values))
