@@ -17,7 +17,8 @@ import uuid
 import zipfile
 from xml.parsers import expat
 
-from sqlalchemy.sql.dml import Insert
+from sqlalchemy.sql.dml import Insert, Update
+from sqlalchemy.sql.selectable import Select
 
 
 ALLOWED_EXTENSIONS = {
@@ -277,6 +278,17 @@ class _MetadataWriter:
         if not isinstance(statement, Insert):
             raise RuntimeError("metadata callback may only execute SQLAlchemy Insert statements")
         self.__active_connection.execute(statement, parameters)
+
+    def one(self, statement):
+        if not isinstance(statement, Select):
+            raise RuntimeError("metadata callback may only read with SQLAlchemy Select statements")
+        row = self.__active_connection.execute(statement).mappings().first()
+        return dict(row) if row else None
+
+    def update(self, statement) -> int:
+        if not isinstance(statement, Update):
+            raise RuntimeError("metadata callback may only update with SQLAlchemy Update statements")
+        return int(self.__active_connection.execute(statement).rowcount)
 
     def in_transaction(self):
         return self.__active_connection.in_transaction()
@@ -789,6 +801,21 @@ class FileService:
             "sha256": version["sha256"],
             "path": path,
         }
+
+    def count_versions(self, file_id: str, *, object_type: str, object_id: str) -> int:
+        object_type = str(object_type or "").upper()
+        with self.repository.engine.connect() as connection:
+            if not self.repository.object_exists(connection, object_type, str(object_id)):
+                raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+            file_row = self.repository.get_linked_file(
+                connection,
+                file_id=file_id,
+                object_type=object_type,
+                object_id=str(object_id),
+            )
+            if not file_row:
+                raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+            return self.repository.count_versions(connection, file_id=file_id)
 
     def open_version_stream(self, file_id: str, version_no: int, *, object_type: str, object_id: str) -> dict:
         opened = self.open_version(

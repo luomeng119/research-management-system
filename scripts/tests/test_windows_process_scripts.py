@@ -22,7 +22,7 @@ def test_start_requires_deployment_inputs_and_defaults_to_safe_local_mode():
     assert '$env:AI_PROVIDER = "DISABLED"' in START_SCRIPT
     assert "$env:APP_BIND_HOST" in START_SCRIPT
     assert "$env:APP_PORT" in START_SCRIPT
-    assert "$DataRoot = (Resolve-Path -LiteralPath $ConfiguredDataRoot).Path" in START_SCRIPT
+    assert "$DataRoot = Assert-LocalNoReparsePath" in START_SCRIPT
     assert "$env:APP_DATA_ROOT = $DataRoot" in START_SCRIPT
 
 
@@ -72,7 +72,7 @@ def test_pid_and_logs_are_kept_under_data_root():
 
 
 def test_stop_targets_only_verified_recorded_pid():
-    assert "$DataRoot = (Resolve-Path -LiteralPath $ConfiguredDataRoot).Path" in STOP_SCRIPT
+    assert "$DataRoot = Assert-LocalNoReparsePath" in STOP_SCRIPT
     assert "$env:APP_DATA_ROOT = $DataRoot" in STOP_SCRIPT
     assert "Get-Process -Id $ProcessId" in STOP_SCRIPT
     assert "Stop-Process -Id $ProcessId" in STOP_SCRIPT

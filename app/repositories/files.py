@@ -257,6 +257,12 @@ class FilesRepository:
         )
         return connection.execute(statement).mappings().first()
 
+    def count_versions(self, connection: Connection, *, file_id: str) -> int:
+        statement = sa.select(sa.func.count()).select_from(self.versions).where(
+            self.versions.c.file_id == self._id(connection, file_id)
+        )
+        return int(connection.scalar(statement) or 0)
+
     def bump_file(
         self,
         connection: Connection,

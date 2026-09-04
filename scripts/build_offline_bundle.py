@@ -16,10 +16,27 @@ from pathlib import Path, PurePosixPath
 
 REQUIRED_RUNTIME_FILES = (
     "runtime/python/python.exe",
+    "runtime/postgresql/bin/initdb.exe",
+    "runtime/postgresql/bin/pg_ctl.exe",
+    "runtime/postgresql/bin/postgres.exe",
     "runtime/postgresql/bin/psql.exe",
     "runtime/postgresql/bin/pg_dump.exe",
     "runtime/postgresql/bin/pg_restore.exe",
+    "runtime/postgresql/bin/libpq.dll",
+    "test-runtime/node/node.exe",
+    "test-runtime/node_modules/@playwright/test/cli.js",
+    "test-runtime/node_modules/@playwright/test/index.mjs",
+    "test-runtime/node_modules/@playwright/test/package.json",
+    "test-runtime/node_modules/playwright/package.json",
+    "test-runtime/node_modules/playwright-core/package.json",
     "licenses/THIRD_PARTY-NOTICES.txt",
+)
+REQUIRED_POSTGRES_RUNTIME_DIRS = (
+    "runtime/postgresql/lib",
+    "runtime/postgresql/share",
+)
+REQUIRED_ACCEPTANCE_RUNTIME_DIRS = (
+    "test-runtime/playwright-browsers",
 )
 PINNED_REQUIREMENT = re.compile(
     r"^(?P<name>[A-Za-z0-9_.-]+)(?:\[[A-Za-z0-9_,.-]+\])?"
@@ -273,6 +290,36 @@ def build(args: argparse.Namespace) -> Path:
     ]
     if missing_runtime:
         raise ValueError("offline bundle is missing: " + ", ".join(missing_runtime))
+    incomplete_runtime_dirs = [
+        relative
+        for relative in REQUIRED_POSTGRES_RUNTIME_DIRS
+        if not (offline_root / PurePosixPath(relative)).is_dir()
+        or not any((offline_root / PurePosixPath(relative)).iterdir())
+    ]
+    if incomplete_runtime_dirs:
+        raise ValueError(
+            "PostgreSQL server runtime directory is missing or empty: "
+            + ", ".join(incomplete_runtime_dirs)
+        )
+    incomplete_acceptance_dirs = [
+        relative
+        for relative in REQUIRED_ACCEPTANCE_RUNTIME_DIRS
+        if not (offline_root / PurePosixPath(relative)).is_dir()
+        or not any((offline_root / PurePosixPath(relative)).iterdir())
+    ]
+    if incomplete_acceptance_dirs:
+        raise ValueError(
+            "Offline acceptance runtime directory is missing or empty: "
+            + ", ".join(incomplete_acceptance_dirs)
+        )
+    browser_root = offline_root / "test-runtime/playwright-browsers"
+    if not any(
+        path.is_file() and path.name.lower() in {"chrome.exe", "headless_shell.exe"}
+        for path in browser_root.rglob("*")
+    ):
+        raise ValueError(
+            "Offline acceptance runtime has no Windows Chromium executable"
+        )
     _assert_wheel_coverage(wheelhouse, locked)
     _assert_offline_resolution(requirements, wheelhouse)
     if not args.python_source.strip() or not args.postgres_source.strip():
@@ -309,9 +356,15 @@ def build(args: argparse.Namespace) -> Path:
             )
         elif relative.startswith("runtime/postgresql/"):
             entry.update(
-                component="postgresql-client-tools",
+                component="postgresql-server-runtime",
                 version=args.postgres_version,
                 source=args.postgres_source,
+            )
+        elif relative.startswith("test-runtime/"):
+            entry.update(
+                component="offline-acceptance-runtime",
+                version="bundle-input",
+                source="bundle-input",
             )
         elif relative.startswith("licenses/"):
             entry.update(
@@ -333,11 +386,11 @@ def build(args: argparse.Namespace) -> Path:
             "os": "windows",
             "arch": "x64",
             "python": args.python_version,
-            "postgresqlClientVersion": args.postgres_version,
+            "postgresqlServerVersion": args.postgres_version,
         },
         "sources": {
             "python": args.python_source,
-            "postgresqlClientTools": args.postgres_source,
+            "postgresqlServerRuntime": args.postgres_source,
             "pythonPackages": "PyPI via pinned requirements.txt",
         },
         "files": files,

@@ -34,15 +34,59 @@ def _write_wheel(path: Path, name: str, version: str, *, requires: tuple[str, ..
         archive.writestr(f"{dist_info}/RECORD", "")
 
 
+def _stage_runtime(offline: Path):
+    (offline / "runtime/python").mkdir(parents=True)
+    (offline / "runtime/postgresql/bin").mkdir(parents=True)
+    (offline / "runtime/postgresql/lib").mkdir(parents=True)
+    (offline / "runtime/postgresql/share").mkdir(parents=True)
+    (offline / "test-runtime/node").mkdir(parents=True)
+    (offline / "test-runtime/node_modules/@playwright/test").mkdir(parents=True)
+    (offline / "test-runtime/node_modules/playwright").mkdir(parents=True)
+    (offline / "test-runtime/node_modules/playwright-core").mkdir(parents=True)
+    (offline / "test-runtime/playwright-browsers/chromium").mkdir(parents=True)
+    (offline / "wheelhouse").mkdir(parents=True)
+    (offline / "licenses").mkdir(parents=True)
+    (offline / "runtime/python/python.exe").write_bytes(b"python-runtime")
+    for name in (
+        "initdb.exe",
+        "pg_ctl.exe",
+        "postgres.exe",
+        "psql.exe",
+        "pg_dump.exe",
+        "pg_restore.exe",
+        "libpq.dll",
+    ):
+        (offline / "runtime/postgresql/bin" / name).write_bytes(name.encode())
+    (offline / "runtime/postgresql/lib/runtime.lib").write_bytes(b"postgres-lib")
+    (offline / "runtime/postgresql/share/postgresql.conf.sample").write_text(
+        "# sample", encoding="utf-8"
+    )
+    (offline / "test-runtime/node/node.exe").write_bytes(b"node-runtime")
+    for path in (
+        "test-runtime/node_modules/@playwright/test/cli.js",
+        "test-runtime/node_modules/@playwright/test/index.mjs",
+        "test-runtime/node_modules/@playwright/test/package.json",
+        "test-runtime/node_modules/playwright/package.json",
+        "test-runtime/node_modules/playwright-core/package.json",
+        "test-runtime/playwright-browsers/chromium/chrome.exe",
+    ):
+        (offline / path).write_text("{}", encoding="utf-8")
+    (offline / "licenses/THIRD_PARTY-NOTICES.txt").write_text(
+        "notices", encoding="utf-8"
+    )
+
+
 def test_install_fails_closed_and_never_uses_network_package_sources():
     script = _text("install.ps1")
 
     assert 'Join-Path $OfflineRoot "manifest.json"' in script
     assert 'Join-Path $OfflineRoot "wheelhouse"' in script
     assert 'Join-Path $OfflineRoot "runtime\\python\\python.exe"' in script
-    assert 'Join-Path $OfflineRoot "runtime\\postgresql\\bin\\psql.exe"' in script
-    assert 'Join-Path $OfflineRoot "runtime\\postgresql\\bin\\pg_dump.exe"' in script
-    assert 'Join-Path $OfflineRoot "runtime\\postgresql\\bin\\pg_restore.exe"' in script
+    assert 'Join-Path $BundledPostgres "bin\\psql.exe"' in script
+    assert 'Join-Path $BundledPostgres "bin\\pg_dump.exe"' in script
+    assert 'Join-Path $BundledPostgres "bin\\pg_restore.exe"' in script
+    for executable in ("initdb.exe", "pg_ctl.exe", "postgres.exe"):
+        assert executable in script
     assert '"--no-index"' in script
     assert '"--find-links"' in script
     assert script.count('"--only-binary=:all:"') == 2
@@ -67,14 +111,15 @@ def test_install_verifies_every_manifest_hash_before_creating_environment():
     assert "size mismatch" in script
     assert "Offline root contains a file absent from the manifest" in script
     assert '".installing-"' in script
-    assert "Remove-Item -LiteralPath $StagingEnvironment -Recurse -Force" in script
+    assert "Remove-OwnedTree -Target $StagingEnvironment" in script
     assert "Move-Item -LiteralPath $StagingEnvironment -Destination $VirtualEnvironment" in script
 
 
-def test_install_uses_migration_credential_only_for_explicit_alembic_step():
+def test_install_generates_migration_credential_for_explicit_alembic_step():
     script = _text("install.ps1")
 
-    assert 'Get-RequiredEnvironmentValue "MIGRATION_DATABASE_URL"' in script
+    assert 'Get-RequiredEnvironmentValue "MIGRATION_DATABASE_URL"' not in script
+    assert "$env:MIGRATION_DATABASE_URL = $MigrationDatabaseUrl" in script
     assert '"-m", "alembic", "upgrade", "head"' in script
     assert '[Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")' in script
     assert 'Get-RequiredEnvironmentValue "DATABASE_URL"' not in script
@@ -93,7 +138,10 @@ def test_upgrade_refuses_to_run_while_recorded_server_is_active():
     assert '".previous-"' in script
     assert "Move-Item -LiteralPath $VirtualEnvironment -Destination $PreviousEnvironment" in script
     assert "Move-Item -LiteralPath $PreviousEnvironment -Destination $VirtualEnvironment" in script
-    assert 'Get-RequiredEnvironmentValue "MIGRATION_DATABASE_URL"' in script
+    assert 'Get-RequiredEnvironmentValue "MIGRATION_DATABASE_URL"' not in script
+    assert "ownerPasswordProtected" in script
+    assert "ConvertTo-SecureString" in script
+    assert "PostgreSQL cluster must be stopped before upgrading" in script
     assert '"--no-index"' in script
     assert script.count('"--only-binary=:all:"') == 2
     assert '"-m", "alembic", "upgrade", "head"' in script
@@ -128,17 +176,8 @@ def test_bundle_builder_rejects_missing_runtime(tmp_path: Path):
 
 def test_bundle_builder_writes_deterministic_complete_manifest(tmp_path: Path):
     offline = tmp_path / "offline"
-    (offline / "runtime/python").mkdir(parents=True)
-    (offline / "runtime/postgresql/bin").mkdir(parents=True)
-    (offline / "wheelhouse").mkdir(parents=True)
-    (offline / "licenses").mkdir(parents=True)
-    (offline / "runtime/python/python.exe").write_bytes(b"python-runtime")
-    for name in ("psql.exe", "pg_dump.exe", "pg_restore.exe"):
-        (offline / "runtime/postgresql/bin" / name).write_bytes(name.encode())
+    _stage_runtime(offline)
     _write_wheel(offline / "wheelhouse/example-1.0-py3-none-any.whl", "example", "1.0")
-    (offline / "licenses/THIRD_PARTY-NOTICES.txt").write_text(
-        "third-party notices", encoding="utf-8"
-    )
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("example==1.0\n", encoding="utf-8")
 
@@ -170,11 +209,11 @@ def test_bundle_builder_writes_deterministic_complete_manifest(tmp_path: Path):
         "os": "windows",
         "arch": "x64",
         "python": "3.13",
-        "postgresqlClientVersion": "16.4",
+        "postgresqlServerVersion": "16.4",
     }
     assert manifest["sources"]["python"] == "python.org CPython 3.13 x64"
     assert (
-        manifest["sources"]["postgresqlClientTools"]
+        manifest["sources"]["postgresqlServerRuntime"]
         == "postgresql.org PostgreSQL x64"
     )
     paths = [entry["path"] for entry in manifest["files"]]
@@ -188,6 +227,12 @@ def test_bundle_builder_writes_deterministic_complete_manifest(tmp_path: Path):
     assert "requirements.txt" in paths
     assert "runtime/python/python.exe" in paths
     assert "runtime/postgresql/bin/pg_dump.exe" in paths
+    assert "runtime/postgresql/bin/initdb.exe" in paths
+    assert "runtime/postgresql/bin/pg_ctl.exe" in paths
+    assert "runtime/postgresql/bin/postgres.exe" in paths
+    assert "test-runtime/node/node.exe" in paths
+    assert "test-runtime/node_modules/@playwright/test/cli.js" in paths
+    assert "test-runtime/playwright-browsers/chromium/chrome.exe" in paths
     assert "wheelhouse/example-1.0-py3-none-any.whl" in paths
     for entry in manifest["files"]:
         file_path = offline / entry["path"]
@@ -198,16 +243,46 @@ def test_bundle_builder_writes_deterministic_complete_manifest(tmp_path: Path):
         assert entry["source"]
 
 
+def test_bundle_builder_rejects_placeholder_browser_runtime(tmp_path: Path):
+    offline = tmp_path / "offline"
+    _stage_runtime(offline)
+    (offline / "test-runtime/playwright-browsers/chromium/chrome.exe").unlink()
+    (offline / "test-runtime/playwright-browsers/README.txt").write_text(
+        "placeholder", encoding="utf-8"
+    )
+    _write_wheel(offline / "wheelhouse/example-1.0-py3-none-any.whl", "example", "1.0")
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("example==1.0\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "build_offline_bundle.py"),
+            "--offline-root",
+            str(offline),
+            "--requirements",
+            str(requirements),
+            "--no-download",
+            "--python-source",
+            "python source",
+            "--postgres-source",
+            "postgres source",
+            "--postgres-version",
+            "16.4",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Windows Chromium executable" in result.stderr
+    assert not (offline / "manifest.json").exists()
+
+
 def test_bundle_builder_rejects_wheelhouse_that_does_not_cover_lock(tmp_path: Path):
     offline = tmp_path / "offline"
-    (offline / "runtime/python").mkdir(parents=True)
-    (offline / "runtime/postgresql/bin").mkdir(parents=True)
-    (offline / "wheelhouse").mkdir(parents=True)
-    (offline / "licenses").mkdir(parents=True)
-    (offline / "runtime/python/python.exe").write_bytes(b"python-runtime")
-    for name in ("psql.exe", "pg_dump.exe", "pg_restore.exe"):
-        (offline / "runtime/postgresql/bin" / name).write_bytes(name.encode())
-    (offline / "licenses/THIRD_PARTY-NOTICES.txt").write_text("notices", encoding="utf-8")
+    _stage_runtime(offline)
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("missing-package==9.9\n", encoding="utf-8")
 
@@ -239,14 +314,7 @@ def test_bundle_builder_rejects_wheelhouse_that_does_not_cover_lock(tmp_path: Pa
 
 def test_bundle_builder_rejects_invalid_or_incompatible_wheel(tmp_path: Path):
     offline = tmp_path / "offline"
-    (offline / "runtime/python").mkdir(parents=True)
-    (offline / "runtime/postgresql/bin").mkdir(parents=True)
-    (offline / "wheelhouse").mkdir(parents=True)
-    (offline / "licenses").mkdir(parents=True)
-    (offline / "runtime/python/python.exe").write_bytes(b"python-runtime")
-    for name in ("psql.exe", "pg_dump.exe", "pg_restore.exe"):
-        (offline / "runtime/postgresql/bin" / name).write_bytes(name.encode())
-    (offline / "licenses/THIRD_PARTY-NOTICES.txt").write_text("notices", encoding="utf-8")
+    _stage_runtime(offline)
     (offline / "wheelhouse/example-1.0-cp313-cp313-macosx_14_0_arm64.whl").write_bytes(
         b"not-a-wheel"
     )
@@ -281,14 +349,7 @@ def test_bundle_builder_rejects_invalid_or_incompatible_wheel(tmp_path: Path):
 
 def test_bundle_builder_resolves_transitive_dependencies_offline(tmp_path: Path):
     offline = tmp_path / "offline"
-    (offline / "runtime/python").mkdir(parents=True)
-    (offline / "runtime/postgresql/bin").mkdir(parents=True)
-    (offline / "wheelhouse").mkdir(parents=True)
-    (offline / "licenses").mkdir(parents=True)
-    (offline / "runtime/python/python.exe").write_bytes(b"python-runtime")
-    for name in ("psql.exe", "pg_dump.exe", "pg_restore.exe"):
-        (offline / "runtime/postgresql/bin" / name).write_bytes(name.encode())
-    (offline / "licenses/THIRD_PARTY-NOTICES.txt").write_text("notices", encoding="utf-8")
+    _stage_runtime(offline)
     _write_wheel(
         offline / "wheelhouse/example-1.0-py3-none-any.whl",
         "example",

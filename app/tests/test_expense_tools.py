@@ -641,6 +641,74 @@ def test_first_expense_attachment_uses_controlled_file_service_atomically(expens
             connection.execute(sa.text("DELETE FROM users WHERE id=:id"), {"id": user_id})
 
 
+def test_attached_invoice_validates_draft_parent_and_recalculates_total_in_file_transaction(
+    expense_service, tmp_path, request
+):
+    from app.repositories.files import FilesRepository
+    from app.services.expenses import ExpenseError, ExpenseService
+    from app.services.files import FileService
+
+    class AuditRecorder:
+        def record(self, connection, **event):
+            return event
+
+    engine = expense_service.repository.engine
+    username = f"expense-parent-{os.getpid()}"
+    with engine.begin() as connection:
+        user_id = connection.scalar(sa.text(
+            "INSERT INTO users (username,password,role,name) VALUES (:username,'x','user','张老师') RETURNING id"
+        ), {"username": username})
+    state = {"rid": None}
+
+    def cleanup():
+        with engine.begin() as connection:
+            connection.execute(sa.text(
+                "DELETE FROM object_files WHERE file_id IN (SELECT id FROM stored_files WHERE created_by=:uid)"
+            ), {"uid": user_id})
+            connection.execute(sa.text(
+                "DELETE FROM stored_file_versions WHERE file_id IN (SELECT id FROM stored_files WHERE created_by=:uid)"
+            ), {"uid": user_id})
+            connection.execute(sa.text("DELETE FROM stored_files WHERE created_by=:uid"), {"uid": user_id})
+            if state["rid"] is not None:
+                connection.execute(sa.text("DELETE FROM expense_invoice_item WHERE invoice_id IN (SELECT id FROM expense_invoice WHERE reimbursement_id=:rid)"), {"rid": state["rid"]})
+                connection.execute(sa.text("DELETE FROM expense_invoice WHERE reimbursement_id=:rid"), {"rid": state["rid"]})
+                connection.execute(sa.text("DELETE FROM expense_payment WHERE reimbursement_id=:rid"), {"rid": state["rid"]})
+                connection.execute(sa.text("DELETE FROM expense_reimbursement WHERE id=:rid"), {"rid": state["rid"]})
+            connection.execute(sa.text("DELETE FROM users WHERE id=:uid"), {"uid": user_id})
+
+    request.addfinalizer(cleanup)
+    files = FileService(
+        FilesRepository(engine), AuditRecorder(), storage_root=tmp_path / "parent-files",
+        max_bytes=1024 * 1024, preview_max_bytes=1024 * 1024,
+    )
+    service = ExpenseService(expense_service.repository, file_service=files)
+    rid, _ = service.create_reimbursement(title="附件发票合同")
+    state["rid"] = rid
+
+    iid, _ = service.create_invoice_with_upload(
+        io.BytesIO(b"invoice contract"), "invoice.txt", actor_user_id=user_id,
+        request_id="invoice-parent", reimbursement_id=rid, amount="1280.00",
+        date="2026-09-04",
+    )
+    assert service.get_invoice(iid)["reimbursement_id"] == rid
+    assert service.get_reimbursement(rid)["total_amount"] == 1280.0
+
+    with engine.begin() as connection:
+        expense_service.repository.update_reimbursement(connection, rid, {"status": "已确认"})
+    with pytest.raises(ExpenseError) as confirmed:
+        service.create_invoice_with_upload(
+            io.BytesIO(b"second invoice"), "second.txt", actor_user_id=user_id,
+            request_id="invoice-confirmed", reimbursement_id=rid, amount="1.00",
+        )
+    assert confirmed.value.code == "INVALID_STATUS"
+    with pytest.raises(ExpenseError) as missing:
+        service.create_invoice_with_upload(
+            io.BytesIO(b"missing parent"), "missing.txt", actor_user_id=user_id,
+            request_id="invoice-missing", reimbursement_id=999999999, amount="1.00",
+        )
+    assert missing.value.code == "NOT_FOUND"
+
+
 @pytest.mark.parametrize("doc_type", ["差旅费报销凭证", "因公出差审批单", "伙食补助费申报表"])
 def test_three_shipped_docx_templates_generate_real_word_files(doc_type):
     from docx import Document

@@ -8,6 +8,51 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 $StagingEnvironment = $null
 $PreviousEnvironment = $null
+$PostgresStarted = $false
+$PgCtlExe = $null
+$PostgresData = $null
+
+function Assert-LocalNoReparsePath {
+    param([string]$Path, [switch]$InspectTree)
+    $FullPath = [IO.Path]::GetFullPath($Path)
+    if ($FullPath.StartsWith("\\") -or $FullPath.StartsWith("//")) { throw "Path must not use UNC or network storage." }
+    $Root = [IO.Path]::GetPathRoot($FullPath)
+    if ((New-Object IO.DriveInfo($Root)).DriveType -eq [IO.DriveType]::Network) { throw "Path must not use a network drive." }
+    $Current = $FullPath
+    while ($Current) {
+        if (Test-Path -LiteralPath $Current) {
+            if (((Get-Item -LiteralPath $Current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Path contains a ReparsePoint or junction." }
+        }
+        $Parent = Split-Path -Parent $Current
+        if (-not $Parent -or $Parent -eq $Current) { break }
+        $Current = $Parent
+    }
+    if ($InspectTree -and (Test-Path -LiteralPath $FullPath -PathType Container)) {
+        foreach ($Item in Get-ChildItem -LiteralPath $FullPath -Recurse -Force) {
+            if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Path tree contains a ReparsePoint or junction." }
+        }
+    }
+    return $FullPath
+}
+
+function Read-ValidatedDeployment {
+    param([string]$DataRoot)
+    $DeploymentPath = Join-Path (Join-Path $DataRoot "config") "deployment.json"
+    if (-not (Test-Path -LiteralPath $DeploymentPath -PathType Leaf)) { throw "Deployment state was not found; run install.ps1 before upgrade.ps1." }
+    try { $State = Get-Content -LiteralPath $DeploymentPath -Raw | ConvertFrom-Json } catch { throw "Deployment state is invalid; refusing to upgrade." }
+    foreach ($Identifier in @($State.bootstrapRole, $State.ownerRole, $State.runtimeRole, $State.databaseName)) {
+        if ([string]$Identifier -notmatch '^[a-z][a-z0-9_]{0,62}$') { throw "Deployment state contains an invalid PostgreSQL identifier." }
+    }
+    $UniqueRoles = @($State.bootstrapRole, $State.ownerRole, $State.runtimeRole) | Sort-Object -Unique
+    if ([int]$State.schemaVersion -ne 1 -or [string]$State.databaseHost -ne "127.0.0.1" -or [int]$State.databasePort -lt 1024 -or [int]$State.databasePort -gt 65535 -or @($UniqueRoles).Count -ne 3) { throw "Deployment state does not describe a supported local installation." }
+    $ExpectedRuntime = Join-Path (Join-Path $DataRoot "runtime") "postgresql"
+    $ExpectedData = Join-Path (Join-Path $DataRoot "postgresql") "data"
+    foreach ($Pair in @(@([string]$State.postgresRuntime, $ExpectedRuntime), @([string]$State.postgresData, $ExpectedData))) {
+        $Actual = Assert-LocalNoReparsePath -Path $Pair[0] -InspectTree
+        if (-not $Actual.Equals([IO.Path]::GetFullPath($Pair[1]), [StringComparison]::OrdinalIgnoreCase)) { throw "Deployment path must match the expected APP_DATA_ROOT location." }
+    }
+    return $State
+}
 
 function Get-RequiredEnvironmentValue {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -16,6 +61,19 @@ function Get-RequiredEnvironmentValue {
         throw "Required environment variable $Name is not configured."
     }
     return $Value
+}
+
+function Unprotect-Secret {
+    param([Parameter(Mandatory = $true)][string]$CipherText)
+    $SecureValue = ConvertTo-SecureString $CipherText
+    $Pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureValue)
+    try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($Pointer) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($Pointer) }
+}
+
+function New-DatabaseUrl {
+    param([string]$Role, [string]$Password, [string]$Database, [int]$Port)
+    return "postgresql+psycopg://${Role}:$([Uri]::EscapeDataString($Password))@127.0.0.1:$Port/$Database"
 }
 
 function Invoke-Checked {
@@ -129,9 +187,13 @@ function Assert-OfflineManifest {
     foreach ($RequiredManifestPath in @(
         "requirements.txt",
         "runtime/python/python.exe",
+        "runtime/postgresql/bin/initdb.exe",
+        "runtime/postgresql/bin/pg_ctl.exe",
+        "runtime/postgresql/bin/postgres.exe",
         "runtime/postgresql/bin/psql.exe",
         "runtime/postgresql/bin/pg_dump.exe",
         "runtime/postgresql/bin/pg_restore.exe",
+        "runtime/postgresql/bin/libpq.dll",
         "licenses/THIRD_PARTY-NOTICES.txt"
     )) {
         if (-not $ManifestPaths.ContainsKey($RequiredManifestPath)) {
@@ -156,11 +218,34 @@ function Assert-OfflineManifest {
 
 try {
     $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+    [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")
+    [Environment]::SetEnvironmentVariable("DATABASE_URL", $null, "Process")
+    [Environment]::SetEnvironmentVariable("FLASK_SECRET_KEY", $null, "Process")
+    foreach ($PostgresVariable in @("PGPASSWORD", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER")) {
+        [Environment]::SetEnvironmentVariable($PostgresVariable, $null, "Process")
+    }
     $ConfiguredDataRoot = Get-RequiredEnvironmentValue "APP_DATA_ROOT"
     if (-not (Test-Path -LiteralPath $ConfiguredDataRoot -PathType Container)) {
         throw "APP_DATA_ROOT must reference an existing directory."
     }
-    $DataRoot = (Resolve-Path -LiteralPath $ConfiguredDataRoot).Path
+    $DataRoot = Assert-LocalNoReparsePath -Path (Resolve-Path -LiteralPath $ConfiguredDataRoot).Path -InspectTree
+    $Deployment = Read-ValidatedDeployment -DataRoot $DataRoot
+    $PostgresData = (Resolve-Path -LiteralPath ([string]$Deployment.postgresData)).Path
+    $PostgresRuntime = (Resolve-Path -LiteralPath ([string]$Deployment.postgresRuntime)).Path
+    $PgCtlExe = Join-Path $PostgresRuntime "bin\pg_ctl.exe"
+    if (-not (Test-Path -LiteralPath $PgCtlExe -PathType Leaf)) { throw "Bundled pg_ctl.exe is missing." }
+    & $PgCtlExe @("status", "-D", $PostgresData) *> $null
+    if ($LASTEXITCODE -eq 0) { throw "PostgreSQL cluster must be stopped before upgrading." }
+    $PostgresPidState = Join-Path (Join-Path $DataRoot "run") "postgresql.pid.json"
+    if (Test-Path -LiteralPath $PostgresPidState -PathType Leaf) {
+        throw "PostgreSQL PID state exists; resolve it before upgrading."
+    }
+    $OwnerPassword = Unprotect-Secret ([string]$Deployment.ownerPasswordProtected)
+    $MigrationDatabaseUrl = New-DatabaseUrl `
+        -Role ([string]$Deployment.ownerRole) `
+        -Password $OwnerPassword `
+        -Database ([string]$Deployment.databaseName) `
+        -Port ([int]$Deployment.databasePort)
     $PidFile = Join-Path (Join-Path $DataRoot "run") "research-management.pid.json"
     if (Test-Path -LiteralPath $PidFile -PathType Leaf) {
         try {
@@ -211,8 +296,6 @@ try {
     if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
         throw "Installed virtual environment was not found; run install.ps1 first."
     }
-    $MigrationDatabaseUrl = Get-RequiredEnvironmentValue "MIGRATION_DATABASE_URL"
-
     $EnvironmentParent = Split-Path -Parent $VirtualEnvironment
     $EnvironmentName = Split-Path -Leaf $VirtualEnvironment
     $StagingEnvironment = Join-Path $EnvironmentParent (
@@ -239,8 +322,15 @@ try {
     )
     Push-Location $ProjectRoot
     try {
+        Invoke-Checked -Executable $PgCtlExe -Arguments @(
+            "start", "-D", $PostgresData, "-l", (Join-Path (Join-Path $DataRoot "logs") "postgresql.log"),
+            "-w", "-o", "-h 127.0.0.1 -p $([int]$Deployment.databasePort)"
+        )
+        $PostgresStarted = $true
         $env:MIGRATION_DATABASE_URL = $MigrationDatabaseUrl
         Invoke-Checked -Executable $VenvPython -Arguments @("-m", "alembic", "upgrade", "head")
+        Invoke-Checked -Executable $PgCtlExe -Arguments @("stop", "-D", $PostgresData, "-m", "fast", "-w")
+        $PostgresStarted = $false
     }
     finally {
         [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")
@@ -255,6 +345,10 @@ catch {
     $OriginalError = $_.Exception.Message
     [Environment]::SetEnvironmentVariable("MIGRATION_DATABASE_URL", $null, "Process")
     try {
+        if ($PostgresStarted -and $null -ne $PgCtlExe -and $null -ne $PostgresData) {
+            & $PgCtlExe @("stop", "-D", $PostgresData, "-m", "fast", "-w") | Out-Null
+            $PostgresStarted = $false
+        }
         if ($null -ne $StagingEnvironment -and (Test-Path -LiteralPath $StagingEnvironment)) {
             Remove-Item -LiteralPath $StagingEnvironment -Recurse -Force
         }

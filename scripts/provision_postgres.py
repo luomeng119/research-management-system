@@ -50,6 +50,20 @@ def provision(
                 "SELECT rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, "
                 "rolbypassrls, rolreplication "
                 "FROM pg_roles WHERE rolname = %s",
+                (migration_owner,),
+            )
+            owner_attributes = cursor.fetchone()
+            expected_owner_attributes = (True, False, False, False, False, False)
+            if owner_attributes != expected_owner_attributes:
+                raise RuntimeError(
+                    "migration owner must have LOGIN and must not have superuser, "
+                    "role creation, database creation, row-security bypass, or "
+                    "replication attributes"
+                )
+            cursor.execute(
+                "SELECT rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, "
+                "rolbypassrls, rolreplication "
+                "FROM pg_roles WHERE rolname = %s",
                 (runtime_role,),
             )
             runtime_attributes = cursor.fetchone()

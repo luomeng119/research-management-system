@@ -293,14 +293,34 @@ class ExpenseService:
         values = self._invoice_values(fields)
         values.update({"reimbursement_id": int(reimbursement_id) if reimbursement_id is not None else None, "ocr_text": self._text(fields.get("ocr_text"), field="OCR", maximum=100_000), "file_path": None, "status": "已匹配" if reimbursement_id is not None else "未匹配", "matched_payment_ids": [], "created_at": self._now()})
         with self.repository.engine.connect() as connection:
+            if reimbursement_id is not None:
+                reimbursement = self.repository.get_reimbursement(
+                    connection, int(reimbursement_id)
+                )
+                if not reimbursement:
+                    raise ExpenseError("NOT_FOUND", "报销项不存在", 404)
+                self._require_draft(reimbursement)
             iid = self.repository.next_id(connection, "expense_invoice")
         values["id"] = iid
         items = self._invoice_items(iid, fields.get("items", []))
 
         def create_metadata(writer):
+            if reimbursement_id is not None:
+                reimbursement = writer.one(
+                    self.repository.reimbursement_statement(
+                        int(reimbursement_id), lock=True
+                    )
+                )
+                if not reimbursement:
+                    raise ExpenseError("NOT_FOUND", "报销项不存在", 404)
+                self._require_draft(reimbursement)
             writer.execute(self.repository.insert_invoice_statement(values))
             if items:
                 writer.execute(self.repository.invoice_items.insert(), items)
+            if reimbursement_id is not None and writer.update(
+                self.repository.recalculate_total_statement(int(reimbursement_id))
+            ) != 1:
+                raise ExpenseError("NOT_FOUND", "报销项不存在", 404)
 
         result = self.file_service.upload_new_object(
             stream, original_name=original_name, object_type="INVOICE", object_id=str(iid),

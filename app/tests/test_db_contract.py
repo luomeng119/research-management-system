@@ -68,8 +68,10 @@ LEGACY_TABLES = {
 
 
 class _ProvisionCursor:
-    def __init__(self, *, attributes, memberships=(), effective_permissions=None):
+    def __init__(self, *, attributes, owner_attributes=None, schema_owner="migration_owner", memberships=(), effective_permissions=None):
         self.attributes = attributes
+        self.owner_attributes = owner_attributes or (True, False, False, False, False, False)
+        self.schema_owner = schema_owner
         self.memberships = list(memberships)
         self.effective_permissions = effective_permissions
         self.result = None
@@ -85,11 +87,15 @@ class _ProvisionCursor:
         if isinstance(statement, str) and "FROM pg_database" in statement:
             self.result = ("migration_owner", "rm_v1_t02", "migration_owner")
         elif isinstance(statement, str) and "FROM pg_namespace" in statement:
-            self.result = ("migration_owner",)
+            self.result = (self.schema_owner,)
         elif isinstance(statement, str) and "FROM pg_auth_members" in statement:
             self.result = self.memberships
         elif isinstance(statement, str) and "FROM pg_roles" in statement:
-            self.result = self.attributes
+            self.result = (
+                self.owner_attributes
+                if parameters == ("migration_owner",)
+                else self.attributes
+            )
         elif isinstance(statement, str) and "has_database_privilege" in statement:
             self.result = self.effective_permissions
         else:
@@ -122,11 +128,13 @@ class _ProvisionConnection:
 
 
 def _run_provision_with_fake_postgres(
-    *, attributes, memberships=(), effective_permissions=None, **kwargs
+    *, attributes, owner_attributes=None, schema_owner="migration_owner", memberships=(), effective_permissions=None, **kwargs
 ):
     provisioner = importlib.import_module("scripts.provision_postgres")
     cursor = _ProvisionCursor(
         attributes=attributes,
+        owner_attributes=owner_attributes,
+        schema_owner=schema_owner,
         memberships=memberships,
         effective_permissions=effective_permissions,
     )
@@ -161,6 +169,33 @@ def test_provision_rejects_runtime_role_with_any_direct_membership():
         _run_provision_with_fake_postgres(
             attributes=(True, False, False, False, False, False),
             memberships=[("pg_write_all_data",)],
+        )
+
+
+def test_provision_rejects_target_database_when_public_schema_was_not_transferred():
+    with pytest.raises(RuntimeError, match="own the public schema"):
+        _run_provision_with_fake_postgres(
+            attributes=(True, False, False, False, False, False),
+            schema_owner="rm_bootstrap",
+        )
+
+
+@pytest.mark.parametrize(
+    "owner_attributes",
+    [
+        (False, False, False, False, False, False),
+        (True, True, False, False, False, False),
+        (True, False, True, False, False, False),
+        (True, False, False, True, False, False),
+        (True, False, False, False, True, False),
+        (True, False, False, False, False, True),
+    ],
+)
+def test_provision_rejects_non_login_or_privileged_migration_owner(owner_attributes):
+    with pytest.raises(RuntimeError, match="migration owner"):
+        _run_provision_with_fake_postgres(
+            attributes=(True, False, False, False, False, False),
+            owner_attributes=owner_attributes,
         )
 
 
@@ -1072,6 +1107,28 @@ def test_transaction_context_rolls_back_on_failure(runtime_engine):
             )
         )
     assert count == 0
+
+
+def test_postgresql_schema_ddl_is_atomic_for_acceptance_reset(migration_engine):
+    schema_name = f"acceptance_atomic_{uuid.uuid4().hex}"
+    quoted_schema = migration_engine.dialect.identifier_preparer.quote(schema_name)
+
+    with migration_engine.connect() as connection:
+        transaction = connection.begin()
+        connection.exec_driver_sql(f"CREATE SCHEMA {quoted_schema}")
+        connection.exec_driver_sql(f"DROP SCHEMA {quoted_schema} CASCADE")
+        connection.exec_driver_sql(
+            f"CREATE SCHEMA {quoted_schema} AUTHORIZATION CURRENT_USER"
+        )
+        transaction.rollback()
+
+        exists = connection.scalar(
+            sa.text(
+                "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = :name)"
+            ),
+            {"name": schema_name},
+        )
+    assert exists is False
 
 
 def test_paginated_query_executes_in_postgresql(runtime_engine):

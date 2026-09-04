@@ -41,10 +41,14 @@ class ExpensesRepository:
         return int(connection.scalar(sa.text("SELECT nextval(pg_get_serial_sequence(:table_name, 'id'))").bindparams(table_name=table_name)))
 
     def get_reimbursement(self, connection, rid: int, *, lock=False):
-        statement = sa.select(self.reimbursements).where(self.reimbursements.c.id == rid)
-        if lock and connection.dialect.name == "postgresql":
-            statement = statement.with_for_update(of=self.reimbursements)
+        statement = self.reimbursement_statement(rid, lock=lock)
         return self.one(connection, statement)
+
+    def reimbursement_statement(self, rid: int, *, lock=False):
+        statement = sa.select(self.reimbursements).where(self.reimbursements.c.id == rid)
+        if lock:
+            statement = statement.with_for_update(of=self.reimbursements)
+        return statement
 
     def list_reimbursements(self, connection, *, status=None, keyword=None, limit=200, offset=0):
         inv_count = sa.select(sa.func.count()).where(self.invoices.c.reimbursement_id == self.reimbursements.c.id).scalar_subquery()
@@ -253,6 +257,18 @@ class ExpensesRepository:
         total = connection.scalar(sa.select(sa.func.coalesce(sa.func.sum(self.invoices.c.amount), 0)).where(self.invoices.c.reimbursement_id == rid))
         self.update_reimbursement(connection, rid, {"total_amount": total})
         return total
+
+    def recalculate_total_statement(self, rid: int):
+        total = (
+            sa.select(sa.func.coalesce(sa.func.sum(self.invoices.c.amount), 0))
+            .where(self.invoices.c.reimbursement_id == rid)
+            .scalar_subquery()
+        )
+        return (
+            self.reimbursements.update()
+            .where(self.reimbursements.c.id == rid)
+            .values(total_amount=total)
+        )
 
     def stats(self, connection):
         draft = connection.scalar(sa.select(sa.func.count(sa.distinct(self.reimbursements.c.id))).select_from(

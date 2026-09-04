@@ -160,6 +160,38 @@ def test_upload_new_object_creates_standard_metadata_and_first_file_atomically(s
     assert service.audit_service.events[-1]["properties"]["operation"] == "UPLOAD"
 
 
+def test_metadata_writer_supports_bounded_read_and_update_without_connection_escape(
+    service, engine
+):
+    standards = sa.Table("standards", sa.MetaData(), autoload_with=engine)
+
+    def create_and_normalize(writer):
+        writer.execute(
+            standards.insert().values(
+                doc_id="STD-2026-BOUNDED", name="待校验标准", status="ACTIVE"
+            )
+        )
+        found = writer.one(
+            sa.select(standards).where(standards.c.doc_id == "STD-2026-BOUNDED")
+        )
+        assert found["name"] == "待校验标准"
+        assert writer.update(
+            standards.update()
+            .where(standards.c.doc_id == "STD-2026-BOUNDED")
+            .values(name="已校验标准")
+        ) == 1
+
+    service.upload_new_object(
+        _pdf(), original_name="已校验标准.pdf", object_type="STANDARD",
+        object_id="STD-2026-BOUNDED", create_metadata=create_and_normalize,
+        actor_user_id=1, request_id="req-bounded-metadata",
+    )
+
+    assert _rows(engine, "standards") == [{
+        "doc_id": "STD-2026-BOUNDED", "name": "已校验标准", "status": "ACTIVE"
+    }]
+
+
 @pytest.mark.parametrize("operation", ["commit", "rollback", "begin", "begin_nested"])
 def test_upload_new_object_rejects_callback_transaction_control_without_residue(
     service, engine, operation
@@ -538,6 +570,9 @@ def test_new_version_preserves_v1_detects_conflict_and_archive_preserves_history
         _pdf(b"v1"), original_name="report.pdf", object_type="EXPENSE", object_id="7",
         actor_user_id=1, request_id="req-v1",
     )
+    assert service.count_versions(
+        first["fileId"], object_type="EXPENSE", object_id="7"
+    ) == 1
     v1_bytes = (service.storage_root / first["storagePath"]).read_bytes()
     second = service.add_version(
         first["fileId"], _pdf(b"v2"), original_name="report.pdf",
@@ -546,6 +581,9 @@ def test_new_version_preserves_v1_detects_conflict_and_archive_preserves_history
     )
 
     assert second["versionNo"] == 2
+    assert service.count_versions(
+        first["fileId"], object_type="EXPENSE", object_id="7"
+    ) == 2
     assert second["storagePath"] != first["storagePath"]
     assert (service.storage_root / first["storagePath"]).read_bytes() == v1_bytes
     with pytest.raises(FileServiceError) as conflict:
