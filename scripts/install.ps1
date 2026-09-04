@@ -44,6 +44,115 @@ function Invoke-Checked {
     }
 }
 
+function Invoke-CheckedOutput {
+    param(
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+    $Output = (& $Executable @Arguments 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed with exit code $LASTEXITCODE: $Executable"
+    }
+    return $Output
+}
+
+function Assert-DeclaredVersion {
+    param([string]$Output, [string]$Declared, [string]$Component)
+    $Match = [Regex]::Match($Output, '(?<!\d)(\d+\.\d+(?:\.\d+)*)(?!\d)')
+    if (-not $Match.Success) { throw "$Component version probe returned no version." }
+    $Actual = $Match.Groups[1].Value
+    if ($Actual -ne $Declared -and -not $Actual.StartsWith($Declared + '.', [StringComparison]::Ordinal)) {
+        throw "$Component runtime version $Actual does not match declared version $Declared."
+    }
+    return $Actual
+}
+
+function Assert-BundledRuntimeVersions {
+    param(
+        [object]$Manifest, [string]$RuntimePython, [string]$BundledPostgres,
+        [string]$ProbeRoot, [string]$TestRuntime
+    )
+    if ([string]$Manifest.target.os -ne 'windows' -or [string]$Manifest.target.arch -ne 'x64') {
+        throw "Offline manifest target must be Windows x64."
+    }
+    foreach ($Entry in @($Manifest.files)) {
+        if ($Entry.verified -ne $true -or [string]::IsNullOrWhiteSpace([string]$Entry.version) -or
+            [string]::IsNullOrWhiteSpace([string]$Entry.source) -or
+            @($Entry.verification).Count -eq 0 -or
+            [string]$Entry.source -eq 'bundle-input' -or [string]$Entry.version -eq 'bundle-input') {
+            throw "Offline manifest contains an unverified or placeholder entry: $($Entry.path)"
+        }
+    }
+    $null = Assert-DeclaredVersion -Output (Invoke-CheckedOutput -Executable $RuntimePython -Arguments @('--version')) `
+        -Declared ([string]$Manifest.target.python) -Component 'Python'
+    $ProbeEnvironment = Join-Path $ProbeRoot ('.python-runtime-probe-' + [Guid]::NewGuid().ToString('N'))
+    $ProbeMarker = New-OwnershipMarker -Target $ProbeEnvironment
+    try {
+        Invoke-Checked -Executable $RuntimePython -Arguments @('-m', 'venv', $ProbeEnvironment)
+        $ProbePython = Join-Path $ProbeEnvironment 'Scripts\python.exe'
+        if (-not (Test-Path -LiteralPath $ProbePython -PathType Leaf)) {
+            throw 'Bundled Python could not create a Windows virtual environment.'
+        }
+        Invoke-Checked -Executable $ProbePython -Arguments @('-m', 'ensurepip', '--version')
+    }
+    finally {
+        Remove-OwnedTree -Target $ProbeEnvironment -Marker $ProbeMarker
+    }
+    $PostgresVersions = @()
+    foreach ($Name in @('initdb.exe', 'pg_ctl.exe', 'postgres.exe', 'psql.exe', 'pg_dump.exe', 'pg_restore.exe')) {
+        $Executable = Join-Path $BundledPostgres "bin\$Name"
+        $PostgresVersions += Assert-DeclaredVersion -Output (Invoke-CheckedOutput -Executable $Executable -Arguments @('--version')) `
+            -Declared ([string]$Manifest.target.postgresqlServerVersion) -Component "PostgreSQL $Name"
+    }
+    if (@($PostgresVersions | Sort-Object -Unique).Count -ne 1 -or
+        $PostgresVersions[0] -ne [string]$Manifest.target.postgresqlServerVersion) {
+        throw 'PostgreSQL runtime executable versions must be identical and exactly match the manifest.'
+    }
+    $Node = Join-Path $TestRuntime 'node\node.exe'
+    $NodeActual = Assert-DeclaredVersion -Output (Invoke-CheckedOutput -Executable $Node -Arguments @('--version')) `
+        -Declared ([string]$Manifest.runtimeValidation.nodeVersion) -Component 'Node.js'
+    if ($NodeActual -ne [string]$Manifest.runtimeValidation.nodeVersion) {
+        throw 'Node.js runtime must exactly match the manifest version.'
+    }
+    $PlaywrightVersion = [string]$Manifest.runtimeValidation.playwrightVersion
+    foreach ($Package in @('@playwright/test', 'playwright', 'playwright-core')) {
+        $PackageJson = Join-Path $TestRuntime "node_modules\$Package\package.json"
+        $Metadata = Get-Content -LiteralPath $PackageJson -Raw | ConvertFrom-Json
+        if ([string]$Metadata.name -ne $Package -or [string]$Metadata.version -ne $PlaywrightVersion) {
+            throw "Playwright package identity or version mismatch: $Package"
+        }
+    }
+    $BrowsersJson = Get-Content -LiteralPath (Join-Path $TestRuntime 'node_modules\playwright-core\browsers.json') -Raw | ConvertFrom-Json
+    $BrowserName = [string]$Manifest.runtimeValidation.browserName
+    $BrowserRevision = [string]$Manifest.runtimeValidation.chromiumRevision
+    $BrowserMetadata = @($BrowsersJson.browsers | Where-Object {
+        ([string]$_.name).Replace('-', '_') -eq $BrowserName -and [string]$_.revision -eq $BrowserRevision
+    })
+    if ($BrowserMetadata.Count -ne 1) { throw 'Playwright browser revision metadata mismatch.' }
+    $BrowserRoot = Join-Path $TestRuntime 'playwright-browsers'
+    $ExpectedBrowser = [IO.Path]::GetFullPath((Join-Path $BrowserRoot ([string]$Manifest.runtimeValidation.browserExecutable)))
+    $null = Assert-LocalNoReparsePath -Path $ExpectedBrowser
+    $ExpectedRelative = 'test-runtime/playwright-browsers/' + ([string]$Manifest.runtimeValidation.browserExecutable).Replace('\', '/')
+    if (@($Manifest.files | Where-Object { [string]$_.path -eq $ExpectedRelative }).Count -ne 1) {
+        throw 'Manifest does not bind the Playwright-selected browser executable.'
+    }
+    $PlaywrightModule = Join-Path $TestRuntime 'node_modules\playwright'
+    $ProbeScript = "const {chromium}=require(process.argv[1]);(async()=>{const executablePath=chromium.executablePath();const browser=await chromium.launch({headless:true,executablePath});await browser.close();process.stdout.write(JSON.stringify({executablePath}));})().catch(e=>{console.error(e);process.exit(1)});"
+    $PreviousBrowserPath = [Environment]::GetEnvironmentVariable('PLAYWRIGHT_BROWSERS_PATH', 'Process')
+    try {
+        $env:PLAYWRIGHT_BROWSERS_PATH = $BrowserRoot
+        $ProbeResult = Invoke-CheckedOutput -Executable $Node -Arguments @('-e', $ProbeScript, $PlaywrightModule)
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable('PLAYWRIGHT_BROWSERS_PATH', $PreviousBrowserPath, 'Process')
+    }
+    try { $SelectedBrowser = [IO.Path]::GetFullPath([string](($ProbeResult | ConvertFrom-Json).executablePath)) }
+    catch { throw 'Playwright launch probe returned an invalid executable path.' }
+    if (-not [string]::Equals($SelectedBrowser, $ExpectedBrowser, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Playwright selected browser does not match the manifest-bound staged executable.'
+    }
+}
+
 function New-RandomSecret {
     $Bytes = New-Object byte[] 32
     $Generator = [Security.Cryptography.RandomNumberGenerator]::Create()
@@ -337,6 +446,11 @@ function Assert-OfflineManifest {
         "runtime/postgresql/bin/pg_dump.exe",
         "runtime/postgresql/bin/pg_restore.exe",
         "runtime/postgresql/bin/libpq.dll",
+        "test-runtime/node/node.exe",
+        "test-runtime/node_modules/@playwright/test/package.json",
+        "test-runtime/node_modules/playwright/package.json",
+        "test-runtime/node_modules/playwright-core/package.json",
+        "test-runtime/node_modules/playwright-core/browsers.json",
         "licenses/THIRD_PARTY-NOTICES.txt"
     )) {
         if (-not $ManifestPaths.ContainsKey($RequiredManifestPath)) {
@@ -357,6 +471,7 @@ function Assert-OfflineManifest {
             throw "Manifest contains a path absent from the offline root: $ManifestPathEntry"
         }
     }
+    return $Manifest
 }
 
 try {
@@ -393,6 +508,7 @@ try {
     $Requirements = Join-Path $OfflineRoot "requirements.txt"
     $RuntimePython = Join-Path $OfflineRoot "runtime\python\python.exe"
     $BundledPostgres = Join-Path $OfflineRoot "runtime\postgresql"
+    $TestRuntime = Join-Path $OfflineRoot "test-runtime"
     foreach ($RequiredFile in @(
         $RuntimePython,
         (Join-Path $BundledPostgres "bin\initdb.exe"),
@@ -402,6 +518,11 @@ try {
         (Join-Path $BundledPostgres "bin\pg_dump.exe"),
         (Join-Path $BundledPostgres "bin\pg_restore.exe"),
         (Join-Path $BundledPostgres "bin\libpq.dll"),
+        (Join-Path $TestRuntime "node\node.exe"),
+        (Join-Path $TestRuntime "node_modules\@playwright\test\package.json"),
+        (Join-Path $TestRuntime "node_modules\playwright\package.json"),
+        (Join-Path $TestRuntime "node_modules\playwright-core\package.json"),
+        (Join-Path $TestRuntime "node_modules\playwright-core\browsers.json"),
         $Requirements
     )) {
         if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
@@ -419,7 +540,9 @@ try {
         }
     }
 
-    Assert-OfflineManifest -Root $OfflineRoot
+    $Manifest = Assert-OfflineManifest -Root $OfflineRoot
+    Assert-BundledRuntimeVersions -Manifest $Manifest -RuntimePython $RuntimePython `
+        -BundledPostgres $BundledPostgres -ProbeRoot $DataRoot -TestRuntime $TestRuntime
 
     $ConfigDirectory = Join-Path $DataRoot "config"
     $RunDirectory = Join-Path $DataRoot "run"
@@ -522,6 +645,7 @@ host all all ::1/128 scram-sha-256
     if (-not (Test-Path -LiteralPath $StagingPython -PathType Leaf)) {
         throw "Python virtual environment was not created correctly."
     }
+    Invoke-Checked -Executable $StagingPython -Arguments @("-m", "ensurepip", "--version")
     Invoke-Checked -Executable $StagingPython -Arguments @(
         "-m", "pip", "install", "--only-binary=:all:", "--no-index", "--find-links", $Wheelhouse,
         "--requirement", $Requirements

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
+import struct
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -76,6 +80,28 @@ def _stage_runtime(offline: Path):
     )
 
 
+def _load_builder():
+    spec = importlib.util.spec_from_file_location(
+        "build_offline_bundle", SCRIPTS / "build_offline_bundle.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _truncated_amd64_header(path: Path):
+    payload = bytearray(512)
+    payload[:2] = b"MZ"
+    struct.pack_into("<I", payload, 0x3C, 0x80)
+    payload[0x80:0x84] = b"PE\0\0"
+    struct.pack_into("<H", payload, 0x84, 0x8664)
+    struct.pack_into("<H", payload, 0x86, 1)
+    struct.pack_into("<H", payload, 0x94, 0xF0)
+    struct.pack_into("<H", payload, 0x98, 0x20B)
+    path.write_bytes(payload)
+
+
 def test_install_fails_closed_and_never_uses_network_package_sources():
     script = _text("install.ps1")
 
@@ -126,6 +152,19 @@ def test_install_generates_migration_credential_for_explicit_alembic_step():
     assert "start.ps1" not in script
 
 
+def test_install_reprobes_bundled_runtime_versions_and_python_ensurepip():
+    script = _text("install.ps1")
+
+    manifest = script.index("Assert-OfflineManifest -Root $OfflineRoot")
+    runtime_probe = script.index("Assert-BundledRuntimeVersions -Manifest")
+    initdb = script.index('"--encoding=UTF8"')
+    assert manifest < runtime_probe < initdb
+    assert '"--version"' in script
+    assert "$Manifest.target.python" in script
+    assert "$Manifest.target.postgresqlServerVersion" in script
+    assert '"-m", "ensurepip", "--version"' in script
+
+
 def test_upgrade_refuses_to_run_while_recorded_server_is_active():
     script = _text("upgrade.ps1")
 
@@ -174,7 +213,7 @@ def test_bundle_builder_rejects_missing_runtime(tmp_path: Path):
     assert not (offline / "manifest.json").exists()
 
 
-def test_bundle_builder_writes_deterministic_complete_manifest(tmp_path: Path):
+def test_bundle_builder_rejects_placeholder_executables_instead_of_writing_manifest(tmp_path: Path):
     offline = tmp_path / "offline"
     _stage_runtime(offline)
     _write_wheel(offline / "wheelhouse/example-1.0-py3-none-any.whl", "example", "1.0")
@@ -196,51 +235,90 @@ def test_bundle_builder_writes_deterministic_complete_manifest(tmp_path: Path):
         "--postgres-version",
         "16.4",
     ]
-    first = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-    assert first.returncode == 0, first.stderr
-    manifest_bytes = (offline / "manifest.json").read_bytes()
-    second = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-    assert second.returncode == 0, second.stderr
-    assert (offline / "manifest.json").read_bytes() == manifest_bytes
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "valid PE/AMD64" in result.stderr
+    assert not (offline / "manifest.json").exists()
 
-    manifest = json.loads(manifest_bytes)
-    assert manifest["schemaVersion"] == 1
-    assert manifest["target"] == {
-        "os": "windows",
-        "arch": "x64",
-        "python": "3.13",
-        "postgresqlServerVersion": "16.4",
-    }
-    assert manifest["sources"]["python"] == "python.org CPython 3.13 x64"
-    assert (
-        manifest["sources"]["postgresqlServerRuntime"]
-        == "postgresql.org PostgreSQL x64"
+
+def test_pe_validation_rejects_fake_bytes_and_truncated_amd64_header(tmp_path: Path):
+    builder = _load_builder()
+    executable = tmp_path / "runtime.exe"
+    executable.write_bytes(b"fake")
+    with pytest.raises(ValueError, match="valid PE/AMD64"):
+        builder._assert_pe_amd64(executable)
+    _truncated_amd64_header(executable)
+    with pytest.raises(ValueError, match="valid PE/AMD64"):
+        builder._assert_pe_amd64(executable)
+
+
+def test_declared_runtime_version_must_match_probe_output():
+    builder = _load_builder()
+    assert builder._assert_declared_version("Python 3.13.7", "3.13", "Python") == "3.13.7"
+    with pytest.raises(ValueError, match="declared version 3.13"):
+        builder._assert_declared_version("Python 3.12.9", "3.13", "Python")
+
+
+def test_playwright_packages_and_actual_selected_browser_revision_must_match(tmp_path: Path):
+    builder = _load_builder()
+    root = tmp_path / "test-runtime"
+    for package in ("@playwright/test", "playwright", "playwright-core"):
+        package_root = root / "node_modules" / package
+        package_root.mkdir(parents=True)
+        (package_root / "package.json").write_text(
+            json.dumps({"name": package, "version": "1.55.0"}), encoding="utf-8"
+        )
+    (root / "node_modules/playwright-core/browsers.json").write_text(
+        json.dumps({"browsers": [{"name": "chromium", "revision": "1187"}]}),
+        encoding="utf-8",
     )
-    paths = [entry["path"] for entry in manifest["files"]]
-    assert paths == sorted(paths)
-    actual_paths = sorted(
-        path.relative_to(offline).as_posix()
-        for path in offline.rglob("*")
-        if path.is_file() and path.name != "manifest.json"
+    browser = root / "playwright-browsers/chromium-1187"
+    browser.mkdir(parents=True)
+    executable = browser / "chrome.exe"
+    executable.write_bytes(b"selected by real Playwright probe")
+    version, revisions = builder._inspect_playwright_runtime(root)
+    assert version == "1.55.0"
+    selected = builder._validate_playwright_selection(
+        root / "playwright-browsers", revisions, executable
     )
-    assert paths == actual_paths
-    assert "requirements.txt" in paths
-    assert "runtime/python/python.exe" in paths
-    assert "runtime/postgresql/bin/pg_dump.exe" in paths
-    assert "runtime/postgresql/bin/initdb.exe" in paths
-    assert "runtime/postgresql/bin/pg_ctl.exe" in paths
-    assert "runtime/postgresql/bin/postgres.exe" in paths
-    assert "test-runtime/node/node.exe" in paths
-    assert "test-runtime/node_modules/@playwright/test/cli.js" in paths
-    assert "test-runtime/playwright-browsers/chromium/chrome.exe" in paths
-    assert "wheelhouse/example-1.0-py3-none-any.whl" in paths
-    for entry in manifest["files"]:
-        file_path = offline / entry["path"]
-        assert entry["sha256"] == hashlib.sha256(file_path.read_bytes()).hexdigest()
-        assert entry["size"] == file_path.stat().st_size
-        assert "verified" not in entry
-        assert entry["version"]
-        assert entry["source"]
+    assert selected == ("chromium", "1187", "chromium-1187/chrome.exe")
+
+    (root / "node_modules/playwright/package.json").write_text(
+        json.dumps({"name": "playwright", "version": "1.54.0"}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="Playwright package versions disagree"):
+        builder._inspect_playwright_runtime(root)
+
+    (root / "node_modules/playwright/package.json").write_text(
+        json.dumps({"name": "playwright", "version": "1.55.0"}), encoding="utf-8"
+    )
+    browser.rename(root / "playwright-browsers/chromium-9999")
+    with pytest.raises(ValueError, match="Chromium revision"):
+        builder._validate_playwright_selection(
+            root / "playwright-browsers", revisions,
+            root / "playwright-browsers/chromium-9999/chrome.exe",
+        )
+
+
+def test_bundle_builder_rejects_offline_root_symlink_before_resolving(tmp_path: Path):
+    target = tmp_path / "real-offline"
+    target.mkdir()
+    offline = tmp_path / "offline-link"
+    offline.symlink_to(target, target_is_directory=True)
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("example==1.0\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable, str(SCRIPTS / "build_offline_bundle.py"),
+            "--offline-root", str(offline), "--requirements", str(requirements),
+            "--no-download", "--python-source", "python.org CPython 3.13 x64",
+            "--postgres-source", "postgresql.org PostgreSQL x64",
+            "--postgres-version", "16.4",
+        ],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "symbolic link or reparse point" in result.stderr
 
 
 def test_bundle_builder_rejects_placeholder_browser_runtime(tmp_path: Path):
