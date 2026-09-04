@@ -104,8 +104,7 @@ class ExpensesRepository:
         statement = statement.order_by(self.invoices.c.id) if lock else statement.order_by(
             self.invoices.c.created_at.desc(), self.invoices.c.id.desc()
         )
-        if limit is not None:
-            statement = statement.limit(limit).offset(offset)
+        statement = statement.limit(limit).offset(offset)
         if lock and connection.dialect.name == "postgresql":
             statement = statement.with_for_update(of=self.invoices)
         rows = self.rows(connection, statement)
@@ -164,8 +163,7 @@ class ExpensesRepository:
         statement = statement.order_by(self.payments.c.id) if lock else statement.order_by(
             self.payments.c.created_at.desc(), self.payments.c.id.desc()
         )
-        if limit is not None:
-            statement = statement.limit(limit).offset(offset)
+        statement = statement.limit(limit).offset(offset)
         if lock and connection.dialect.name == "postgresql":
             statement = statement.with_for_update(of=self.payments)
         return self.rows(connection, statement)

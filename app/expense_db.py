@@ -30,14 +30,15 @@ def update_reimbursement(rid, **fields): return _service().update_reimbursement(
 def delete_reimbursement(rid): return _service().delete_reimbursement(rid)
 def toggle_reimbursement_paid(rid): return _service().toggle_paid(rid)
 def add_invoice(record_id=None, reimbursement_id=None, **fields): return _service().create_invoice(reimbursement_id=reimbursement_id, **fields)
-def get_invoices(reimbursement_id=None, status=None, limit=500, offset=0, all_rows=False):
-    return _service().list_all_invoices(reimbursement_id) if all_rows and reimbursement_id is not None else _service().list_invoices(reimbursement_id, status, limit=limit, offset=offset)
+def get_invoices(reimbursement_id=None, status=None, limit=500, offset=0):
+    return _service().list_invoices(reimbursement_id, status, limit=limit, offset=offset)
 def get_invoice_by_id(iid): return _service().get_invoice(iid)
 def update_invoice(iid, **fields): return _service().update_invoice(iid, **fields)
 def delete_invoice(iid): return _service().delete_invoice(iid)
 def add_payment(reimbursement_id=None, **fields): return _service().create_payment(reimbursement_id=reimbursement_id, **fields)
-def get_payments(reimbursement_id=None, status=None, limit=500, offset=0, all_rows=False):
-    return _service().list_all_payments(reimbursement_id) if all_rows and reimbursement_id is not None else _service().list_payments(reimbursement_id, status, limit=limit, offset=offset)
+def get_payments(reimbursement_id=None, status=None, limit=500, offset=0):
+    return _service().list_payments(reimbursement_id, status, limit=limit, offset=offset)
+def get_reimbursement_children(rid): return _service().collect_reimbursement_children(rid)
 def get_payment_by_id(pid): return _service().get_payment(pid)
 def update_payment(pid, **fields): return _service().update_payment(pid, **fields)
 def delete_payment(pid): return _service().delete_payment(pid)

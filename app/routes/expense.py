@@ -14,11 +14,12 @@ from datetime import datetime
 from flask import Blueprint, current_app, render_template, request, jsonify, session, redirect, url_for, send_file
 
 from app.expense_db import (
-    get_all_reimbursements, get_reimbursement_by_id,
+    get_reimbursement_by_id,
     create_reimbursement, update_reimbursement, delete_reimbursement,
     toggle_reimbursement_paid,
-    add_invoice, get_invoices, get_invoice_by_id, update_invoice, delete_invoice,
-    add_payment, get_payments, get_payment_by_id, update_payment, delete_payment,
+    add_invoice, get_invoice_by_id, update_invoice, delete_invoice,
+    add_payment, get_payment_by_id, update_payment, delete_payment,
+    get_reimbursement_children,
     recalculate_reimbursement_total,
     get_expense_stats, find_duplicate_invoice, find_duplicate_payment,
 )
@@ -252,14 +253,26 @@ def api_reimbursement_get(rid):
         if not reimbursement:
             return jsonify({'success': False, 'error': '报销项不存在'}), 404
 
-        invoices = get_invoices(reimbursement_id=rid, all_rows=True)
-        payments = get_payments(reimbursement_id=rid, all_rows=True)
+        limit = request.args.get('limit', 100, type=int)
+        fallback_offset = request.args.get('offset', 0, type=int)
+        invoice_offset = request.args.get('invoice_offset', fallback_offset, type=int)
+        payment_offset = request.args.get('payment_offset', fallback_offset, type=int)
+        invoices, invoice_total, invoice_next = _service().page_invoices(
+            rid, limit=limit, offset=invoice_offset,
+        )
+        payments, payment_total, payment_next = _service().page_payments(
+            rid, limit=limit, offset=payment_offset,
+        )
 
         return jsonify({
             'success': True,
             'reimbursement': reimbursement,
             'invoices': invoices,
             'payments': payments,
+            'invoice_total': invoice_total,
+            'payment_total': payment_total,
+            'invoice_next_offset': invoice_next,
+            'payment_next_offset': payment_next,
         })
     except Exception as e:
         logging.error(f"[Expense] 获取报销项详情失败: {e}")
@@ -364,8 +377,7 @@ def api_reimbursement_generate_docs(rid):
         if not reimbursement:
             return jsonify({'success': False, 'error': '报销项不存在'}), 404
 
-        invoices = get_invoices(reimbursement_id=rid, all_rows=True)
-        payments = get_payments(reimbursement_id=rid, all_rows=True)
+        invoices, payments = get_reimbursement_children(rid)
 
         from app.document_engine import _cn_number
         total_amount = Decimal(str(reimbursement.get('total_amount') or 0))

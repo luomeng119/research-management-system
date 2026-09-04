@@ -45,6 +45,7 @@
                     </tbody>
                 </table>
             </div>
+            <div id="reimbursementsPager" class="d-flex justify-content-end align-items-center gap-2 p-2 border-top border-dark"></div>
         </div>
     </div>
 
@@ -138,6 +139,10 @@ let templates = [];
 let selectedDocType = null;
 let currentDocs = [];
 let autoFillSuggestions = {};
+const REIMBURSEMENTS_PAGE_SIZE = 100;
+let reimbursementsOffset = 0;
+let reimbursementsNextOffset = null;
+let reimbursementsTotal = 0;
 
 $(document).ready(function() {
     loadReimbursements();
@@ -146,25 +151,29 @@ $(document).ready(function() {
     const params = new URLSearchParams(window.location.search);
     const pid = params.get('project_id');
     if (pid) {
-        // 等报销项列表加载完成后选中
-        const waitAndSelect = setInterval(() => {
-            const row = document.querySelector(`#reimbTable tr[onclick*="(${pid},"]`);
-            if (row) { clearInterval(waitAndSelect); selectReimbursement(parseInt(pid), row); }
-        }, 200);
-        setTimeout(() => clearInterval(waitAndSelect), 5000);
+        // 详情接口可按 ID 直接读取，无需依赖当前列表页是否包含该记录。
+        selectReimbursement(parseInt(pid));
     }
 });
 
 // 加载报销项列表
-function loadReimbursements() {
-    fetch('/expense/documents/api/reimbursements', { credentials: 'include' })
+function loadReimbursements(offset = 0) {
+    const params = new URLSearchParams({
+        limit: REIMBURSEMENTS_PAGE_SIZE,
+        offset: Math.max(0, Number(offset) || 0),
+    });
+    fetch(`/expense/documents/api/reimbursements?${params}`, { credentials: 'include' })
         .then(r => r.json())
         .then(d => {
             if (!d.success) return;
             const rows = d.reimbursements || [];
+            reimbursementsOffset = Math.max(0, Number(offset) || 0);
+            reimbursementsNextOffset = d.next_offset;
+            reimbursementsTotal = Number(d.total || 0);
             if (!rows.length) {
                 document.getElementById('reimbTable').innerHTML =
                     '<tr><td colspan="8" class="text-center text-muted py-3">暂无报销项，请先创建</td></tr>';
+                renderReimbursementsPager();
                 return;
             }
             let html = '';
@@ -185,12 +194,25 @@ function loadReimbursements() {
                 </tr>`;
             });
             document.getElementById('reimbTable').innerHTML = html;
+            renderReimbursementsPager();
         })
         .catch(err => {
             console.error('加载报销项失败:', err);
             document.getElementById('reimbTable').innerHTML =
                 '<tr><td colspan="8" class="text-center text-danger py-3">加载失败，请刷新重试</td></tr>';
         });
+}
+
+function renderReimbursementsPager() {
+    const pager = document.getElementById('reimbursementsPager');
+    const page = Math.floor(reimbursementsOffset / REIMBURSEMENTS_PAGE_SIZE) + 1;
+    const pages = Math.max(1, Math.ceil(reimbursementsTotal / REIMBURSEMENTS_PAGE_SIZE));
+    pager.innerHTML = `
+        <span class="text-muted small">第 ${page}/${pages} 页，共 ${reimbursementsTotal} 项</span>
+        <button class="btn btn-sm btn-outline-secondary" ${reimbursementsOffset === 0 ? 'disabled' : ''}
+                onclick="loadReimbursements(${Math.max(0, reimbursementsOffset - REIMBURSEMENTS_PAGE_SIZE)})">上一页</button>
+        <button class="btn btn-sm btn-outline-secondary" ${reimbursementsNextOffset == null ? 'disabled' : ''}
+                onclick="loadReimbursements(reimbursementsNextOffset)">下一页</button>`;
 }
 
 function statusColor(s) {

@@ -46,6 +46,70 @@ def test_expense_runtime_has_bounded_queries_and_no_legacy_preview_paths():
     assert "controlledFile" in template_source
 
 
+def test_expense_full_record_reads_use_bounded_batches_not_limit_none():
+    app_dir = Path(__file__).parents[1]
+    service_source = (app_dir / "services" / "expenses.py").read_text(encoding="utf-8")
+    repository_source = (app_dir / "repositories" / "expenses.py").read_text(encoding="utf-8")
+    facade_source = (app_dir / "expense_db.py").read_text(encoding="utf-8")
+    routes_source = "\n".join(
+        (app_dir / "routes" / name).read_text(encoding="utf-8")
+        for name in ("expense.py", "documents.py")
+    )
+    assert "limit=None" not in service_source
+    assert "list_all_invoices" not in service_source
+    assert "list_all_payments" not in service_source
+    assert "all_rows=True" not in routes_source
+    assert "all_rows" not in facade_source
+    assert "if limit is not None" not in repository_source
+
+
+def test_records_page_preserves_match_warning_and_renders_it_with_text_content(tmp_path):
+    from app import create_app
+
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "expense-warning-page", "DATA_DIR": str(tmp_path),
+        "SESSION_FILE_DIR": str(tmp_path / "sessions-warning"), "SECURITY_AUTH_ENABLED": False,
+        "CSRF_ENABLED": False, "AI_PROVIDER": "DISABLED",
+    })
+    client = app.test_client()
+    with client.session_transaction() as state:
+        state["user"] = "teacher"
+    page = client.get("/expense/records")
+    source = page.get_data(as_text=True)
+    assert page.status_code == 200
+    assert "match_warning: data.match_warning" in source
+    assert "match_warning: r.match_warning" in source
+    assert "warningNode.textContent" in source
+    assert "warningNode.innerHTML" not in source
+
+
+def test_real_expense_pages_expose_bounded_pagination_and_mixed_upload_warnings(tmp_path):
+    from app import create_app
+
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "expense-pagination-page", "DATA_DIR": str(tmp_path),
+        "SESSION_FILE_DIR": str(tmp_path / "sessions-pagination"), "SECURITY_AUTH_ENABLED": False,
+        "CSRF_ENABLED": False, "AI_PROVIDER": "DISABLED",
+    })
+    client = app.test_client()
+    with client.session_transaction() as state:
+        state["user"] = "teacher"
+
+    records_source = client.get("/expense/records").get_data(as_text=True)
+    documents_source = client.get("/expense/documents/").get_data(as_text=True)
+
+    assert "recordsNextOffset" in records_source
+    assert "invoice_next_offset" in records_source
+    assert "payment_next_offset" in records_source
+    assert "appendMatchWarnings(document.getElementById('uploadErrorText'), results)" in records_source
+    assert "本页合计" in records_source
+    assert "renderRecordsPager();\n        return;" in records_source
+    assert "reimbursementsNextOffset" in documents_source
+    assert "loadReimbursements(reimbursementsNextOffset)" in documents_source
+    assert "selectReimbursement(parseInt(pid));" in documents_source
+    assert "setInterval" not in documents_source
+
+
 def test_document_template_avoids_dynamic_inline_document_handlers():
     source = (Path(__file__).parents[1] / "templates" / "expense" / "documents.html").read_text(encoding="utf-8")
     assert 'onclick="deleteDoc(' not in source
@@ -116,6 +180,40 @@ def test_postgresql_confirm_uses_all_rows_beyond_first_page(expense_service):
     with pytest.raises(ExpenseValidationError, match="金额必须相等"):
         expense_service.confirm(rid)
     assert expense_service.get_reimbursement(rid)["status"] == "草稿"
+
+
+def test_postgresql_document_record_collection_reads_501_rows_in_batches(expense_service):
+    rid, _ = expense_service.create_reimbursement(title="501 条文档记录")
+    now = datetime.now(timezone.utc)
+    with expense_service.repository.engine.begin() as connection:
+        connection.execute(expense_service.repository.invoices.insert(), [{
+            "reimbursement_id": rid, "invoice_no": f"DOC-{index}", "amount": Decimal("1.00"),
+            "tax_amount": Decimal("0.00"), "price_ex_tax": Decimal("0.00"), "status": "已匹配",
+            "matched_payment_ids": [], "created_at": now,
+        } for index in range(501)])
+        connection.execute(expense_service.repository.payments.insert(), [{
+            "reimbursement_id": rid, "payment_no": f"DOC-PAY-{index}", "amount": Decimal("1.00"),
+            "status": "已匹配", "matched_invoice_ids": [], "created_at": now,
+        } for index in range(501)])
+    invoices, payments = expense_service.collect_reimbursement_children(rid)
+    assert len(invoices) == 501
+    assert len(payments) == 501
+
+
+def test_document_record_collection_rejects_explicit_v1_limit(expense_service, monkeypatch):
+    from app.services.expenses import ExpenseError
+
+    monkeypatch.setattr(
+        expense_service.repository, "count_invoices",
+        lambda *_args, **_kwargs: expense_service.MAX_REIMBURSEMENT_CHILDREN + 1,
+    )
+    monkeypatch.setattr(expense_service.repository, "count_payments", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(
+        expense_service.repository, "list_invoices",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must reject before reading rows")),
+    )
+    with pytest.raises(ExpenseError, match="上限"):
+        expense_service.collect_reimbursement_children(1)
 
 
 def test_confirmed_document_source_rows_are_immutable(expense_service):
@@ -756,16 +854,44 @@ def test_postgresql_route_contract_supports_crud_edit_and_confirm(expense_servic
     payload = created.get_json()
     assert payload["success"] is True
     rid = payload["id"]
-    iid = expense_service.create_invoice(reimbursement_id=rid, amount="31.20", invoice_no="ROUTE-INV")
+    expense_service.create_invoice(reimbursement_id=rid, amount="31.20", invoice_no="ROUTE-INV")
+    expense_service.create_invoice(reimbursement_id=rid, amount="0.00", invoice_no="ROUTE-INV-2")
+    iid = expense_service.create_invoice(reimbursement_id=rid, amount="0.00", invoice_no="ROUTE-INV-3")
     expense_service.create_payment(reimbursement_id=rid, amount="31.20", pay_date="2026-09-03")
 
-    edited = client.put(f"/expense/api/invoices/{iid}", json={"amount": 31.2, "seller": "<img src=x onerror=alert(1)>"})
+    edited = client.put(f"/expense/api/invoices/{iid}", json={"amount": 0.0, "seller": "<img src=x onerror=alert(1)>"})
     assert edited.status_code == 200
-    detail = client.get(f"/expense/api/reimbursements/{rid}").get_json()
+    detail = client.get(f"/expense/api/reimbursements/{rid}?limit=2&offset=0").get_json()
     assert detail["success"] is True
-    assert detail["invoices"][0]["seller"] == "<img src=x onerror=alert(1)>"
-    assert detail["invoices"][0]["file_path"] is None
-    assert detail["invoices"][0]["ocr_text"] == ""
+    assert len(detail["invoices"]) == 2
+    assert detail["invoice_total"] == 3
+    assert detail["invoice_next_offset"] == 2
+    edited_invoice = next(row for row in detail["invoices"] if row["id"] == iid)
+    assert edited_invoice["seller"] == "<img src=x onerror=alert(1)>"
+    assert edited_invoice["file_path"] is None
+    assert edited_invoice["ocr_text"] == ""
+
+    second_detail = client.get(
+        f"/expense/api/reimbursements/{rid}?limit=2&invoice_offset=2&payment_offset=0"
+    ).get_json()
+    assert len(second_detail["invoices"]) == 1
+    assert second_detail["invoice_next_offset"] is None
+    assert len(second_detail["payments"]) == 1
+
+    documents_page = client.get("/expense/documents/api/reimbursements?limit=1&offset=0").get_json()
+    assert documents_page["success"] is True
+    assert len(documents_page["reimbursements"]) == 1
+    assert isinstance(documents_page["total"], int)
+    assert documents_page["next_offset"] == (1 if documents_page["total"] > 1 else None)
+
+    for index in range(3):
+        expense_service.add_document(rid, {"doc_type": f"单据-{index}", "fields": {}})
+    document_items = client.get(
+        f"/expense/documents/api/reimbursements/{rid}/documents?limit=2&offset=0"
+    ).get_json()
+    assert len(document_items["documents"]) == 2
+    assert document_items["total"] == 3
+    assert document_items["next_offset"] == 2
 
     confirmed = client.post(f"/expense/api/reimbursements/{rid}/confirm")
     assert confirmed.status_code == 200

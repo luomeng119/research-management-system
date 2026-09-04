@@ -32,6 +32,8 @@ class ExpenseService:
     PAYMENT_FIELDS = frozenset({"payment_no", "amount", "pay_date", "payer"})
     TYPES = frozenset({"采购报销", "出差报销"})
     MAX_PAGE_SIZE = 500
+    CHILD_BATCH_SIZE = 200
+    MAX_REIMBURSEMENT_CHILDREN = 2000
     MAX_DOCUMENTS = 100
     MAX_DOCUMENT_BYTES = 256_000
     MAX_MATCH_CANDIDATES = 20
@@ -319,11 +321,6 @@ class ExpenseService:
             total = self.repository.count_invoices(connection, reimbursement_id=int(reimbursement_id) if reimbursement_id is not None else None, status=status)
         return rows, total, int(offset) + len(rows) if int(offset) + len(rows) < total else None
 
-    def list_all_invoices(self, reimbursement_id):
-        with self.repository.engine.connect() as connection:
-            rows = self.repository.list_invoices(connection, reimbursement_id=int(reimbursement_id), limit=None)
-            return self._with_files(connection, rows, "INVOICE")
-
     def get_invoice(self, iid):
         with self.repository.engine.connect() as connection:
             row = self.repository.get_invoice(connection, int(iid))
@@ -415,10 +412,39 @@ class ExpenseService:
             total = self.repository.count_payments(connection, reimbursement_id=int(reimbursement_id) if reimbursement_id is not None else None, status=status)
         return rows, total, int(offset) + len(rows) if int(offset) + len(rows) < total else None
 
-    def list_all_payments(self, reimbursement_id):
+    def collect_reimbursement_children(self, reimbursement_id):
+        """Collect a bounded complete child set using fixed-size database pages."""
+        rid = int(reimbursement_id)
         with self.repository.engine.connect() as connection:
-            rows = self.repository.list_payments(connection, reimbursement_id=int(reimbursement_id), limit=None)
-            return self._with_files(connection, rows, "PAYMENT")
+            if connection.dialect.name == "postgresql":
+                connection = connection.execution_options(isolation_level="REPEATABLE READ")
+            invoice_total = self.repository.count_invoices(connection, reimbursement_id=rid)
+            payment_total = self.repository.count_payments(connection, reimbursement_id=rid)
+            if invoice_total + payment_total > self.MAX_REIMBURSEMENT_CHILDREN:
+                raise ExpenseError(
+                    "REIMBURSEMENT_RECORD_LIMIT",
+                    f"报销项发票和支付记录合计超过 V1 上限 {self.MAX_REIMBURSEMENT_CHILDREN} 条，请拆分报销项",
+                    409,
+                )
+
+            def collect(repository_method, object_type, total):
+                rows = []
+                for offset in range(0, total, self.CHILD_BATCH_SIZE):
+                    page = repository_method(
+                        connection, reimbursement_id=rid,
+                        limit=min(self.CHILD_BATCH_SIZE, total - offset), offset=offset,
+                    )
+                    if not page:
+                        raise ExpenseError("CONCURRENT_CHANGE", "报销明细已变更，请重试", 409)
+                    rows.extend(self._with_files(connection, page, object_type))
+                if len(rows) != total:
+                    raise ExpenseError("CONCURRENT_CHANGE", "报销明细已变更，请重试", 409)
+                return rows
+
+            return (
+                collect(self.repository.list_invoices, "INVOICE", invoice_total),
+                collect(self.repository.list_payments, "PAYMENT", payment_total),
+            )
 
     def get_payment(self, pid):
         with self.repository.engine.connect() as connection:
@@ -747,6 +773,16 @@ class ExpenseService:
             if not row:
                 return []
             return row.get("documents") or []
+
+    def page_documents(self, rid, *, limit=100, offset=0):
+        limit, offset = int(limit), int(offset)
+        if limit < 1 or limit > self.MAX_DOCUMENTS or offset < 0:
+            raise ExpenseValidationError("INVALID_PAGE", "分页参数无效")
+        documents = self.get_documents(rid)
+        total = len(documents)
+        rows = documents[offset:offset + limit]
+        next_offset = offset + len(rows) if offset + len(rows) < total else None
+        return rows, total, next_offset
 
     def _documents_update(self, rid, operation):
         with self.repository.engine.begin() as connection:

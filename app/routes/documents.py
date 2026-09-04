@@ -206,9 +206,7 @@ from app.expense_db import (
     delete_document_from_reimbursement,
     get_document_templates,
     get_document_template,
-    get_invoices,
-    get_payments,
-    get_all_reimbursements,
+    get_reimbursement_children,
 )
 from app.document_engine import DocumentFiller, _cn_number
 
@@ -304,11 +302,15 @@ def api_reimbursements():
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        records = get_all_reimbursements()
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        records, total, next_offset = current_app.extensions['expense_service'].page_reimbursements(
+            limit=limit, offset=offset,
+        )
         for r in records:
             docs = get_reimbursement_documents(r['id'])
             r['documents_count'] = len(docs)
-        return jsonify({'success': True, 'reimbursements': records})
+        return jsonify({'success': True, 'reimbursements': records, 'total': total, 'next_offset': next_offset})
     except Exception as e:
         import logging
         logging.error(f"[Documents] 获取报销项失败: {e}")
@@ -368,8 +370,15 @@ def api_get_documents(rid):
     """获取报销项下的所有单据"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
-    docs = get_reimbursement_documents(rid)
-    return jsonify({'success': True, 'documents': docs})
+    try:
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        docs, total, next_offset = current_app.extensions['expense_service'].page_documents(
+            rid, limit=limit, offset=offset,
+        )
+        return jsonify({'success': True, 'documents': docs, 'total': total, 'next_offset': next_offset})
+    except Exception as exc:
+        return _safe_error(exc, "获取单据失败")
 
 
 @bp.route('/api/reimbursements/<int:rid>/documents', methods=['POST'])
@@ -433,8 +442,7 @@ def api_auto_fill(rid):
         return jsonify({'success': False, 'error': '模板不存在'}), 404
 
     # 获取当前报销项的发票和支付记录
-    invoices = get_invoices(reimbursement_id=rid, all_rows=True)
-    payments = get_payments(reimbursement_id=rid, all_rows=True)
+    invoices, payments = get_reimbursement_children(rid)
 
     # 构建 session context
     session_user = {'name': session.get('name', ''), 'dept': session.get('dept', ''), 'title': session.get('title', '')}
@@ -763,8 +771,7 @@ def api_download_document(rid, doc_id):
     field_values = doc.get('fields', {})
 
     # 构建 context
-    invoices = get_invoices(reimbursement_id=rid, all_rows=True)
-    payments = get_payments(reimbursement_id=rid, all_rows=True)
+    invoices, payments = get_reimbursement_children(rid)
     session_user = {'name': session.get('name', ''), 'dept': session.get('dept', ''), 'title': session.get('title', '')}
     context = {
         'session': {
@@ -832,8 +839,7 @@ def api_merge_print(rid):
         return jsonify({'success': False, 'error': '没有可打印的单据'}), 400
 
     # 构建 context
-    invoices = get_invoices(reimbursement_id=rid, all_rows=True)
-    payments = get_payments(reimbursement_id=rid, all_rows=True)
+    invoices, payments = get_reimbursement_children(rid)
     session_user = {'name': session.get('name', ''), 'dept': session.get('dept', ''), 'title': session.get('title', '')}
     context = {
         'session': {
@@ -908,8 +914,7 @@ def api_merge_print_full(rid):
         return jsonify({'success': False, 'error': '没有可打印的单据'}), 400
 
     # 获取所有发票和支付记录
-    invoices = get_invoices(reimbursement_id=rid, all_rows=True)
-    payments = get_payments(reimbursement_id=rid, all_rows=True)
+    invoices, payments = get_reimbursement_children(rid)
 
     session_user = {
         'name': session.get('name', ''),
@@ -964,14 +969,13 @@ def _build_report_context(rid):
     构建完整报销单的填充上下文（出差报销项目）。
     从数据库提取发票、支付记录等数据，汇总为模板字段值。
     """
-    from app.expense_db import get_reimbursement_by_id, get_invoices, get_payments
+    from app.expense_db import get_reimbursement_by_id, get_reimbursement_children
 
     reimb = get_reimbursement_by_id(rid)
     if not reimb:
         return None
 
-    invoices = get_invoices(reimbursement_id=rid, all_rows=True)
-    payments = get_payments(reimbursement_id=rid, all_rows=True)
+    invoices, payments = get_reimbursement_children(rid)
 
     # 发票金额汇总
     total_invoice = sum((Decimal(str(inv.get('amount') or 0)) for inv in invoices), Decimal('0'))

@@ -26,11 +26,11 @@
 
     {# ============ 上传反馈区 ============ #}
     <div id="uploadFeedback" class="alert alert-success alert-dismissible fade show" style="display:none;" role="alert">
-        <span id="uploadFeedbackText"></span>
+        <div id="uploadFeedbackText"></div>
         <button type="button" class="btn-close" onclick="document.getElementById('uploadFeedback').style.display='none'"></button>
     </div>
     <div id="uploadError" class="alert alert-danger alert-dismissible fade show" style="display:none;" role="alert">
-        <span id="uploadErrorText"></span>
+        <div id="uploadErrorText"></div>
         <button type="button" class="btn-close" onclick="document.getElementById('uploadError').style.display='none'"></button>
     </div>
 
@@ -52,7 +52,7 @@
                     <i class="bi bi-lightning-charge"></i> 自动匹配
                 </button>
                 <span class="text-muted small ms-auto">
-                    共 <span id="totalCount">0</span> 项 &nbsp;|&nbsp; 合计 <span id="totalAmount">0.00</span> 元
+                    共 <span id="totalCount">0</span> 项 &nbsp;|&nbsp; 本页合计 <span id="totalAmount">0.00</span> 元
                 </span>
             </div>
 
@@ -75,6 +75,7 @@
                     <tbody id="recordsBody"></tbody>
                 </table>
             </div>
+            <div id="recordsPager" class="d-flex justify-content-end align-items-center gap-2 p-2 border-top border-dark"></div>
         </div>
     </div>
 
@@ -206,6 +207,11 @@ let records = [];
 let debounceTimer = null;
 let expandedRid = null;
 let deletingIds = new Set();
+const RECORDS_PAGE_SIZE = 100;
+const DETAIL_PAGE_SIZE = 100;
+let recordsOffset = 0;
+let recordsNextOffset = null;
+let recordsTotal = 0;
 
 // ============================================================
 // 报销项列表
@@ -215,18 +221,23 @@ function debounceLoad() {
     debounceTimer = setTimeout(loadRecords, 400);
 }
 
-function loadRecords() {
+function loadRecords(offset = 0) {
     const kw = document.getElementById('searchInput').value.trim();
     const status = document.getElementById('statusFilter').value;
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     if (kw) params.set('keyword', kw);
+    params.set('limit', RECORDS_PAGE_SIZE);
+    params.set('offset', Math.max(0, Number(offset) || 0));
     const query = params.toString();
     fetch(`/expense/api/reimbursements${query ? '?' + query : ''}`, { credentials: 'include' })
         .then(r => r.json())
         .then(data => {
             if (!data.success) return;
             records = data.reimbursements || [];
+            recordsOffset = Math.max(0, Number(offset) || 0);
+            recordsNextOffset = data.next_offset;
+            recordsTotal = Number(data.total || 0);
             renderTable();
         })
         .catch(err => { console.error('loadRecords失败:', err); });
@@ -238,11 +249,12 @@ function renderTable() {
     const totalAmount = document.getElementById('totalAmount');
     let total = 0;
     records.forEach(r => total += parseFloat(r.total_amount || 0));
-    totalCount.textContent = records.length;
+    totalCount.textContent = recordsTotal;
     totalAmount.textContent = total.toFixed(2);
 
     if (!records.length) {
         tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">暂无报销项</td></tr>';
+        renderRecordsPager();
         return;
     }
 
@@ -293,6 +305,19 @@ function renderTable() {
         const rid = parseInt(row.id.replace('expand-', ''));
         row.style.display = (rid === expandedRid) ? 'table-row' : 'none';
     });
+    renderRecordsPager();
+}
+
+function renderRecordsPager() {
+    const pager = document.getElementById('recordsPager');
+    const page = Math.floor(recordsOffset / RECORDS_PAGE_SIZE) + 1;
+    const pages = Math.max(1, Math.ceil(recordsTotal / RECORDS_PAGE_SIZE));
+    pager.innerHTML = `
+        <span class="text-muted small">第 ${page}/${pages} 页</span>
+        <button class="btn btn-sm btn-outline-secondary" ${recordsOffset === 0 ? 'disabled' : ''}
+                onclick="loadRecords(${Math.max(0, recordsOffset - RECORDS_PAGE_SIZE)})">上一页</button>
+        <button class="btn btn-sm btn-outline-secondary" ${recordsNextOffset == null ? 'disabled' : ''}
+                onclick="loadRecords(recordsNextOffset)">下一页</button>`;
 }
 
 function toggleExpand(rid) {
@@ -309,10 +334,15 @@ function toggleExpand(rid) {
     }
 }
 
-function fetchDetail(rid) {
+function fetchDetail(rid, invoiceOffset = 0, paymentOffset = 0) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
-    fetch(`/expense/api/reimbursements/${rid}`, { credentials: 'include', signal: controller.signal })
+    const detailParams = new URLSearchParams({
+        limit: DETAIL_PAGE_SIZE,
+        invoice_offset: Math.max(0, Number(invoiceOffset) || 0),
+        payment_offset: Math.max(0, Number(paymentOffset) || 0),
+    });
+    fetch(`/expense/api/reimbursements/${rid}?${detailParams}`, { credentials: 'include', signal: controller.signal })
         .then(r => { clearTimeout(timeoutId); return r.json(); })
         .then(data => {
             if (!data.success) {
@@ -353,6 +383,23 @@ function fetchDetail(rid) {
                     </td>
                 </tr>`).join('') : '<tr><td colspan="6" class="text-muted text-center py-2">暂无支付记录</td></tr>';
 
+            const invoicePager = Number(data.invoice_total || 0) > DETAIL_PAGE_SIZE ? `
+                <div class="d-flex justify-content-end align-items-center gap-2 mb-3">
+                    <span class="text-muted small">发票 ${Number(invoiceOffset) + 1}–${Number(invoiceOffset) + invoices.length} / ${Number(data.invoice_total)}</span>
+                    <button class="btn btn-sm btn-outline-secondary py-0" ${Number(invoiceOffset) === 0 ? 'disabled' : ''}
+                            onclick="fetchDetail(${rid}, ${Math.max(0, Number(invoiceOffset) - DETAIL_PAGE_SIZE)}, ${Number(paymentOffset)})">上一页</button>
+                    <button class="btn btn-sm btn-outline-secondary py-0" ${data.invoice_next_offset == null ? 'disabled' : ''}
+                            onclick="fetchDetail(${rid}, ${data.invoice_next_offset == null ? Number(invoiceOffset) : Number(data.invoice_next_offset)}, ${Number(paymentOffset)})">下一页</button>
+                </div>` : '';
+            const paymentPager = Number(data.payment_total || 0) > DETAIL_PAGE_SIZE ? `
+                <div class="d-flex justify-content-end align-items-center gap-2 mb-2">
+                    <span class="text-muted small">支付 ${Number(paymentOffset) + 1}–${Number(paymentOffset) + payments.length} / ${Number(data.payment_total)}</span>
+                    <button class="btn btn-sm btn-outline-secondary py-0" ${Number(paymentOffset) === 0 ? 'disabled' : ''}
+                            onclick="fetchDetail(${rid}, ${Number(invoiceOffset)}, ${Math.max(0, Number(paymentOffset) - DETAIL_PAGE_SIZE)})">上一页</button>
+                    <button class="btn btn-sm btn-outline-secondary py-0" ${data.payment_next_offset == null ? 'disabled' : ''}
+                            onclick="fetchDetail(${rid}, ${Number(invoiceOffset)}, ${data.payment_next_offset == null ? Number(paymentOffset) : Number(data.payment_next_offset)})">下一页</button>
+                </div>` : '';
+
             content.innerHTML = `
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <div class="fw-bold text-muted">📋 单据列表</div>
@@ -379,11 +426,13 @@ function fetchDetail(rid) {
                     <thead><tr><th>发票号</th><th>日期</th><th>金额</th><th>销售方</th><th>内容</th><th>操作</th></tr></thead>
                     <tbody>${invRows}</tbody>
                 </table>
+                ${invoicePager}
                 <div class="fw-bold text-muted mb-1">💳 支付记录 <span class="small">（金额/日期点击即可编辑）</span></div>
                 <table class="table table-sm table-hover mb-2" style="width:100%;min-width:500px;">
                     <thead><tr><th>凭证号</th><th>日期</th><th>金额</th><th>销售方</th><th>内容</th><th>操作</th></tr></thead>
                     <tbody>${payRows}</tbody>
                 </table>
+                ${paymentPager}
                 <div class="d-flex justify-content-end gap-2">
                     ${(r.status === '已确认' || r.status === '已生成文档') ? `<button class="btn btn-sm btn-primary" onclick="generateDocs(${rid})">生成文档</button>` : ''}
                     <button class="btn btn-sm btn-outline-secondary" onclick="toggleExpand(${rid})">收起</button>
@@ -636,19 +685,20 @@ function handleFiles(files) {
                     _uploadedFiles.add(file.name);
                     // 上传到报销项时返回结构不同
                     if (data.results) {
-                        data.results.forEach(r => results.push({ name: r.filename || file.name, success: r.success, type: r.type, error: r.error, matched: r.matched || [] }));
+                        data.results.forEach(r => results.push({ name: r.filename || file.name, success: r.success, type: r.type, error: r.error, matched: r.matched || [], match_warning: r.match_warning || data.match_warning || '' }));
                     } else {
                         // 收集 matched 信息用于展示
                         if (data.matched && data.matched.length > 0) {
                             if (!window._lastMatched) window._lastMatched = [];
                             data.matched.forEach(m => window._lastMatched.push(m));
                         }
-                        results.push({ name: file.name, success: true, type: data.type, fields: data.fields, matched: data.matched || [] });
+                        results.push({ name: file.name, success: true, type: data.type, fields: data.fields, matched: data.matched || [], match_warning: data.match_warning || '' });
                     }
                 }
                 if (completed === count) {
                     if (failed > 0) {
                         showFeedback('完成：' + (count - failed) + ' 个成功，' + failed + ' 个失败\n' + errors.join('；'), true);
+                        appendMatchWarnings(document.getElementById('uploadErrorText'), results);
                     } else {
                         showUploadResult(results);
                     }
@@ -658,7 +708,11 @@ function handleFiles(files) {
             })
             .catch(() => {
                 completed++; failed++; errors.push(file.name + ': 网络错误');
-                if (completed === count) { showFeedback('完成（部分失败）：' + errors.join('；'), true); loadAll(); uploadRid = null; }
+                if (completed === count) {
+                    showFeedback('完成（部分失败）：' + errors.join('；'), true);
+                    appendMatchWarnings(document.getElementById('uploadErrorText'), results);
+                    loadAll(); uploadRid = null;
+                }
             });
     });
 }
@@ -700,8 +754,19 @@ function showUploadResult(results) {
 
     document.getElementById('uploadFeedback').style.display = 'block';
     document.getElementById('uploadFeedback').className = 'alert alert-success alert-dismissible fade show';
-    document.getElementById('uploadFeedbackText').innerHTML = '<strong>识别完成：</strong>' + html + matchHtml;
+    const feedbackText = document.getElementById('uploadFeedbackText');
+    feedbackText.innerHTML = '<strong>识别完成：</strong>' + html + matchHtml;
+    appendMatchWarnings(feedbackText, results);
     document.getElementById('uploadError').style.display = 'none';
+}
+
+function appendMatchWarnings(target, results) {
+    results.map(r => r.match_warning).filter(Boolean).forEach(warning => {
+        const warningNode = document.createElement('div');
+        warningNode.className = 'mt-2 p-2 bg-warning-subtle border border-warning rounded text-dark';
+        warningNode.textContent = '上传成功；自动匹配失败；' + warning + '；请手工整理';
+        target.appendChild(warningNode);
+    });
 }
 
 function showFeedback(msg, isError) {
