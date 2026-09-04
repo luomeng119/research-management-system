@@ -1,6 +1,6 @@
 # 科研管理系统
 
-> 面向科研院所的设备知识库、科研项目、专家库、通用表格、文档管理一体化内网管理系统。
+> 面向科研院所的跨平台 Web 内网管理系统，覆盖科研提案、项目、专家、设备资源、通用表格和文档管理。
 
 ## 项目简介
 
@@ -35,9 +35,10 @@
 
 ### 环境要求
 
-- Python 3.13.x（3.14 尚未发布，务必用 3.13）
+- Python 3.13.x（当前已验证的项目运行基线）
 - Node.js（仅原本地校对代码或离线验收工具需要，不是核心业务运行前提）
-- 目标平台：Windows 10/11 x64（内网离线环境）
+- 浏览器客户端：Windows、Linux、macOS 上的现代 Chromium 内核浏览器
+- 服务端核心：Python 3.13 + Waitress + PostgreSQL，不绑定单一操作系统；安装包需按目标 OS/CPU 单独构建和真机验证
 
 ### 安装依赖
 
@@ -47,7 +48,7 @@ pip install -r requirements.txt
 ```
 
 ```powershell
-# Windows x64 离线部署：offline/ 必须是已验证的完整运行包
+# 已有 Windows 平台适配层（不代表产品只支持 Windows）
 $env:APP_DATA_ROOT = 'C:\ResearchManagementData'
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -OfflineRoot .\offline
 powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1
@@ -96,7 +97,7 @@ python run.py
 └── data/                   # 开发/兼容数据；正式数据位于 APP_DATA_ROOT
 ```
 
-`offline/` 不是占位目录：它需由 `scripts/build_offline_bundle.py` 在 Windows x64 上基于真实 Python、PostgreSQL、Node.js 和 Playwright/Chromium 运行件生成并验证。当前启停脚本按用户态进程运行；是否转为 Windows 服务/开机自启仍是待确认的部署决策，不得将本说明视为已验收。
+`scripts/build_offline_bundle.py` 和 PowerShell 脚本是已实现的 Windows x64 适配层，不是跨平台产品的唯一部署边界。Linux/macOS 与其他架构需生成各自的依赖和 PostgreSQL 运行制品，不得复用 Windows 二进制包冒充验收。当前可在 macOS/Linux 使用 `bash scripts/test_postgres.sh postgresql://localhost/rm_v1_t10` 对平台中立的 PostgreSQL 核心执行真实集成测试。
 
 ## 文档导航
 

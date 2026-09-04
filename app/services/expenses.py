@@ -400,6 +400,13 @@ class ExpenseService:
             raise ExpenseError("FILE_SERVICE_UNAVAILABLE", "附件服务不可用，请先手工录入", 503)
         now = self._now()
         with self.repository.engine.connect() as connection:
+            if reimbursement_id is not None:
+                reimbursement = self.repository.get_reimbursement(
+                    connection, int(reimbursement_id)
+                )
+                if not reimbursement:
+                    raise ExpenseError("NOT_FOUND", "报销项不存在", 404)
+                self._require_draft(reimbursement)
             pid = self.repository.next_id(connection, "expense_payment")
         number = self._text(fields.get("payment_no"), maximum=100) or f"PAY{now.strftime('%Y%m%d')}{pid:06d}"
         values = {

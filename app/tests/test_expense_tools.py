@@ -484,7 +484,7 @@ def test_second_generated_document_move_failure_leaves_no_db_or_disk_residue(exp
 
 def test_finance_attachment_writes_reject_confirmed_parent_without_orphans(expense_service, tmp_path):
     from app.repositories.files import FilesRepository
-    from app.services.expenses import ExpenseService
+    from app.services.expenses import ExpenseError, ExpenseService
     from app.services.files import FileService, FileServiceError
 
     class AuditRecorder:
@@ -501,16 +501,23 @@ def test_finance_attachment_writes_reject_confirmed_parent_without_orphans(expen
     with engine.begin() as connection:
         service.repository.update_reimbursement(connection, rid, {"status": "已确认"})
         before = connection.scalar(sa.select(sa.func.count()).select_from(service.repository.invoices))
+        before_payments = connection.scalar(sa.select(sa.func.count()).select_from(service.repository.payments))
     try:
-        with pytest.raises(FileServiceError, match="终态"):
+        with pytest.raises(ExpenseError, match="草稿"):
             service.create_invoice_with_upload(
                 io.BytesIO(b"\x89PNG\r\n\x1a\nblocked"), "blocked.png", reimbursement_id=rid,
                 actor_user_id=user_id, request_id="blocked-child", amount="1.00",
+            )
+        with pytest.raises(ExpenseError, match="草稿"):
+            service.create_payment_with_upload(
+                io.BytesIO(b"\x89PNG\r\n\x1a\nblocked"), "blocked.png", reimbursement_id=rid,
+                actor_user_id=user_id, request_id="blocked-payment", amount="1.00",
             )
         with pytest.raises(FileServiceError, match="终态"):
             files.upload(io.BytesIO(b"\x89PNG\r\n\x1a\nblocked"), original_name="blocked.png", object_type="EXPENSE", object_id=str(rid), actor_user_id=user_id, request_id="blocked-parent")
         with engine.connect() as connection:
             assert connection.scalar(sa.select(sa.func.count()).select_from(service.repository.invoices)) == before
+            assert connection.scalar(sa.select(sa.func.count()).select_from(service.repository.payments)) == before_payments
             assert connection.scalar(sa.text("SELECT count(*) FROM stored_files WHERE created_by=:uid"), {"uid": user_id}) == 0
     finally:
         with engine.begin() as connection:
