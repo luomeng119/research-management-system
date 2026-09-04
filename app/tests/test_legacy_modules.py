@@ -547,6 +547,47 @@ def test_host_relation_mutations_and_routes_use_resource_service(
         second["equipment_id"]
     ]
 
+    device_side = equipment_routes.get(
+        f"/equipment/api/hosts/{second['equipment_id']}"
+    )
+    assert device_side.status_code == 200
+    assert device_side.get_json()["data"][0]["host_id"] == host["host_id"]
+
+    removed_from_device = equipment_routes.delete(
+        f"/equipment/api/hosts/{second['equipment_id']}/{host['host_id']}"
+    )
+    assert removed_from_device.status_code == 200
+    added_from_device = equipment_routes.post("/equipment/api/hosts", json={
+        "device_id": first["equipment_id"], "host_id": host["host_id"],
+    })
+    assert added_from_device.status_code == 200
+    assert equipment_service.get_hosts_by_device(first["equipment_id"])[0]["host_id"] == host["host_id"]
+
+
+def test_equipment_export_batches_host_relations(equipment_service):
+    first = equipment_service.create_equipment({"name": "导出设备A"})
+    second = equipment_service.create_equipment({"name": "导出设备B"})
+    host = equipment_service.create_host_device(
+        {"name": "导出宿主", "category": "计算存储"},
+        relations=[
+            {"device_id": first["equipment_id"], "quantity": 1},
+            {"device_id": second["equipment_id"], "quantity": 1},
+        ],
+    )
+
+    original = equipment_service.repository.get_hosts_by_device
+    equipment_service.repository.get_hosts_by_device = lambda *_: (_ for _ in ()).throw(
+        AssertionError("导出不应逐设备查询宿主关系")
+    )
+    try:
+        exported = equipment_service.export_equipment()
+    finally:
+        equipment_service.repository.get_hosts_by_device = original
+
+    by_id = {row["equipment_id"]: row for row in exported}
+    assert by_id[first["equipment_id"]]["hosts"][0]["host_id"] == host["host_id"]
+    assert by_id[second["equipment_id"]]["hosts"][0]["host_id"] == host["host_id"]
+
 
 def test_host_routes_validate_and_export_from_resource_service(
     equipment_routes, equipment_service
@@ -571,6 +612,16 @@ def test_host_routes_validate_and_export_from_resource_service(
     assert any(
         row[0] == host["host_id"] and row[5] == 1 and equipment["equipment_id"] in row[6]
         for row in rows[1:]
+    )
+
+    equipment_export = equipment_routes.get("/equipment/export")
+    assert equipment_export.status_code == 200
+    equipment_rows = list(openpyxl.load_workbook(
+        BytesIO(equipment_export.data), data_only=True
+    ).active.values)
+    assert any(
+        row[0] == equipment["equipment_id"] and host["host_id"] in row[14]
+        for row in equipment_rows[1:]
     )
 
 
@@ -1152,6 +1203,11 @@ def test_postgresql_equipment_resource_runtime_contract():
         )
         assert service.project_equipment(f"PG-PROJECT-{suffix}")["items"][0]["location"] == "PG二号实验室"
         assert service.get_devices_by_host(host["host_id"])[0]["quantity"] == 1
+        assert service.get_hosts_by_device(equipment["equipment_id"])[0]["host_id"] == host["host_id"]
+        assert any(
+            row["equipment_id"] == equipment["equipment_id"] and row["hosts"]
+            for row in service.export_equipment()
+        )
         assert imported["new"] == 1
         imported_host = service.list_host_devices(keyword=f"PG导入宿主{suffix}")["items"][0]
         assert service.get_devices_by_host(imported_host["host_id"])[0]["device_id"] == equipment["equipment_id"]

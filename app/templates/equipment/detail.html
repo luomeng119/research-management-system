@@ -147,7 +147,13 @@
 
 <script>
 let selectedHostIds = new Set();
-let currentDeviceId = '{{ equipment.equipment_id }}';
+let currentDeviceId = {{ equipment.equipment_id|tojson }};
+
+function escapeHost(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+    });
+}
 
 function openHostModal() {
     selectedHostIds = new Set();
@@ -171,11 +177,11 @@ function renderHostList(hosts, total, page, totalPages) {
     let tbody = document.getElementById('host-modal-list');
     tbody.innerHTML = hosts.map(h => `
         <tr>
-            <td><input type="checkbox" class="host-check" value="${h.host_id}" data-name="${h.name}" data-model="${h.model || ''}" data-category="${h.category || ''}" data-form="${h.form || ''}"></td>
-            <td>${h.name}</td>
-            <td>${h.model || ''}</td>
-            <td>${h.category || ''}</td>
-            <td>${h.form || ''}</td>
+            <td><input type="checkbox" class="host-check" value="${escapeHost(h.host_id)}" data-name="${escapeHost(h.name)}" data-model="${escapeHost(h.model)}" data-category="${escapeHost(h.category)}" data-form="${escapeHost(h.form)}"></td>
+            <td>${escapeHost(h.name)}</td>
+            <td>${escapeHost(h.model)}</td>
+            <td>${escapeHost(h.category)}</td>
+            <td>${escapeHost(h.form)}</td>
         </tr>
     `).join('');
 

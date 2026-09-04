@@ -208,8 +208,10 @@ def detail(equipment_id):
         flash('设备不存在', 'error')
         return redirect(url_for('equipment.index'))
 
-    rel_model = DeviceHostRelationModel()
-    related_hosts = rel_model.get_hosts_by_device(equipment_id)
+    try:
+        related_hosts = _equipment_resources_service().get_hosts_by_device(equipment_id)
+    except ResourceServiceError:
+        related_hosts = []
 
     return render_template('equipment/detail.html', equipment=equipment, related_hosts=related_hosts)
 
@@ -352,9 +354,7 @@ def export():
     from io import BytesIO
     import openpyxl
 
-    equipment_model = EquipmentModel()
-    rel_model = DeviceHostRelationModel()
-    all_equipment = equipment_model.get_all()
+    all_equipment = _equipment_resources_service().export_equipment()
 
     output = BytesIO()
     workbook = openpyxl.Workbook()
@@ -370,7 +370,7 @@ def export():
     ])
 
     for e in all_equipment:
-        host_rels = rel_model.get_hosts_by_device(e['equipment_id'])
+        host_rels = e['hosts']
         host_ids = '、'.join([h['host_id'] for h in host_rels]) if host_rels else ''
         host_names = '、'.join([h['name'] for h in host_rels]) if host_rels else ''
         ws.append([
@@ -1205,9 +1205,11 @@ def api_hosts_by_device(device_id):
     """获取密码设备关联的宿主设备列表"""
     if 'user' not in session:
         return jsonify({'success': False})
-    rel_model = DeviceHostRelationModel()
-    hosts = rel_model.get_hosts_by_device(device_id)
-    return jsonify({'success': True, 'data': hosts})
+    try:
+        hosts = _equipment_resources_service().get_hosts_by_device(device_id)
+        return jsonify({'success': True, 'data': hosts})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
 @bp.route('/api/hosts', methods=['POST'])
@@ -1220,9 +1222,11 @@ def api_add_host_relation():
     host_id = data.get('host_id')
     if not device_id or not host_id:
         return jsonify({'success': False, 'message': '缺少参数'})
-    rel_model = DeviceHostRelationModel()
-    rel_model.add_relation(device_id, host_id, quantity=1)
-    return jsonify({'success': True})
+    try:
+        _equipment_resources_service().add_device_host_relation(device_id, host_id)
+        return jsonify({'success': True})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
 @bp.route('/api/hosts/<device_id>/<host_id>', methods=['DELETE'])
@@ -1230,6 +1234,8 @@ def api_remove_host_relation(device_id, host_id):
     """从密码设备侧移除宿主设备关联"""
     if 'user' not in session:
         return jsonify({'success': False})
-    rel_model = DeviceHostRelationModel()
-    rel_model.remove_relation(device_id, host_id)
-    return jsonify({'success': True})
+    try:
+        _equipment_resources_service().remove_device_host_relation(device_id, host_id)
+        return jsonify({'success': True})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code

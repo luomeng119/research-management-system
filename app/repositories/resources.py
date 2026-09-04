@@ -686,3 +686,37 @@ class EquipmentResourcesRepository:
             self.device_host_relations.c.id
         )).mappings()
         return [dict(row) for row in rows]
+
+    def get_hosts_by_device(self, connection, device_id):
+        rows = connection.execute(sa.select(
+            self.device_host_relations.c.host_id,
+            self.device_host_relations.c.created_at,
+            self.host_devices.c.name, self.host_devices.c.model,
+            self.host_devices.c.category, self.host_devices.c.form,
+        ).select_from(self.device_host_relations.join(
+            self.host_devices,
+            self.device_host_relations.c.host_id == self.host_devices.c.host_id,
+        )).where(self.device_host_relations.c.device_id == device_id).order_by(
+            self.device_host_relations.c.id
+        )).mappings()
+        return [dict(row) for row in rows]
+
+    def export_equipment_host_relations(self, connection):
+        rows = connection.execute(sa.select(
+            self.device_host_relations.c.device_id,
+            self.device_host_relations.c.host_id,
+            self.device_host_relations.c.created_at,
+            self.host_devices.c.name, self.host_devices.c.model,
+            self.host_devices.c.category, self.host_devices.c.form,
+        ).select_from(self.device_host_relations.join(
+            self.host_devices,
+            self.device_host_relations.c.host_id == self.host_devices.c.host_id,
+        )).order_by(self.device_host_relations.c.id)).mappings()
+        return [dict(row) for row in rows]
+
+    def export_equipment(self, connection):
+        return [dict(row) for row in connection.execute(
+            sa.select(self.equipment).order_by(
+                self.equipment.c.created_at, self.equipment.c.id
+            )
+        ).mappings()]

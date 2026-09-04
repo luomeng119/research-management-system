@@ -1220,6 +1220,34 @@ class EquipmentResourcesService:
         with self.repository.engine.connect() as connection:
             return self.repository.get_devices_by_host(connection, str(host_id).strip())
 
+    def get_hosts_by_device(self, device_id):
+        with self.repository.engine.connect() as connection:
+            if self.repository.get_equipment(connection, str(device_id).strip()) is None:
+                raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "设备不存在", 404)
+            return self.repository.get_hosts_by_device(connection, str(device_id).strip())
+
+    def add_device_host_relation(self, device_id, host_id):
+        self.upsert_host_relations(
+            str(host_id or "").strip(),
+            [{"device_id": str(device_id or "").strip(), "quantity": 1}],
+        )
+
+    def remove_device_host_relation(self, device_id, host_id):
+        self.remove_host_relation(
+            str(host_id or "").strip(), str(device_id or "").strip()
+        )
+
+    def export_equipment(self):
+        with self.repository.engine.connect() as connection:
+            rows = self.repository.export_equipment(connection)
+            hosts_by_equipment = {}
+            for relation in self.repository.export_equipment_host_relations(connection):
+                device_id = relation.pop("device_id")
+                hosts_by_equipment.setdefault(device_id, []).append(relation)
+            for row in rows:
+                row["hosts"] = hosts_by_equipment.get(row["equipment_id"], [])
+        return rows
+
     def list_host_devices(self, *, page=1, page_size=20, category=None,
                           form=None, keyword=None):
         page = _positive_int(page, "page")
