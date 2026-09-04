@@ -325,6 +325,16 @@ def test_equipment_service_uses_bounded_filters_and_preserves_fields(equipment_s
     assert updated["tech_status"] == "定型"
 
 
+def test_expert_runtime_has_no_sqlite_or_temp_file_fallback():
+    experts_source = (ROOT / "app/routes/experts.py").read_text(encoding="utf-8")
+    groups_source = (ROOT / "app/routes/expert_groups.py").read_text(encoding="utf-8")
+
+    assert "ExpertModel" not in experts_source
+    assert "ExpertGroupModel" not in groups_source
+    assert "IMPORT_TMP_DIR" not in experts_source
+    assert "task_path" not in experts_source
+
+
 def test_equipment_stats_merge_null_category_into_general(equipment_service):
     equipment_service.create_equipment({"name": "未分类设备", "price": "10"})
     equipment_service.create_equipment({

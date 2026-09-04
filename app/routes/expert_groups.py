@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, current_app, render_template, request, redirect, url_for, session, flash, jsonify, send_file
 from datetime import datetime
-from app.models import ExpertModel, ExpertGroupModel
 import openpyxl
 from io import BytesIO
 
@@ -16,7 +15,7 @@ def _xlsx_cell(value):
 
 def _resources_service():
     service = current_app.extensions.get('resources_service')
-    if service is None and current_app.extensions.get('database_engine') is not None:
+    if service is None:
         raise RuntimeError('专家库服务未就绪')
     return service
 
@@ -56,13 +55,9 @@ def index():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    service = _resources_service()
-    if service is not None:
-        groups = [_legacy_group(item) for item in service.list_expert_groups(
-            page=max(1, int(request.args.get('page', 1) or 1)), page_size=100
-        )['items']]
-    else:
-        groups = ExpertGroupModel().get_all()
+    groups = [_legacy_group(item) for item in _resources_service().list_expert_groups(
+        page=max(1, int(request.args.get('page', 1) or 1)), page_size=100
+    )['items']]
     return render_template('experts/groups.html', groups=groups)
 
 @bp.route('/new', methods=['GET', 'POST'])
@@ -76,13 +71,9 @@ def new():
             meeting_name = datetime.now().strftime('%Y-%m-%d专家组')
         
         creator = session.get('user')
-        service = _resources_service()
-        if service is not None:
-            group_id = service.create_expert_group(
-                {'groupName': meeting_name}, creator=creator
-            )['groupId']
-        else:
-            group_id = ExpertGroupModel().create_group(meeting_name, creator)
+        group_id = _resources_service().create_expert_group(
+            {'groupName': meeting_name}, creator=creator
+        )['groupId']
         flash('专家组创建成功', 'success')
         return redirect(url_for('expert_groups.edit', group_id=group_id))
     
@@ -94,15 +85,10 @@ def edit(group_id):
         return redirect(url_for('auth.login'))
     
     service = _resources_service()
-    if service is not None:
-        try:
-            group = _legacy_group(service.get_expert_group(group_id))
-        except Exception:
-            group = None
-    else:
-        group_model = ExpertGroupModel()
-        expert_model = ExpertModel()
-        group = group_model.get_by_id(group_id)
+    try:
+        group = _legacy_group(service.get_expert_group(group_id))
+    except Exception:
+        group = None
     if not group:
         flash('专家组不存在', 'error')
         return redirect(url_for('expert_groups.index'))
@@ -114,29 +100,10 @@ def edit(group_id):
         filter_position = request.args.get('position', '').strip()
         filter_expertise = request.args.get('expertise', '').strip()
         
-        if service is not None:
-            available_experts = [_legacy_expert(item) for item in service.list_available_experts(
-                group_id, keyword=search, unit=filter_unit,
-                position=filter_position, expertise=filter_expertise, limit=20,
-            )]
-            return jsonify({'items': available_experts})
-
-        added_ids = [m['expert_id'] for m in group['members']]
-        all_experts = expert_model.get_all()
-        available_experts = [e for e in all_experts if e['expert_id'] not in added_ids]
-        
-        if search:
-            available_experts = [e for e in available_experts 
-                if search.lower() in (e.get('name') or '').lower() 
-                or search.lower() in (e.get('unit') or '').lower()
-                or search.lower() in (e.get('expertise') or '').lower()]
-        if filter_unit:
-            available_experts = [e for e in available_experts if e.get('unit') == filter_unit]
-        if filter_position:
-            available_experts = [e for e in available_experts if e.get('position') == filter_position]
-        if filter_expertise:
-            available_experts = [e for e in available_experts if e.get('expertise') == filter_expertise]
-        
+        available_experts = [_legacy_expert(item) for item in service.list_available_experts(
+            group_id, keyword=search, unit=filter_unit,
+            position=filter_position, expertise=filter_expertise, limit=20,
+        )]
         return jsonify({'items': available_experts[:20]})
     
     # 获取筛选参数
@@ -145,22 +112,14 @@ def edit(group_id):
     filter_position = request.args.get('position', '').strip()
     filter_expertise = request.args.get('expertise', '').strip()
     
-    if service is not None:
-        available_experts = [_legacy_expert(item) for item in service.list_available_experts(
-            group_id, keyword=search, unit=filter_unit,
-            position=filter_position, expertise=filter_expertise, limit=20,
-        )]
-        facets = service.expert_facets()
-        units, positions, expertises = (
-            facets['units'], facets['positions'], facets['expertises']
-        )
-    else:
-        added_ids = [m['expert_id'] for m in group['members']]
-        all_experts = expert_model.get_all()
-        available_experts = [e for e in all_experts if e['expert_id'] not in added_ids]
-        units = sorted(list(set(e.get('unit') for e in all_experts if e.get('unit'))))
-        positions = sorted(list(set(e.get('position') for e in all_experts if e.get('position'))))
-        expertises = sorted(list(set(e.get('expertise') for e in all_experts if e.get('expertise'))))
+    available_experts = [_legacy_expert(item) for item in service.list_available_experts(
+        group_id, keyword=search, unit=filter_unit,
+        position=filter_position, expertise=filter_expertise, limit=20,
+    )]
+    facets = service.expert_facets()
+    units, positions, expertises = (
+        facets['units'], facets['positions'], facets['expertises']
+    )
     
     # 筛选
     if search:
@@ -184,22 +143,17 @@ def edit(group_id):
         if action == 'add':
             if expert_ids:
                 for eid in expert_ids:
-                    if service is not None:
-                        service.add_expert_group_member(group_id, eid, selected_by=session.get('user'))
-                    else:
-                        group_model.add_member(group_id, eid, session.get('user'))
+                    service.add_expert_group_member(
+                        group_id, eid, selected_by=session.get('user')
+                    )
                 flash(f'成功添加 {len(expert_ids)} 位专家', 'success')
             elif expert_id:
-                if service is not None:
-                    service.add_expert_group_member(group_id, expert_id, selected_by=session.get('user'))
-                else:
-                    group_model.add_member(group_id, expert_id, session.get('user'))
+                service.add_expert_group_member(
+                    group_id, expert_id, selected_by=session.get('user')
+                )
                 flash('添加成功', 'success')
         elif action == 'remove' and expert_id:
-            if service is not None:
-                service.remove_expert_group_member(group_id, expert_id)
-            else:
-                group_model.remove_member(group_id, expert_id)
+            service.remove_expert_group_member(group_id, expert_id)
             flash('移除成功', 'success')
         
         return redirect(url_for('expert_groups.edit', group_id=group_id))
@@ -211,11 +165,7 @@ def delete(group_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     
-    service = _resources_service()
-    if service is not None:
-        service.delete_expert_group(group_id)
-    else:
-        ExpertGroupModel().delete_group(group_id)
+    _resources_service().delete_expert_group(group_id)
     return jsonify({'success': True, 'message': '删除成功'})
 
 @bp.route('/export/<group_id>')
@@ -223,18 +173,14 @@ def export(group_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    service = _resources_service()
-    if service is not None:
-        actor = _actor()
-        try:
-            group = _legacy_group(service.export_expert_group_sensitive(
-                group_id, actor_user_id=actor['user_id'],
-                request_id=actor['request_id'],
-            ))
-        except Exception:
-            group = None
-    else:
-        group = ExpertGroupModel().get_by_id(group_id)
+    actor = _actor()
+    try:
+        group = _legacy_group(_resources_service().export_expert_group_sensitive(
+            group_id, actor_user_id=actor['user_id'],
+            request_id=actor['request_id'],
+        ))
+    except Exception:
+        group = None
     if not group:
         flash('专家组不存在', 'error')
         return redirect(url_for('expert_groups.index'))

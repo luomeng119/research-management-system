@@ -1,25 +1,16 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, current_app, render_template, request, redirect, url_for, session, flash, jsonify, send_file
 from datetime import datetime
-from app.models import ExpertModel
-import os
-import uuid
 import json
-import shutil
 import zipfile
 import openpyxl
 from io import BytesIO
 
 bp = Blueprint('experts', __name__, url_prefix='/experts')
 
-# 导入临时文件目录
-IMPORT_TMP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'tmp', 'expert_import')
-os.makedirs(IMPORT_TMP_DIR, exist_ok=True)
-
-
 def _resources_service():
     service = current_app.extensions.get('resources_service')
-    if service is None and current_app.extensions.get('database_engine') is not None:
+    if service is None:
         raise RuntimeError('专家库服务未就绪')
     return service
 
@@ -75,19 +66,11 @@ def index():
     per_page = 20
     partial = request.args.get('partial') == '1'
 
-    service = _resources_service()
-    if service is not None:
-        result = service.list_experts(
-            page=page, page_size=per_page, keyword=keyword
-        )
-        experts_page = [_template_expert(item) for item in result['items']]
-        total = result['total']
-    else:
-        expert_model = ExpertModel()
-        experts = expert_model.search(keyword) if keyword else expert_model.get_all()
-        total = len(experts)
-        start = (page - 1) * per_page
-        experts_page = experts[start:start + per_page]
+    result = _resources_service().list_experts(
+        page=page, page_size=per_page, keyword=keyword
+    )
+    experts_page = [_template_expert(item) for item in result['items']]
+    total = result['total']
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
 
     if partial:
@@ -112,20 +95,11 @@ def add():
             flash('姓名不能为空', 'error')
             return redirect(url_for('experts.add'))
         
-        service = _resources_service()
-        if service is not None:
-            actor = _actor()
-            service.create_expert(
-                payload, uploader=actor['name'], actor_user_id=actor['user_id'],
-                request_id=actor['request_id'],
-            )
-        else:
-            expert_model = ExpertModel()
-            expert_model.add(
-                name, payload['unit'], payload['position'], payload['expertise'],
-                payload['bankCard'], payload['bankName'], session.get('user'),
-                payload['phone'], payload['idCard'],
-            )
+        actor = _actor()
+        _resources_service().create_expert(
+            payload, uploader=actor['name'], actor_user_id=actor['user_id'],
+            request_id=actor['request_id'],
+        )
         
         flash('专家信息添加成功', 'success')
         return redirect(url_for('experts.index'))
@@ -138,18 +112,14 @@ def edit(expert_id):
         return redirect(url_for('auth.login'))
     
     service = _resources_service()
-    if service is not None:
-        actor = _actor()
-        try:
-            expert = _template_expert(service.get_expert_sensitive(
-                expert_id, actor_user_id=actor['user_id'],
-                request_id=actor['request_id'], operation='EDIT',
-            ))
-        except Exception:
-            expert = None
-    else:
-        expert_model = ExpertModel()
-        expert = expert_model.get_by_id(expert_id)
+    actor = _actor()
+    try:
+        expert = _template_expert(service.get_expert_sensitive(
+            expert_id, actor_user_id=actor['user_id'],
+            request_id=actor['request_id'], operation='EDIT',
+        ))
+    except Exception:
+        expert = None
     
     if not expert:
         flash('专家不存在', 'error')
@@ -163,19 +133,11 @@ def edit(expert_id):
             flash('姓名不能为空', 'error')
             return redirect(url_for('experts.edit', expert_id=expert_id))
         
-        if service is not None:
-            actor = _actor()
-            service.update_expert(
-                expert_id, payload, actor_user_id=actor['user_id'],
-                request_id=actor['request_id'],
-            )
-        else:
-            expert_model.update(
-                expert_id, name=name, unit=payload['unit'],
-                position=payload['position'], expertise=payload['expertise'],
-                bank_card=payload['bankCard'], bank_name=payload['bankName'],
-                phone=payload['phone'], id_card=payload['idCard'],
-            )
+        actor = _actor()
+        service.update_expert(
+            expert_id, payload, actor_user_id=actor['user_id'],
+            request_id=actor['request_id'],
+        )
         
         flash(f'更新成功', 'success')
         return redirect(url_for('experts.index'))
@@ -187,14 +149,10 @@ def delete(expert_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
 
-    service = _resources_service()
-    if service is not None:
-        try:
-            service.delete_expert(expert_id)
-        except Exception as error:
-            return jsonify({'success': False, 'message': getattr(error, 'message', '删除失败')}), getattr(error, 'status_code', 400)
-    else:
-        ExpertModel().delete(expert_id)
+    try:
+        _resources_service().delete_expert(expert_id)
+    except Exception as error:
+        return jsonify({'success': False, 'message': getattr(error, 'message', '删除失败')}), getattr(error, 'status_code', 400)
     
     return jsonify({'success': True, 'message': '删除成功'})
 
@@ -203,14 +161,10 @@ def export():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    service = _resources_service()
-    if service is not None:
-        actor = _actor()
-        experts = [_template_expert(item) for item in service.export_experts_sensitive(
-            actor_user_id=actor['user_id'], request_id=actor['request_id']
-        )]
-    else:
-        experts = ExpertModel().get_all()
+    actor = _actor()
+    experts = [_template_expert(item) for item in _resources_service().export_experts_sensitive(
+        actor_user_id=actor['user_id'], request_id=actor['request_id']
+    )]
     
     output = BytesIO()
     workbook = openpyxl.Workbook()
@@ -237,16 +191,11 @@ def export_selected():
         flash('请选择要导出的专家', 'warning')
         return redirect(url_for('experts.index'))
     
-    service = _resources_service()
-    if service is not None:
-        actor = _actor()
-        selected_experts = [_template_expert(item) for item in service.export_experts_sensitive(
-            expert_ids=expert_ids, actor_user_id=actor['user_id'],
-            request_id=actor['request_id'],
-        )]
-    else:
-        all_experts = ExpertModel().get_all()
-        selected_experts = [e for e in all_experts if str(e['expert_id']) in expert_ids]
+    actor = _actor()
+    selected_experts = [_template_expert(item) for item in _resources_service().export_experts_sensitive(
+        expert_ids=expert_ids, actor_user_id=actor['user_id'],
+        request_id=actor['request_id'],
+    )]
     
     output = BytesIO()
     workbook = openpyxl.Workbook()
@@ -273,16 +222,11 @@ def export_selected_word():
         flash('请选择要导出的专家', 'warning')
         return redirect(url_for('experts.index'))
     
-    service = _resources_service()
-    if service is not None:
-        actor = _actor()
-        selected_experts = [_template_expert(item) for item in service.export_experts_sensitive(
-            expert_ids=expert_ids, actor_user_id=actor['user_id'],
-            request_id=actor['request_id'],
-        )]
-    else:
-        all_experts = ExpertModel().get_all()
-        selected_experts = [e for e in all_experts if str(e['expert_id']) in expert_ids]
+    actor = _actor()
+    selected_experts = [_template_expert(item) for item in _resources_service().export_experts_sensitive(
+        expert_ids=expert_ids, actor_user_id=actor['user_id'],
+        request_id=actor['request_id'],
+    )]
     
     # 尝试生成 Word 文档
     try:
@@ -450,33 +394,14 @@ def import_preview():
             'skip': len(skip),
         }
 
-        service = _resources_service()
-        if service is not None:
-            batch = service.create_expert_import_preview(
-                source_name=file.filename,
-                source_bytes=source_bytes,
-                rows=processed,
-                owner_user_id=_actor()['user_id'],
-            )
-            session['expert_import_task_id'] = batch['batchId']
-            session['expert_import_filename'] = file.filename
-            return jsonify({'success': True, 'redirect': url_for('.import_preview_page')})
-
-        # 旧开发模式：session 仅保存临时文件 ID
-        task_id = uuid.uuid4().hex
-        task_data = {
-            'filename': file.filename,
-            'column_mapping': column_mapping,
-            'processed': processed,
-            'statistics': statistics,
-        }
-        task_path = os.path.join(IMPORT_TMP_DIR, f'{task_id}.json')
-        with open(task_path, 'w', encoding='utf-8') as f:
-            json.dump(task_data, f, ensure_ascii=False)
-
-        session['expert_import_task_id'] = task_id
+        batch = _resources_service().create_expert_import_preview(
+            source_name=file.filename,
+            source_bytes=source_bytes,
+            rows=processed,
+            owner_user_id=_actor()['user_id'],
+        )
+        session['expert_import_task_id'] = batch['batchId']
         session['expert_import_filename'] = file.filename
-
         return jsonify({'success': True, 'redirect': url_for('.import_preview_page')})
 
     except Exception:
@@ -494,37 +419,21 @@ def import_preview_page():
     task_id = session.get('expert_import_task_id')
     if not task_id:
         return redirect(url_for('.import_page'))
-    service = _resources_service()
-    if service is not None:
-        try:
-            batch = service.get_expert_import_batch(
-                task_id, owner_user_id=_actor()['user_id']
-            )
-        except Exception:
-            flash('导入会话已过期，请重新上传', 'warning')
-            return redirect(url_for('.import_page'))
-        return render_template(
-            'experts/import_step2.html', processed=batch['rows'],
-            statistics={
-                'total': len(batch['rows']), 'valid': batch['validCount'],
-                'skip': batch['errorCount'] + batch['duplicateCount'],
-            },
-            filename=batch['sourceName'],
+    try:
+        batch = _resources_service().get_expert_import_batch(
+            task_id, owner_user_id=_actor()['user_id']
         )
-    task_path = os.path.join(IMPORT_TMP_DIR, f'{task_id}.json')
-    if not os.path.exists(task_path):
+    except Exception:
         flash('导入会话已过期，请重新上传', 'warning')
         return redirect(url_for('.import_page'))
-    try:
-        with open(task_path, 'r', encoding='utf-8') as f:
-            task_data = json.load(f)
-    except Exception:
-        flash('临时数据读取失败，请重新上传', 'error')
-        return redirect(url_for('.import_page'))
-    return render_template('experts/import_step2.html',
-                           processed=task_data['processed'],
-                           statistics=task_data['statistics'],
-                           filename=task_data['filename'])
+    return render_template(
+        'experts/import_step2.html', processed=batch['rows'],
+        statistics={
+            'total': len(batch['rows']), 'valid': batch['validCount'],
+            'skip': batch['errorCount'] + batch['duplicateCount'],
+        },
+        filename=batch['sourceName'],
+    )
 
 
 @bp.route('/import/commit', methods=['POST'])
@@ -535,75 +444,30 @@ def import_commit():
     task_id = session.get('expert_import_task_id')
     if not task_id:
         return jsonify({'success': False, 'message': '会话已过期，请重新导入'})
-    service = _resources_service()
-    if service is not None:
-        try:
-            confirmed = json.loads(request.form.get('confirmed_rows', '[]'))
-        except Exception:
-            return jsonify({'success': False, 'message': '参数错误'}), 400
-        actor = _actor()
-        try:
-            result = service.commit_expert_import(
-                task_id, confirmed_rows=confirmed,
-                owner_user_id=actor['user_id'], uploader=actor['name'],
-                request_id=actor['request_id'],
-            )
-        except Exception as error:
-            return jsonify({
-                'success': False,
-                'message': getattr(error, 'message', '导入未完成'),
-            }), getattr(error, 'status_code', 400)
-        session.pop('expert_import_task_id', None)
-        session.pop('expert_import_filename', None)
-        session['expert_import_results'] = {
-            'success': result['created'],
-            'fail': [], 'skip': result['skipCount'],
-            'filename': result['sourceName'],
-        }
-        return jsonify({'success': True, 'redirect': url_for('.import_done_page')})
-
-    task_path = os.path.join(IMPORT_TMP_DIR, f'{task_id}.json')
-    if not os.path.exists(task_path):
-        return jsonify({'success': False, 'message': '临时数据已丢失，请重新导入'})
-
-    try:
-        with open(task_path, 'r', encoding='utf-8') as f:
-            task_data = json.load(f)
-    except Exception:
-        return jsonify({'success': False, 'message': '临时数据读取失败'})
-
     try:
         confirmed = json.loads(request.form.get('confirmed_rows', '[]'))
     except Exception:
-        return jsonify({'success': False, 'message': '参数错误'})
-
-    if not confirmed:
-        return jsonify({'success': False, 'message': '没有勾选任何行'})
-
-    expert_model = ExpertModel()
-    uploader = session.get('name', '') or session.get('user', '')
+        return jsonify({'success': False, 'message': '参数错误'}), 400
+    actor = _actor()
     try:
-        results = expert_model.insert_batch(confirmed, uploader)
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'写入失败：{str(e)[:200]}'})
-
-    # 清理临时文件
-    try:
-        os.remove(task_path)
-    except Exception:
-        pass
+        result = _resources_service().commit_expert_import(
+            task_id, confirmed_rows=confirmed,
+            owner_user_id=actor['user_id'], uploader=actor['name'],
+            request_id=actor['request_id'],
+        )
+    except Exception as error:
+        return jsonify({
+            'success': False,
+            'message': getattr(error, 'message', '导入未完成'),
+        }), getattr(error, 'status_code', 400)
 
     session.pop('expert_import_task_id', None)
     session.pop('expert_import_filename', None)
-
-    # 结果存 session（轻量：success 只存 expert_id+name+unit，fail 只存 row_idx+reason）
     session['expert_import_results'] = {
-        'success': results['success'],
-        'fail': results['fail'],
-        'skip': task_data['statistics']['skip'],
-        'filename': task_data['filename'],
+        'success': result['created'],
+        'fail': [], 'skip': result['skipCount'],
+        'filename': result['sourceName'],
     }
-
     return jsonify({'success': True, 'redirect': url_for('.import_done_page')})
 
 
@@ -614,23 +478,15 @@ def import_cancel():
     task_id = session.get('expert_import_task_id')
     if not task_id:
         return jsonify({'success': True})
-    service = _resources_service()
-    if service is not None:
-        try:
-            service.cancel_expert_import(
-                task_id, owner_user_id=_actor()['user_id']
-            )
-        except Exception as error:
-            return jsonify({
-                'success': False,
-                'message': getattr(error, 'message', '取消未完成'),
-            }), getattr(error, 'status_code', 400)
-    else:
-        task_path = os.path.join(IMPORT_TMP_DIR, f'{task_id}.json')
-        try:
-            os.remove(task_path)
-        except FileNotFoundError:
-            pass
+    try:
+        _resources_service().cancel_expert_import(
+            task_id, owner_user_id=_actor()['user_id']
+        )
+    except Exception as error:
+        return jsonify({
+            'success': False,
+            'message': getattr(error, 'message', '取消未完成'),
+        }), getattr(error, 'status_code', 400)
     session.pop('expert_import_task_id', None)
     session.pop('expert_import_filename', None)
     return jsonify({'success': True, 'redirect': url_for('.import_page')})
