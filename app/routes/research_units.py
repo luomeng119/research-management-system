@@ -3,11 +3,18 @@
 研制单位字典路由
 页面 + RESTful API
 """
-from flask import Blueprint, jsonify, request, session
-from app.models import ResearchUnitModel
+from flask import Blueprint, current_app, jsonify, request, session
+from app.services.resources import ResourceServiceError
 from app.security.auth import business_required
 
 bp = Blueprint('research_units', __name__, url_prefix='/research-units')
+
+
+def _service():
+    service = current_app.extensions.get('equipment_resources_service')
+    if service is None:
+        raise RuntimeError('equipment resources service is not configured')
+    return service
 
 
 # ---------- API 路由 ----------
@@ -15,8 +22,7 @@ bp = Blueprint('research_units', __name__, url_prefix='/research-units')
 @bp.route('/api/list', methods=['GET'])
 def api_list():
     """获取研制单位列表"""
-    model = ResearchUnitModel()
-    units = model.get_all()
+    units = _service().list_research_units()
     return jsonify({'units': units})
 
 
@@ -27,9 +33,9 @@ def api_match():
     if not name:
         return jsonify({'matched': None, 'exact': False})
     
-    model = ResearchUnitModel()
     from app.utils.fuzzy_match import match_research_unit
-    result = match_research_unit(name, model)
+    units = _service().list_research_units()
+    result = match_research_unit(name, _UnitMatcher(units))
     return jsonify(result)
 
 
@@ -44,11 +50,10 @@ def api_create():
     if not name:
         return jsonify({'error': '研制单位名称不能为空'}), 400
     
-    model = ResearchUnitModel()
-    result = model.add(name, alias)
-    if 'error' in result:
-        return jsonify(result), 400
-    return jsonify(result), 201
+    try:
+        return jsonify(_service().create_research_unit(name, alias)), 201
+    except ResourceServiceError as error:
+        return jsonify({'error': error.message}), error.status_code
 
 
 @bp.route('/api/<unit_id>', methods=['PUT'])
@@ -62,17 +67,28 @@ def api_update(unit_id):
     if not name:
         return jsonify({'error': '研制单位名称不能为空'}), 400
     
-    model = ResearchUnitModel()
-    result = model.update(unit_id, name, alias)
-    if 'error' in result:
-        return jsonify(result), 400
-    return jsonify(result)
+    try:
+        return jsonify(_service().update_research_unit(unit_id, name, alias))
+    except ResourceServiceError as error:
+        return jsonify({'error': error.message}), error.status_code
 
 
 @bp.route('/api/<unit_id>', methods=['DELETE'])
 @business_required
 def api_delete(unit_id):
     """删除研制单位"""
-    model = ResearchUnitModel()
-    model.delete(unit_id)
-    return jsonify({'success': True})
+    try:
+        _service().delete_research_unit(unit_id)
+        return jsonify({'success': True})
+    except ResourceServiceError as error:
+        return jsonify({'error': error.message}), error.status_code
+
+
+class _UnitMatcher:
+    """Compatibility view for the existing deterministic fuzzy matcher."""
+
+    def __init__(self, units):
+        self.units = units
+
+    def get_all(self):
+        return self.units

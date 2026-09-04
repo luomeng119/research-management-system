@@ -325,7 +325,7 @@ T09_TEST_DATABASE_URL="$MIGRATION_DATABASE_URL" \
   "$t02_python" -m pytest app/tests/test_project_lifecycle.py -q
 T10_TEST_DATABASE_URL="$DATABASE_URL" \
   "$t02_python" -m pytest app/tests/test_legacy_modules.py -q \
-  -k postgresql_expert_runtime_contract
+  -k 'postgresql_expert_runtime_contract or postgresql_equipment_resource_runtime_contract'
 if [[ "$t10_contract" -eq 1 ]]; then
   T10_TEST_DATABASE_URL="$DATABASE_URL" \
     "$t02_python" -m pytest app/tests/test_generic_tables_postgres.py -q \

@@ -272,3 +272,133 @@ class ResearchResourcesRepository:
             .where(self.expert_import_batches.c.id == self._uuid(connection, batch_id))
             .values(**values)
         ).rowcount
+
+
+class EquipmentResourcesRepository:
+    """Bounded PostgreSQL persistence for retained equipment resource records."""
+
+    def __init__(self, engine) -> None:
+        self.engine = engine
+        metadata = sa.MetaData()
+        self.equipment = sa.Table("equipment", metadata, autoload_with=engine)
+        self.knowledge_subclasses = sa.Table(
+            "knowledge_subclasses", metadata, autoload_with=engine
+        )
+        self.research_units = sa.Table("research_units", metadata, autoload_with=engine)
+
+    @staticmethod
+    def _pattern(value):
+        escaped = str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
+
+    def list_equipment(self, connection, *, page, page_size, category=None,
+                       form=None, tech_status=None, keyword=None, subclass=None):
+        statement = sa.select(self.equipment)
+        for column, value in (
+            (self.equipment.c.category, category), (self.equipment.c.form, form),
+            (self.equipment.c.tech_status, tech_status),
+            (self.equipment.c.subclass, subclass),
+        ):
+            if value:
+                statement = statement.where(column == value)
+        if keyword:
+            pattern = self._pattern(keyword)
+            statement = statement.where(sa.or_(
+                self.equipment.c.name.ilike(pattern, escape="\\"),
+                self.equipment.c.model.ilike(pattern, escape="\\"),
+                self.equipment.c.equipment_id.ilike(pattern, escape="\\"),
+            ))
+        total = int(connection.scalar(
+            sa.select(sa.func.count()).select_from(statement.subquery())
+        ) or 0)
+        rows = connection.execute(paginate(
+            statement.order_by(self.equipment.c.created_at.desc(), self.equipment.c.id.desc()),
+            page=page, page_size=page_size,
+        )).mappings()
+        return [dict(row) for row in rows], total
+
+    def get_equipment(self, connection, equipment_id):
+        return connection.execute(sa.select(self.equipment).where(
+            self.equipment.c.equipment_id == equipment_id
+        )).mappings().first()
+
+    def equipment_stats(self, connection):
+        categories = connection.execute(sa.select(
+            self.equipment.c.category, sa.func.count().label("count"),
+            sa.func.coalesce(sa.func.sum(self.equipment.c.price), 0).label("value"),
+        ).group_by(self.equipment.c.category)).mappings()
+        statuses = connection.execute(sa.select(
+            self.equipment.c.tech_status, sa.func.count().label("count")
+        ).group_by(self.equipment.c.tech_status)).mappings()
+        return [dict(row) for row in categories], [dict(row) for row in statuses]
+
+    def insert_equipment(self, connection, values):
+        connection.execute(self.equipment.insert().values(**values))
+
+    def update_equipment(self, connection, equipment_id, values):
+        return connection.execute(self.equipment.update().where(
+            self.equipment.c.equipment_id == equipment_id
+        ).values(**values)).rowcount
+
+    def delete_equipment(self, connection, equipment_id):
+        return connection.execute(self.equipment.delete().where(
+            self.equipment.c.equipment_id == equipment_id
+        )).rowcount
+
+    def list_research_units(self, connection):
+        return [dict(row) for row in connection.execute(
+            sa.select(self.research_units).order_by(self.research_units.c.name, self.research_units.c.id)
+        ).mappings()]
+
+    def get_research_unit_by_name(self, connection, name):
+        return connection.execute(sa.select(self.research_units).where(
+            self.research_units.c.name == name
+        )).mappings().first()
+
+    def insert_research_unit(self, connection, values):
+        connection.execute(self.research_units.insert().values(**values))
+
+    def get_research_unit(self, connection, unit_id):
+        return connection.execute(sa.select(self.research_units).where(
+            self.research_units.c.unit_id == unit_id
+        )).mappings().first()
+
+    def update_research_unit(self, connection, unit_id, values):
+        return connection.execute(self.research_units.update().where(
+            self.research_units.c.unit_id == unit_id
+        ).values(**values)).rowcount
+
+    def delete_research_unit(self, connection, unit_id):
+        return connection.execute(self.research_units.delete().where(
+            self.research_units.c.unit_id == unit_id
+        )).rowcount
+
+    def list_subclasses(self, connection, parent_category=None):
+        statement = sa.select(self.knowledge_subclasses)
+        if parent_category:
+            statement = statement.where(
+                self.knowledge_subclasses.c.parent_category == parent_category
+            )
+        return [dict(row) for row in connection.execute(statement.order_by(
+            self.knowledge_subclasses.c.parent_category,
+            self.knowledge_subclasses.c.subclass_name,
+            self.knowledge_subclasses.c.id,
+        )).mappings()]
+
+    def get_subclass(self, connection, parent_category, subclass_name):
+        return connection.execute(sa.select(self.knowledge_subclasses).where(sa.and_(
+            self.knowledge_subclasses.c.parent_category == parent_category,
+            self.knowledge_subclasses.c.subclass_name == subclass_name,
+        ))).mappings().first()
+
+    def insert_subclass(self, connection, values):
+        return connection.execute(
+            self.knowledge_subclasses.insert().values(**values).returning(
+                self.knowledge_subclasses.c.id
+            )
+        ).scalar_one()
+
+    def delete_subclass(self, connection, row_id):
+        return connection.execute(self.knowledge_subclasses.delete().where(
+            self.knowledge_subclasses.c.id == row_id
+        )).rowcount

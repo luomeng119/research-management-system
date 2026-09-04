@@ -13,7 +13,7 @@ from alembic.config import Config
 from sqlalchemy.exc import DBAPIError
 
 
-HEAD_REVISION = "0007_equipment_resources"
+HEAD_REVISION = "0008_resource_dictionary_keys"
 
 CORE_TABLES = {
     "users",
@@ -1174,6 +1174,10 @@ def test_equipment_resource_schema_preserves_locations_and_relations(migration_e
         constraint["name"]
         for constraint in inspector.get_check_constraints("equipment_group_members")
     } >= {"ck_equipment_group_members_quantity_positive"}
+    assert any(
+        constraint["name"] == "uq_research_units_name"
+        for constraint in inspector.get_unique_constraints("research_units")
+    )
 
 
 def test_equipment_resource_upgrade_backfills_blank_ids(migration_engine):

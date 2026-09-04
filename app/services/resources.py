@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 import hashlib
 import uuid
 
@@ -576,3 +577,192 @@ class ResearchResourcesService:
                 "version": int(batch["version"]) + 1,
             })
         return {"batchId": str(batch_id), "status": "CANCELLED"}
+
+
+class EquipmentResourcesService:
+    """Equipment resource registration; deliberately not an asset-management system."""
+
+    FIELD_MAP = {
+        "name": "name", "model": "model", "category": "category",
+        "subclass": "subclass", "form": "form", "price": "price",
+        "techIndex": "tech_index", "tech_index": "tech_index",
+        "techStatus": "tech_status", "tech_status": "tech_status",
+        "installationRequirements": "installation_requirements",
+        "installation_requirements": "installation_requirements",
+        "manufacturer": "manufacturer", "equipmentImage": "equipment_image",
+        "equipment_image": "equipment_image", "relatedFiles": "related_files",
+        "related_files": "related_files", "mainPurpose": "main_purpose",
+        "main_purpose": "main_purpose", "formerName": "former_name",
+        "former_name": "former_name", "resourceGuarantee": "resource_guarantee",
+        "resource_guarantee": "resource_guarantee",
+    }
+
+    def __init__(self, repository) -> None:
+        self.repository = repository
+
+    def _values(self, payload, *, require_name=False):
+        payload = payload or {}
+        values = {}
+        for source, target in self.FIELD_MAP.items():
+            if source in payload:
+                value = payload[source]
+                if target == "related_files":
+                    value = value if isinstance(value, list) else []
+                elif target == "price" and value in (None, ""):
+                    value = None
+                elif target == "price":
+                    try:
+                        value = Decimal(str(value))
+                    except InvalidOperation:
+                        raise ResourceServiceError("VALIDATION_ERROR", "设备单价格式无效", 422)
+                elif value is not None:
+                    value = str(value).strip()
+                values[target] = value
+        if require_name and not values.get("name"):
+            raise ResourceServiceError("VALIDATION_ERROR", "设备名称不能为空", 422)
+        if "name" in values and not values["name"]:
+            raise ResourceServiceError("VALIDATION_ERROR", "设备名称不能为空", 422)
+        return values
+
+    def list_equipment(self, *, page=1, page_size=20, **filters):
+        page = _positive_int(page, "page")
+        page_size = _positive_int(page_size, "pageSize", maximum=100)
+        normalized = {
+            key: str(filters.get(key) or "").strip() or None
+            for key in ("category", "form", "tech_status", "keyword", "subclass")
+        }
+        with self.repository.engine.connect() as connection:
+            rows, total = self.repository.list_equipment(
+                connection, page=page, page_size=page_size, **normalized
+            )
+        return {"items": rows, "page": page, "pageSize": page_size, "total": total}
+
+    def equipment_stats(self):
+        with self.repository.engine.connect() as connection:
+            categories, statuses = self.repository.equipment_stats(connection)
+        by_category = {name: {"count": 0, "value": 0} for name in (
+            "安全设备", "密码设备", "通用设备"
+        )}
+        total = 0
+        for row in categories:
+            category = row["category"] or "通用设备"
+            bucket = by_category.setdefault(category, {"count": 0, "value": 0})
+            row_count = int(row["count"] or 0)
+            bucket["count"] += row_count
+            bucket["value"] += float(row["value"] or 0)
+            total += row_count
+        return {
+            "by_category": by_category,
+            "by_status": {row["tech_status"] or "未知": int(row["count"] or 0)
+                          for row in statuses},
+            "total_value": sum(item["value"] for item in by_category.values()),
+            "total": total,
+        }
+
+    def get_equipment(self, equipment_id):
+        with self.repository.engine.connect() as connection:
+            row = self.repository.get_equipment(connection, str(equipment_id).strip())
+        return dict(row) if row else None
+
+    def create_equipment(self, payload):
+        values = self._values(payload, require_name=True)
+        now = datetime.now(timezone.utc)
+        equipment_id = "EQP" + now.strftime("%Y%m%d") + uuid.uuid4().hex[:10].upper()
+        values.update(equipment_id=equipment_id, created_at=now, updated_at=now)
+        values.setdefault("related_files", [])
+        with self.repository.engine.begin() as connection:
+            self.repository.insert_equipment(connection, values)
+            row = self.repository.get_equipment(connection, equipment_id)
+        return dict(row)
+
+    def update_equipment(self, equipment_id, payload):
+        equipment_id = str(equipment_id or "").strip()
+        values = self._values(payload)
+        values["updated_at"] = datetime.now(timezone.utc)
+        with self.repository.engine.begin() as connection:
+            if not self.repository.update_equipment(connection, equipment_id, values):
+                raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "设备不存在", 404)
+            row = self.repository.get_equipment(connection, equipment_id)
+        return dict(row)
+
+    def delete_equipment(self, equipment_id):
+        with self.repository.engine.begin() as connection:
+            if not self.repository.delete_equipment(connection, str(equipment_id).strip()):
+                raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "设备不存在", 404)
+
+    def list_research_units(self):
+        with self.repository.engine.connect() as connection:
+            return self.repository.list_research_units(connection)
+
+    def create_research_unit(self, name, alias=""):
+        name, alias = str(name or "").strip(), str(alias or "").strip()
+        if not name:
+            raise ResourceServiceError("VALIDATION_ERROR", "研制单位名称不能为空", 422)
+        now = datetime.now(timezone.utc)
+        unit_id = "RU" + now.strftime("%Y%m%d") + uuid.uuid4().hex[:8].upper()
+        try:
+            with self.repository.engine.begin() as connection:
+                if self.repository.get_research_unit_by_name(connection, name):
+                    raise ResourceServiceError("RESOURCE_DUPLICATE", "研制单位已存在", 409)
+                self.repository.insert_research_unit(connection, {
+                    "unit_id": unit_id, "name": name, "alias": alias,
+                    "created_at": now, "updated_at": now,
+                })
+                row = self.repository.get_research_unit_by_name(connection, name)
+        except sa.exc.IntegrityError as error:
+            raise ResourceServiceError("RESOURCE_DUPLICATE", "研制单位已存在", 409) from error
+        return dict(row)
+
+    def update_research_unit(self, unit_id, name, alias=""):
+        unit_id = str(unit_id or "").strip()
+        name, alias = str(name or "").strip(), str(alias or "").strip()
+        if not name:
+            raise ResourceServiceError("VALIDATION_ERROR", "研制单位名称不能为空", 422)
+        try:
+            with self.repository.engine.begin() as connection:
+                duplicate = self.repository.get_research_unit_by_name(connection, name)
+                if duplicate and duplicate["unit_id"] != unit_id:
+                    raise ResourceServiceError("RESOURCE_DUPLICATE", "研制单位已存在", 409)
+                if not self.repository.update_research_unit(connection, unit_id, {
+                    "name": name, "alias": alias, "updated_at": datetime.now(timezone.utc),
+                }):
+                    raise ResourceServiceError("RESOURCE_NOT_FOUND", "研制单位不存在", 404)
+                row = self.repository.get_research_unit(connection, unit_id)
+        except sa.exc.IntegrityError as error:
+            raise ResourceServiceError("RESOURCE_DUPLICATE", "研制单位已存在", 409) from error
+        return dict(row)
+
+    def delete_research_unit(self, unit_id):
+        with self.repository.engine.begin() as connection:
+            if not self.repository.delete_research_unit(connection, str(unit_id).strip()):
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "研制单位不存在", 404)
+
+    def list_subclasses(self, parent_category=None):
+        with self.repository.engine.connect() as connection:
+            return self.repository.list_subclasses(
+                connection, str(parent_category or "").strip() or None
+            )
+
+    def create_subclass(self, parent_category, subclass_name):
+        parent_category = str(parent_category or "").strip()
+        subclass_name = str(subclass_name or "").strip()
+        if not parent_category or not subclass_name:
+            raise ResourceServiceError("VALIDATION_ERROR", "分类和子类不能为空", 422)
+        try:
+            with self.repository.engine.begin() as connection:
+                if self.repository.get_subclass(connection, parent_category, subclass_name):
+                    raise ResourceServiceError("RESOURCE_DUPLICATE", "设备子类已存在", 409)
+                row_id = self.repository.insert_subclass(connection, {
+                    "parent_category": parent_category,
+                    "subclass_name": subclass_name,
+                    "created_at": datetime.now(timezone.utc),
+                })
+        except sa.exc.IntegrityError as error:
+            raise ResourceServiceError("RESOURCE_DUPLICATE", "设备子类已存在", 409) from error
+        return {"id": row_id, "parent_category": parent_category,
+                "subclass_name": subclass_name}
+
+    def delete_subclass(self, row_id):
+        with self.repository.engine.begin() as connection:
+            if not self.repository.delete_subclass(connection, int(row_id)):
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "设备子类不存在", 404)

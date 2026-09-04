@@ -181,6 +181,23 @@ def create_app(test_config=None):
     if resources_service is not None:
         app.extensions["resources_service"] = resources_service
 
+    equipment_resources_service = app.config.get("EQUIPMENT_RESOURCES_SERVICE")
+    if equipment_resources_service is None and engine is not None:
+        import sqlalchemy as sa
+
+        inspector = sa.inspect(engine)
+        if all(inspector.has_table(name) for name in (
+            "equipment", "knowledge_subclasses", "research_units",
+        )):
+            from app.repositories.resources import EquipmentResourcesRepository
+            from app.services.resources import EquipmentResourcesService
+
+            equipment_resources_service = EquipmentResourcesService(
+                EquipmentResourcesRepository(engine)
+            )
+    if equipment_resources_service is not None:
+        app.extensions["equipment_resources_service"] = equipment_resources_service
+
     generic_tables_service = app.config.get("GENERIC_TABLES_SERVICE")
     if generic_tables_service is None and engine is not None:
         import sqlalchemy as sa

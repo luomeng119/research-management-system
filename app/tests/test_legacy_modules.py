@@ -12,8 +12,8 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.pool import StaticPool
 
-from app.repositories.resources import ResearchResourcesRepository
-from app.services.resources import ResearchResourcesService, ResourceServiceError
+from app.repositories.resources import EquipmentResourcesRepository, ResearchResourcesRepository
+from app.services.resources import EquipmentResourcesService, ResearchResourcesService, ResourceServiceError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -84,6 +84,37 @@ def _expert_schema(engine):
         sa.Column("committed_at", sa.DateTime(timezone=True)),
         sa.Column("version", sa.Integer, nullable=False),
     )
+    sa.Table(
+        "equipment", metadata,
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("equipment_id", sa.Text, nullable=False, unique=True),
+        sa.Column("name", sa.Text, nullable=False),
+        sa.Column("model", sa.Text), sa.Column("category", sa.Text),
+        sa.Column("subclass", sa.Text), sa.Column("form", sa.Text),
+        sa.Column("price", sa.Numeric(18, 2)), sa.Column("tech_index", sa.Text),
+        sa.Column("tech_status", sa.Text), sa.Column("installation_requirements", sa.Text),
+        sa.Column("manufacturer", sa.Text), sa.Column("equipment_image", sa.Text),
+        sa.Column("related_files", sa.JSON), sa.Column("main_purpose", sa.Text),
+        sa.Column("former_name", sa.Text), sa.Column("resource_guarantee", sa.Text),
+        sa.Column("created_at", sa.DateTime(timezone=True)),
+        sa.Column("updated_at", sa.DateTime(timezone=True)),
+    )
+    sa.Table(
+        "knowledge_subclasses", metadata,
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("parent_category", sa.Text, nullable=False),
+        sa.Column("subclass_name", sa.Text, nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True)),
+        sa.UniqueConstraint("parent_category", "subclass_name"),
+    )
+    sa.Table(
+        "research_units", metadata,
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("unit_id", sa.Text, nullable=False, unique=True),
+        sa.Column("name", sa.Text, nullable=False), sa.Column("alias", sa.Text),
+        sa.Column("created_at", sa.DateTime(timezone=True)),
+        sa.Column("updated_at", sa.DateTime(timezone=True)),
+    )
     metadata.create_all(engine)
     return metadata
 
@@ -120,6 +151,102 @@ def expert_engine():
 def expert_service(expert_engine):
     audit = AuditRecorder()
     return ResearchResourcesService(ResearchResourcesRepository(expert_engine), audit), audit
+
+
+@pytest.fixture
+def equipment_service(expert_engine):
+    return EquipmentResourcesService(EquipmentResourcesRepository(expert_engine))
+
+
+@pytest.fixture
+def equipment_routes(expert_engine, equipment_service):
+    from app.routes.equipment import bp as equipment_bp
+    from app.routes.research_units import bp as units_bp
+
+    app = Flask(
+        __name__, template_folder=str(ROOT / "app/templates"),
+        static_folder=str(ROOT / "app/static"),
+    )
+    app.config.update(TESTING=True, SECRET_KEY="test-secret")
+    app.jinja_env.globals["csrf_token"] = lambda: "test-csrf"
+    app.extensions["database_engine"] = expert_engine
+    app.extensions["equipment_resources_service"] = equipment_service
+    app.add_url_rule("/test/login", endpoint="auth.login", view_func=lambda: "")
+    app.add_url_rule("/test/logout", endpoint="auth.logout", view_func=lambda: "")
+    app.add_url_rule("/test/users", endpoint="users.index", view_func=lambda: "")
+    app.add_url_rule("/test/password", endpoint="users.change_password", view_func=lambda: "")
+    app.register_blueprint(equipment_bp)
+    app.register_blueprint(units_bp)
+    client = app.test_client()
+    with client.session_transaction() as active_session:
+        active_session.update(
+            user_id=7, user="zhang", name="张老师",
+            role="BUSINESS_USER", account_version=1,
+        )
+    return client
+
+
+def test_equipment_service_uses_bounded_filters_and_preserves_fields(equipment_service):
+    first = equipment_service.create_equipment({
+        "name": "密码机", "model": "M-1", "category": "密码设备",
+        "subclass": "加密设备", "form": "机架式", "price": "1200.50",
+        "techStatus": "在研", "manufacturer": "第一研究室",
+        "mainPurpose": "试验", "resourceGuarantee": "实验室",
+    })
+    equipment_service.create_equipment({"name": "交换机", "category": "通用设备"})
+
+    page = equipment_service.list_equipment(
+        page=1, page_size=1, category="密码设备", keyword="密码"
+    )
+    assert page["total"] == 1
+    assert page["items"][0]["equipment_id"] == first["equipment_id"]
+    assert str(page["items"][0]["price"]) == "1200.50"
+    updated = equipment_service.update_equipment(
+        first["equipment_id"], {"name": "密码设备", "techStatus": "定型"}
+    )
+    assert updated["name"] == "密码设备"
+    assert updated["tech_status"] == "定型"
+
+
+def test_equipment_stats_merge_null_category_into_general(equipment_service):
+    equipment_service.create_equipment({"name": "未分类设备", "price": "10"})
+    equipment_service.create_equipment({
+        "name": "通用设备", "category": "通用设备", "price": "20"
+    })
+    stats = equipment_service.equipment_stats()
+    assert stats["by_category"]["通用设备"] == {"count": 2, "value": 30.0}
+    assert stats["total"] == 2
+
+
+def test_equipment_dictionaries_are_database_backed(equipment_service):
+    unit = equipment_service.create_research_unit("第一研究室", "一室")
+    subclass = equipment_service.create_subclass("密码设备", "加密设备")
+
+    assert equipment_service.list_research_units()[0]["unit_id"] == unit["unit_id"]
+    assert equipment_service.list_subclasses("密码设备")[0]["id"] == subclass["id"]
+    with pytest.raises(ResourceServiceError) as caught:
+        equipment_service.create_research_unit("第一研究室", "重复")
+    assert caught.value.code == "RESOURCE_DUPLICATE"
+
+
+def test_equipment_and_unit_routes_use_postgres_service(equipment_routes, equipment_service):
+    equipment_service.create_equipment({"name": "密码机", "category": "密码设备"})
+    listing = equipment_routes.get("/equipment/?category=密码设备&fragment=1")
+    assert listing.status_code == 200
+    assert "密码机" in listing.get_data(as_text=True)
+
+    created = equipment_routes.post(
+        "/research-units/api", json={"name": "第二研究室", "alias": "二室"}
+    )
+    assert created.status_code == 201
+    units = equipment_routes.get("/research-units/api/list").get_json()["units"]
+    assert [item["name"] for item in units] == ["第二研究室"]
+
+    invalid = equipment_routes.post("/equipment/add", data={
+        "name": "", "price": "not-a-number",
+    })
+    assert invalid.status_code == 422
+    assert "设备单价格式无效" in invalid.get_data(as_text=True)
 
 
 @pytest.fixture
@@ -554,6 +681,50 @@ def test_postgresql_expert_runtime_contract():
                 repository.experts.c.name.like(f"{keyword}%")
             ))
             connection.execute(users.delete().where(users.c.id == owner_id))
+        engine.dispose()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("T10_TEST_DATABASE_URL"),
+    reason="requires isolated PostgreSQL",
+)
+def test_postgresql_equipment_resource_runtime_contract():
+    engine = sa.create_engine(os.environ["T10_TEST_DATABASE_URL"])
+    repository = EquipmentResourcesRepository(engine)
+    service = EquipmentResourcesService(repository)
+    suffix = uuid.uuid4().hex[:10]
+    equipment_name = f"PG设备{suffix}"
+    unit_name = f"PG研制单位{suffix}"
+    try:
+        equipment = service.create_equipment({
+            "name": equipment_name, "category": "密码设备", "price": "99.50"
+        })
+        unit = service.create_research_unit(unit_name, f"PG别名{suffix}")
+        subclass = service.create_subclass("密码设备", f"PG子类{suffix}")
+        page = service.list_equipment(page=1, page_size=1, keyword=equipment_name)
+        assert page["total"] == 1
+        assert page["items"][0]["equipment_id"] == equipment["equipment_id"]
+        assert any(
+            row["unit_id"] == unit["unit_id"] for row in service.list_research_units()
+        )
+        assert any(
+            row["id"] == subclass["id"] for row in service.list_subclasses("密码设备")
+        )
+    finally:
+        cleanup = sa.create_engine(os.environ.get(
+            "MIGRATION_DATABASE_URL", os.environ["T10_TEST_DATABASE_URL"]
+        ))
+        with cleanup.begin() as connection:
+            connection.execute(repository.knowledge_subclasses.delete().where(
+                repository.knowledge_subclasses.c.subclass_name == f"PG子类{suffix}"
+            ))
+            connection.execute(repository.research_units.delete().where(
+                repository.research_units.c.name == unit_name
+            ))
+            connection.execute(repository.equipment.delete().where(
+                repository.equipment.c.name == equipment_name
+            ))
+        cleanup.dispose()
         engine.dispose()
 
 

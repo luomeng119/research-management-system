@@ -12,8 +12,16 @@ import uuid
 from datetime import datetime
 
 from app.utils import import_progress as ip
+from app.services.resources import ResourceServiceError
 
 bp = Blueprint('equipment', __name__, url_prefix='/equipment')
+
+
+def _equipment_resources_service():
+    service = current_app.extensions.get('equipment_resources_service')
+    if service is None:
+        raise RuntimeError('equipment resources service is not configured')
+    return service
 
 
 def _safe_filename(filename):
@@ -26,8 +34,7 @@ def _safe_filename(filename):
 
 def get_subclasses_json():
     """获取所有子类，按分类分组，用于前端联动下拉"""
-    sc_model = KnowledgeSubclassModel()
-    all_subclasses = sc_model.get_all()
+    all_subclasses = _equipment_resources_service().list_subclasses()
     result = {}
     for sc in all_subclasses:
         cat = sc.get('parent_category', '')
@@ -42,7 +49,7 @@ def index():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
 
-    equipment_model = EquipmentModel()
+    equipment_service = _equipment_resources_service()
     category_filter = request.args.get('category', '')
     form_filter = request.args.get('form', '')
     tech_status_filter = request.args.get('tech_status', '')
@@ -51,24 +58,14 @@ def index():
     page = int(request.args.get('page', 1))
     per_page = 20
 
-    # 使用搜索方法
-    if category_filter or form_filter or tech_status_filter or keyword or subclass_filter:
-        all_equipment = equipment_model.search(
-            category=category_filter if category_filter else None,
-            form=form_filter if form_filter else None,
-            tech_status=tech_status_filter if tech_status_filter else None,
-            keyword=keyword if keyword else None,
-            subclass=subclass_filter if subclass_filter else None
-        )
-    else:
-        all_equipment = equipment_model.get_all()
-
-    # 分页
-    total = len(all_equipment)
+    result = equipment_service.list_equipment(
+        page=page, page_size=per_page, category=category_filter,
+        form=form_filter, tech_status=tech_status_filter,
+        keyword=keyword, subclass=subclass_filter,
+    )
+    equipment = result['items']
+    total = result['total']
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
-    start = (page - 1) * per_page
-    end = start + per_page
-    equipment = all_equipment[start:end]
 
     # 统计
     stats = {
@@ -85,8 +82,7 @@ def index():
         if cat in category_groups:
             category_groups[cat].append(e)
 
-    sc_model = KnowledgeSubclassModel()
-    all_subclasses = sc_model.get_all()
+    all_subclasses = equipment_service.list_subclasses()
     subclasses_json = {}
     for sc in all_subclasses:
         cat = sc.get('parent_category', '')
@@ -128,39 +124,13 @@ def stats():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
 
-    equipment_model = EquipmentModel()
-    equipment = equipment_model.get_all()
-
-    # 按分类统计
-    by_category = {
-        '安全设备': {'count': 0, 'value': 0},
-        '密码设备': {'count': 0, 'value': 0},
-        '通用设备': {'count': 0, 'value': 0}
-    }
-
-    # 按技术状态统计
-    by_status = {}
-
-    for e in equipment:
-        cat = e.get('category') or '通用设备'
-        status = e.get('tech_status') or '未知'
-        value = float(e.get('price') or 0)
-
-        if cat in by_category:
-            by_category[cat]['count'] += 1
-            by_category[cat]['value'] += value
-
-        if status not in by_status:
-            by_status[status] = 0
-        by_status[status] += 1
-
-    total_value = sum([by_category[k]['value'] for k in by_category])
+    result = _equipment_resources_service().equipment_stats()
 
     return render_template('equipment/stats.html',
-                         by_category=by_category,
-                         by_status=by_status,
-                         total_value=total_value,
-                         total=len(equipment))
+                         by_category=result['by_category'],
+                         by_status=result['by_status'],
+                         total_value=result['total_value'],
+                         total=result['total'])
 
 @bp.route('/add', methods=['GET', 'POST'])
 def add():
@@ -181,9 +151,20 @@ def add():
         former_name = request.form.get('former_name', '').strip()
         resource_guarantee = request.form.get('resource_guarantee', '').strip()
 
-        equipment_model = EquipmentModel()
         subclass = request.form.get('subclass', '').strip()
-        equipment_id = equipment_model.add(name, model, category, form, price, tech_index, tech_status, installation_requirements, manufacturer, main_purpose=main_purpose, former_name=former_name, resource_guarantee=resource_guarantee, subclass=subclass)
+        try:
+            created = _equipment_resources_service().create_equipment({
+                'name': name, 'model': model, 'category': category, 'form': form,
+                'price': price, 'techIndex': tech_index, 'techStatus': tech_status,
+                'installationRequirements': installation_requirements,
+                'manufacturer': manufacturer, 'mainPurpose': main_purpose,
+                'formerName': former_name, 'resourceGuarantee': resource_guarantee,
+                'subclass': subclass,
+            })
+        except ResourceServiceError as error:
+            flash(error.message, 'error')
+            return render_template('equipment/add.html', subclasses_json=get_subclasses_json()), error.status_code
+        equipment_id = created['equipment_id']
 
         # 记录操作日志
         log_model = OperationLogModel()
@@ -207,7 +188,9 @@ def add():
                         image_paths.append(f"/uploads/equipment_images/{img_name}")
                         log_model.add(module='equipment', operation_type='上传图片', file_name=image_file.filename, operator=session.get('user', '未知'))
             if image_paths:
-                equipment_model.update(equipment_id, equipment_image=';'.join(image_paths))
+                _equipment_resources_service().update_equipment(
+                    equipment_id, {'equipmentImage': ';'.join(image_paths)}
+                )
 
         flash('设备添加成功', 'success')
         return redirect(url_for('equipment.index'))
@@ -219,8 +202,7 @@ def detail(equipment_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
 
-    equipment_model = EquipmentModel()
-    equipment = equipment_model.get_by_id(equipment_id)
+    equipment = _equipment_resources_service().get_equipment(equipment_id)
 
     if not equipment:
         flash('设备不存在', 'error')
@@ -236,8 +218,8 @@ def edit(equipment_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
 
-    equipment_model = EquipmentModel()
-    equipment = equipment_model.get_by_id(equipment_id)
+    equipment_service = _equipment_resources_service()
+    equipment = equipment_service.get_equipment(equipment_id)
 
     if not equipment:
         flash('设备不存在', 'error')
@@ -258,20 +240,21 @@ def edit(equipment_id):
         resource_guarantee = request.form.get('resource_guarantee', '').strip()
         subclass = request.form.get('subclass', '').strip()
 
-        equipment_model.update(equipment_id,
-            name=name,
-            model=model,
-            category=category,
-            form=form,
-            price=price,
-            tech_index=tech_index,
-            installation_requirements=installation_requirements,
-            tech_status=tech_status,
-            manufacturer=manufacturer,
-            main_purpose=main_purpose,
-            former_name=former_name,
-            resource_guarantee=resource_guarantee,
-            subclass=subclass)
+        try:
+            equipment_service.update_equipment(equipment_id, {
+                'name': name, 'model': model, 'category': category, 'form': form,
+                'price': price, 'techIndex': tech_index,
+                'installationRequirements': installation_requirements,
+                'techStatus': tech_status, 'manufacturer': manufacturer,
+                'mainPurpose': main_purpose, 'formerName': former_name,
+                'resourceGuarantee': resource_guarantee, 'subclass': subclass,
+            })
+        except ResourceServiceError as error:
+            flash(error.message, 'error')
+            return render_template(
+                'equipment/edit.html', equipment=equipment,
+                subclasses_json=get_subclasses_json(),
+            ), error.status_code
 
         # 处理图片上传
         # 处理图片上传 - 支持多图
@@ -294,7 +277,9 @@ def edit(equipment_id):
                         image_paths.append(f"/uploads/equipment_images/{img_name}")
                         log_model.add(module='equipment', operation_type='上传图片', file_name=image_file.filename, operator=session.get('user', '未知'))
             if image_paths:
-                equipment_model.update(equipment_id, equipment_image=';'.join(image_paths))
+                equipment_service.update_equipment(
+                    equipment_id, {'equipmentImage': ';'.join(image_paths)}
+                )
 
         flash('设备更新成功', 'success')
         return redirect(url_for('equipment.detail', equipment_id=equipment_id))
@@ -306,10 +291,13 @@ def delete(equipment_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
 
-    equipment_model = EquipmentModel()
-    equipment = equipment_model.get_by_id(equipment_id)
+    equipment_service = _equipment_resources_service()
+    equipment = equipment_service.get_equipment(equipment_id)
     equipment_name = equipment['name'] if equipment else equipment_id
-    equipment_model.delete(equipment_id)
+    try:
+        equipment_service.delete_equipment(equipment_id)
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
     # 记录操作日志
     log_model = OperationLogModel()
