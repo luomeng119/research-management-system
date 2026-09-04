@@ -6,12 +6,12 @@
 
 科研管理系统是一套本地部署的 Flask Web 应用，断网时核心业务仍可运行：
 
-- **设备知识库**：设备选型、设备组、批量导入（Excel）、研制单位匹配（精确/模糊）
+- **设备与科研资源**：设备台账、设备选型、设备组、项目关联、数量/位置登记、批量导入和研制单位匹配
 - **科研项目**：科研项目 / 密码项目 / 安全项目三类项目的立项、文档、日志管理
 - **专家库**：专家信息、专家分组、批量导入
 - **通用表格**：可自定义的通用表格管理，支持版本快照、行染色、列拖拽、列宽调整
 - **文档管理**：项目文档上传、在线预览（Word/Excel/PDF/图片/文本）
-- **报销管理**：报销单据、审批流、文档打印
+- **经费登记**：采购相关的报销、发票、付款和附件登记；不包含预算、会计核算或审批流
 - **标准法规**：标准法规库管理
 - **方案论证**：方案论证文档管理
 - **原 AI 辅助**：保留原本地文档校对与检索代码，默认关闭，不作为 V1 核心验收项
@@ -23,11 +23,11 @@
 |---|---|
 | Web 框架 | Flask 3.1.3 |
 | 模板引擎 | Jinja2 3.1.6 |
-| 数据库 | SQLite（标准库 sqlite3，无 ORM） |
-| Session | Flask-Session 0.8.0（filesystem 存储） |
+| 数据库 | PostgreSQL + SQLAlchemy Core + Alembic；SQLite 仅用于旧数据迁移和测试 |
+| Session | Flask-Session 0.8.0 + cachelib 本地文件存储 |
 | 文档解析 | python-docx / openpyxl / pdfminer.six / PyMuPDF |
 | OCR | RapidOCR（onnxruntime） |
-| AI 推理 | llama-cpp-python（GGUF 模型，CPU）+ Node.js 推理服务器 |
+| AI | 可选 DeepSeek 在线 API；原本地校对/检索代码默认关闭 |
 | 前端 | 原生 HTML/CSS/JS + 本地化 Quill 编辑器（无外网 CDN） |
 | Python | 3.13.x |
 
@@ -36,7 +36,7 @@
 ### 环境要求
 
 - Python 3.13.x（3.14 尚未发布，务必用 3.13）
-- Node.js（仅文档校对/推理服务器需要，缺失会自动跳过）
+- Node.js（仅原本地校对代码或离线验收工具需要，不是核心业务运行前提）
 - 目标平台：Windows 10/11 x64（内网离线环境）
 
 ### 安装依赖
@@ -44,22 +44,27 @@
 ```bash
 # 联网环境
 pip install -r requirements.txt
+```
 
-# 离线环境：使用 offline_packages/（需自行携带，未随包分发）
-# offline_packages/install.bat
+```powershell
+# Windows x64 离线部署：offline/ 必须是已验证的完整运行包
+$env:APP_DATA_ROOT = 'C:\ResearchManagementData'
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -OfflineRoot .\offline
+powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1
 ```
 
 ### 启动
 
 ```bash
-# 项目根目录下
+# 开发环境；正式运行必须同时配置 DATABASE_URL
+export DATABASE_URL='<PostgreSQL 连接地址>'
 export FLASK_SECRET_KEY='<由部署环境安全保管的稳定随机值>'
 python run.py
 ```
 
 启动后访问 `http://127.0.0.1:5001/`。非测试环境未配置 `FLASK_SECRET_KEY` 时应用会拒绝启动。
 
-> 注：`run.py` 会异步尝试启动 Node.js 推理服务器（端口 18789）。若 node 未安装或模型文件缺失，会自动跳过，**不影响 Flask 启动**，仅文档校对功能不可用。
+> AI 是可选增强。未配置 DeepSeek API、断网或原本地模型不可用时，手工提案及其他核心业务仍可正常运行。
 
 ### 首次启动
 
@@ -73,7 +78,8 @@ python run.py
 04-科研管理系统/
 ├── app/                    # 应用源码（核心）
 │   ├── routes/             # 路由（20+ 个功能模块）
-│   ├── models*.py          # 数据模型（SQLite）
+│   ├── repositories/       # PostgreSQL 数据访问
+│   ├── services/           # 业务服务
 │   ├── llm/                # 本地大模型（校对/检索）
 │   ├── ocr/                # OCR 识别
 │   ├── utils/              # 工具（模糊匹配/导入进度）
@@ -85,9 +91,12 @@ python run.py
 ├── inference_server.js     # Node.js 推理服务器
 ├── SPEC/                   # 需求文档（REQ-001 ~ REQ-020）
 ├── docs/                   # 技术文档 + 开发文档（本包新增）
-├── data/                   # 运行时数据库（不随包分发，由受控部署初始化流程准备）
-└── uploads/                # 上传文件目录（运行时生成）
+├── migrations/             # Alembic 数据库迁移
+├── scripts/                # 离线安装、启停、备份、恢复与验收
+└── data/                   # 开发/兼容数据；正式数据位于 APP_DATA_ROOT
 ```
+
+`offline/` 不是占位目录：它需由 `scripts/build_offline_bundle.py` 在 Windows x64 上基于真实 Python、PostgreSQL、Node.js 和 Playwright/Chromium 运行件生成并验证。当前启停脚本按用户态进程运行；是否转为 Windows 服务/开机自启仍是待确认的部署决策，不得将本说明视为已验收。
 
 ## 文档导航
 
