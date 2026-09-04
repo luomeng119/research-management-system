@@ -13,7 +13,7 @@ from alembic.config import Config
 from sqlalchemy.exc import DBAPIError
 
 
-HEAD_REVISION = "0006_reference_library"
+HEAD_REVISION = "0007_equipment_resources"
 
 CORE_TABLES = {
     "users",
@@ -1135,3 +1135,300 @@ def test_default_privileges_cover_future_tables_and_sequences(
         with migration_engine.begin() as connection:
             connection.exec_driver_sql(f'DROP TABLE "{table_name}"')
             connection.exec_driver_sql(f'DROP SEQUENCE "{sequence_name}"')
+
+
+def test_equipment_resource_schema_preserves_locations_and_relations(migration_engine):
+    inspector = sa.inspect(migration_engine)
+    equipment_columns = {
+        column["name"]: column for column in inspector.get_columns("equipment")
+    }
+    member_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("equipment_group_members")
+    }
+    assert equipment_columns["equipment_id"]["nullable"] is False
+    assert "location" in member_columns
+    assert any(
+        constraint["name"] == "uq_equipment_equipment_id"
+        for constraint in inspector.get_unique_constraints("equipment")
+    )
+    assert {
+        constraint["name"] for constraint in inspector.get_check_constraints("equipment")
+    } >= {"ck_equipment_equipment_id_trimmed"}
+    assert {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("equipment_groups")
+    } >= {"ck_equipment_groups_project_id_trimmed"}
+    assert {
+        constraint["name"]
+        for constraint in inspector.get_foreign_keys("equipment_group_members")
+    } >= {"fk_equipment_group_members_equipment_id"}
+    assert {
+        constraint["name"]
+        for constraint in inspector.get_foreign_keys("device_host_relations")
+    } >= {
+        "fk_device_host_relations_device_id",
+        "fk_device_host_relations_host_id",
+    }
+    assert {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("equipment_group_members")
+    } >= {"ck_equipment_group_members_quantity_positive"}
+
+
+def test_equipment_resource_upgrade_backfills_blank_ids(migration_engine):
+    marker = uuid.uuid4().hex
+    _run_database_migration("0006_reference_library", upgrade=False)
+    try:
+        with migration_engine.begin() as connection:
+            legacy_id = connection.scalar(
+                sa.text(
+                    "INSERT INTO equipment (equipment_id, name) "
+                    "VALUES (NULL, :name) RETURNING id"
+                ),
+                {"name": f"legacy-equipment-{marker}"},
+            )
+        _run_database_migration(HEAD_REVISION, upgrade=True)
+        with migration_engine.connect() as connection:
+            assert connection.scalar(
+                sa.text("SELECT equipment_id FROM equipment WHERE id = :id"),
+                {"id": legacy_id},
+            ) == f"EQP-LEGACY-{legacy_id}"
+    finally:
+        if _database_revision(migration_engine) != HEAD_REVISION:
+            _run_database_migration(HEAD_REVISION, upgrade=True)
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM equipment WHERE name = :name"),
+                {"name": f"legacy-equipment-{marker}"},
+            )
+
+
+def test_equipment_resource_upgrade_normalizes_identifier_whitespace(migration_engine):
+    marker = uuid.uuid4().hex
+    equipment_id = f"EQP-{marker}"
+    group_id = f"FG-{marker}"
+    _run_database_migration("0006_reference_library", upgrade=False)
+    try:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO equipment (equipment_id, name) "
+                    "VALUES (:equipment_id, 'whitespace probe')"
+                ),
+                {"equipment_id": f"  {equipment_id}  "},
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO equipment_groups "
+                    "(group_id, project_name, creator, created_at, updated_at) "
+                    "VALUES (:group_id, 'whitespace probe', 'tester', now(), now())"
+                ),
+                {"group_id": group_id},
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO equipment_group_members "
+                    "(group_id, equipment_id, quantity, selected_by, selected_at) "
+                    "VALUES (:group_id, :equipment_id, 1, 'tester', now())"
+                ),
+                {"group_id": group_id, "equipment_id": f"  {equipment_id}  "},
+            )
+        _run_database_migration(HEAD_REVISION, upgrade=True)
+        with migration_engine.connect() as connection:
+            assert connection.scalar(
+                sa.text("SELECT equipment_id FROM equipment WHERE name = 'whitespace probe'")
+            ) == equipment_id
+            assert connection.scalar(
+                sa.text(
+                    "SELECT equipment_id FROM equipment_group_members "
+                    "WHERE group_id = :group_id"
+                ),
+                {"group_id": group_id},
+            ) == equipment_id
+        with pytest.raises(DBAPIError):
+            with migration_engine.begin() as connection:
+                connection.execute(
+                    sa.text(
+                        "INSERT INTO equipment (equipment_id, name) "
+                        "VALUES (:equipment_id, 'invalid whitespace identifier')"
+                    ),
+                    {"equipment_id": f" {equipment_id}-NEW "},
+                )
+    finally:
+        if _database_revision(migration_engine) != HEAD_REVISION:
+            _run_database_migration(HEAD_REVISION, upgrade=True)
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM equipment_group_members WHERE group_id = :group_id"),
+                {"group_id": group_id},
+            )
+            connection.execute(
+                sa.text("DELETE FROM equipment_groups WHERE group_id = :group_id"),
+                {"group_id": group_id},
+            )
+            connection.execute(
+                sa.text("DELETE FROM equipment WHERE equipment_id = :equipment_id"),
+                {"equipment_id": equipment_id},
+            )
+
+
+def test_equipment_resource_upgrade_rejects_ambiguous_duplicate_ids(migration_engine):
+    marker = f"DUP-EQP-{uuid.uuid4().hex}"
+    _run_database_migration("0006_reference_library", upgrade=False)
+    try:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO equipment (equipment_id, name) VALUES "
+                    "(:equipment_id, 'duplicate one'), "
+                    "(:equipment_id, 'duplicate two')"
+                ),
+                {"equipment_id": marker},
+            )
+        with pytest.raises(RuntimeError, match="duplicate equipment identifiers"):
+            _run_database_migration(HEAD_REVISION, upgrade=True)
+        assert _database_revision(migration_engine) == "0006_reference_library"
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM equipment WHERE equipment_id = :equipment_id"),
+                {"equipment_id": marker},
+            )
+        _run_database_migration(HEAD_REVISION, upgrade=True)
+
+
+def test_equipment_resource_upgrade_rejects_orphan_relations(migration_engine):
+    marker = uuid.uuid4().hex
+    group_id = f"FG-{marker}"
+    _run_database_migration("0006_reference_library", upgrade=False)
+    try:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO equipment_groups "
+                    "(group_id, project_name, creator, created_at, updated_at) "
+                    "VALUES (:group_id, 'orphan probe', 'tester', now(), now())"
+                ),
+                {"group_id": group_id},
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO equipment_group_members "
+                    "(group_id, equipment_id, quantity, selected_by, selected_at) "
+                    "VALUES (:group_id, :equipment_id, 1, 'tester', now())"
+                ),
+                {"group_id": group_id, "equipment_id": f"MISSING-{marker}"},
+            )
+        with pytest.raises(RuntimeError, match="orphan equipment-resource relations"):
+            _run_database_migration(HEAD_REVISION, upgrade=True)
+        assert _database_revision(migration_engine) == "0006_reference_library"
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM equipment_group_members WHERE group_id = :group_id"),
+                {"group_id": group_id},
+            )
+            connection.execute(
+                sa.text("DELETE FROM equipment_groups WHERE group_id = :group_id"),
+                {"group_id": group_id},
+            )
+        _run_database_migration(HEAD_REVISION, upgrade=True)
+
+
+def test_equipment_resource_upgrade_rejects_non_positive_quantities(migration_engine):
+    marker = uuid.uuid4().hex
+    equipment_id = f"EQP-{marker}"
+    group_id = f"FG-{marker}"
+    _run_database_migration("0006_reference_library", upgrade=False)
+    try:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO equipment (equipment_id, name) "
+                    "VALUES (:equipment_id, 'quantity probe')"
+                ),
+                {"equipment_id": equipment_id},
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO equipment_groups "
+                    "(group_id, project_name, creator, created_at, updated_at) "
+                    "VALUES (:group_id, 'quantity probe', 'tester', now(), now())"
+                ),
+                {"group_id": group_id},
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO equipment_group_members "
+                    "(group_id, equipment_id, quantity, selected_by, selected_at) "
+                    "VALUES (:group_id, :equipment_id, 0, 'tester', now())"
+                ),
+                {"group_id": group_id, "equipment_id": equipment_id},
+            )
+        with pytest.raises(RuntimeError, match="non-positive equipment-resource quantities"):
+            _run_database_migration(HEAD_REVISION, upgrade=True)
+        assert _database_revision(migration_engine) == "0006_reference_library"
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM equipment_group_members WHERE group_id = :group_id"),
+                {"group_id": group_id},
+            )
+            connection.execute(
+                sa.text("DELETE FROM equipment_groups WHERE group_id = :group_id"),
+                {"group_id": group_id},
+            )
+            connection.execute(
+                sa.text("DELETE FROM equipment WHERE equipment_id = :equipment_id"),
+                {"equipment_id": equipment_id},
+            )
+        _run_database_migration(HEAD_REVISION, upgrade=True)
+
+
+def test_equipment_resource_downgrade_preserves_usage_locations(migration_engine):
+    marker = uuid.uuid4().hex
+    equipment_id = f"EQP-{marker}"
+    group_id = f"FG-{marker}"
+    with migration_engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO equipment (equipment_id, name) "
+                "VALUES (:equipment_id, 'downgrade probe')"
+            ),
+            {"equipment_id": equipment_id},
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO equipment_groups "
+                "(group_id, project_name, creator, created_at, updated_at) "
+                "VALUES (:group_id, 'downgrade probe', 'tester', now(), now())"
+            ),
+            {"group_id": group_id},
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO equipment_group_members "
+                "(group_id, equipment_id, quantity, selected_by, selected_at, location) "
+                "VALUES (:group_id, :equipment_id, 1, 'tester', now(), '实验室一')"
+            ),
+            {"group_id": group_id, "equipment_id": equipment_id},
+        )
+    try:
+        with pytest.raises(RuntimeError, match="equipment usage locations"):
+            _run_database_migration("0006_reference_library", upgrade=False)
+        assert _database_revision(migration_engine) == HEAD_REVISION
+    finally:
+        with migration_engine.begin() as connection:
+            connection.execute(
+                sa.text("DELETE FROM equipment_group_members WHERE group_id = :group_id"),
+                {"group_id": group_id},
+            )
+            connection.execute(
+                sa.text("DELETE FROM equipment_groups WHERE group_id = :group_id"),
+                {"group_id": group_id},
+            )
+            connection.execute(
+                sa.text("DELETE FROM equipment WHERE equipment_id = :equipment_id"),
+                {"equipment_id": equipment_id},
+            )
