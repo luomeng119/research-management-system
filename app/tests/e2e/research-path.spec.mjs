@@ -96,3 +96,20 @@ test('历史业务日期可手工填写且旧项目文件入口可用', async ({
     page.locator('[data-panel-content="progress"] h3', { hasText: '历史进展补录' }).first()
   ).toBeVisible();
 });
+
+test('项目详情可读取设备、设备组和项目之间的真实关系', async ({ page }) => {
+  await login(page);
+  await page.getByRole('link', { name: '原项目文件' }).click();
+
+  await expect(page).toHaveURL(/\/projects\/detail\/KY-2026-001$/);
+  await expect(page.getByText('设备选型 (1)')).toBeVisible();
+  const equipmentRow = page.locator('tr[data-group-id]').filter({ hasText: '便携式数据采集终端' });
+  await expect(equipmentRow).toContainText('通用设备');
+  await expect(equipmentRow.locator('input[type="number"]')).toHaveValue('2');
+  await expect(equipmentRow.locator('textarea')).toHaveValue('综合试验室');
+
+  await page.goto('/equipment/groups/?project_id=KY-2026-001');
+  const groupRow = page.locator('tbody tr').filter({ hasText: '便携式保障设备适配研究' });
+  await expect(groupRow).toContainText('KY-2026-001');
+  await expect(groupRow).toContainText('1 台');
+});

@@ -11,7 +11,10 @@ from sqlalchemy.pool import StaticPool
 import app as app_module
 from app import create_app
 from app.repositories.projects import ProjectsRepository
+from app.repositories.resources import EquipmentResourcesRepository
 from app.services.projects import ProjectService
+from app.services.resources import EquipmentResourcesService
+from app.tests.test_legacy_modules import _expert_schema
 from app.tests.test_project_lifecycle import AuditRecorder, _schema
 
 
@@ -21,6 +24,7 @@ engine = sa.create_engine(
     poolclass=StaticPool,
 )
 metadata = _schema(engine)
+_expert_schema(engine)
 registry_id = str(uuid.uuid4())
 now = datetime.now(timezone.utc)
 with engine.begin() as connection:
@@ -70,6 +74,27 @@ for version, status, summary, issues in (
         request_id=f"e2e-{status.lower()}",
     )
 
+equipment_resources_service = EquipmentResourcesService(
+    EquipmentResourcesRepository(engine)
+)
+equipment = equipment_resources_service.create_equipment({
+    "name": "便携式数据采集终端",
+    "model": "DC-01",
+    "category": "通用设备",
+    "manufacturer": "第一研究室",
+    "tech_status": "可用",
+})
+equipment_group = equipment_resources_service.get_or_create_project_group(
+    "KY-2026-001", "便携式保障设备适配研究", "张老师"
+)
+equipment_resources_service.add_group_member(
+    equipment_group["group_id"],
+    equipment["equipment_id"],
+    quantity=2,
+    location="综合试验室",
+    selected_by="张老师",
+)
+
 data_dir = tempfile.mkdtemp(prefix="research-v1-e2e-")
 import app.models as legacy_models
 
@@ -81,6 +106,7 @@ application = create_app({
     "DATA_DIR": data_dir,
     "SESSION_FILE_DIR": f"{data_dir}/sessions",
     "PROJECT_SERVICE": service,
+    "EQUIPMENT_RESOURCES_SERVICE": equipment_resources_service,
     "SECURITY_AUTH_ENABLED": False,
     "CSRF_ENABLED": False,
     "AI_PROVIDER": "DISABLED",
