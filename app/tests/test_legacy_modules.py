@@ -207,6 +207,8 @@ def equipment_service(expert_engine):
 @pytest.fixture
 def equipment_routes(expert_engine, equipment_service):
     from app.routes.equipment import bp as equipment_bp
+    from app.routes.equipment_groups import bp as groups_bp
+    from app.routes.host_devices import bp as hosts_bp
     from app.routes.research_units import bp as units_bp
 
     app = Flask(
@@ -222,6 +224,8 @@ def equipment_routes(expert_engine, equipment_service):
     app.add_url_rule("/test/users", endpoint="users.index", view_func=lambda: "")
     app.add_url_rule("/test/password", endpoint="users.change_password", view_func=lambda: "")
     app.register_blueprint(equipment_bp)
+    app.register_blueprint(groups_bp)
+    app.register_blueprint(hosts_bp)
     app.register_blueprint(units_bp)
     client = app.test_client()
     with client.session_transaction() as active_session:
@@ -293,6 +297,25 @@ def test_equipment_groups_preserve_quantity_and_location(equipment_service):
     assert detail["members"][0]["location"] == "一号实验室"
 
 
+def test_manual_group_creation_rejects_duplicate_project(equipment_service):
+    equipment_service.create_equipment_group("课题一", "张老师", "P-001")
+    with pytest.raises(ResourceServiceError) as caught:
+        equipment_service.create_equipment_group("课题一", "李老师", "P-001")
+    assert caught.value.code == "RESOURCE_DUPLICATE"
+
+
+def test_group_bulk_add_is_atomic(equipment_service):
+    equipment = equipment_service.create_equipment({"name": "密码机"})
+    group = equipment_service.create_equipment_group("课题一", "张老师")
+    with pytest.raises(ResourceServiceError) as caught:
+        equipment_service.add_group_members(
+            group["group_id"], [equipment["equipment_id"], "EQP-NOT-FOUND"],
+            quantity=2, selected_by="张老师",
+        )
+    assert caught.value.code == "EQUIPMENT_NOT_FOUND"
+    assert equipment_service.get_equipment_group(group["group_id"])["members"] == []
+
+
 def test_host_device_relations_are_replaced_atomically(equipment_service):
     first = equipment_service.create_equipment({"name": "密码机A"})
     second = equipment_service.create_equipment({"name": "密码机B"})
@@ -340,6 +363,146 @@ def test_relation_quantity_rejects_fraction_and_malformed_rows(equipment_service
     with pytest.raises(ResourceServiceError) as malformed:
         equipment_service.create_host_device({"name": "宿主"}, relations=["EQP-X"])
     assert malformed.value.code == "VALIDATION_ERROR"
+
+
+def test_host_relation_mutations_and_routes_use_resource_service(
+    equipment_routes, equipment_service
+):
+    first = equipment_service.create_equipment({"name": "密码机A"})
+    second = equipment_service.create_equipment({"name": "密码机B"})
+    host = equipment_service.create_host_device(
+        {"name": "试验服务器", "category": "计算存储"},
+        relations=[{"device_id": first["equipment_id"], "quantity": 1}],
+    )
+
+    added = equipment_routes.post("/equipment/hosts/api/relations", json={
+        "host_id": host["host_id"],
+        "relations": [{"device_id": second["equipment_id"], "quantity": 2}],
+    })
+    assert added.status_code == 200
+    related = equipment_routes.get(
+        f"/equipment/hosts/api/relations/{host['host_id']}"
+    ).get_json()["data"]
+    assert {(row["device_id"], row["quantity"]) for row in related} == {
+        (first["equipment_id"], 1), (second["equipment_id"], 2)
+    }
+
+    updated = equipment_routes.patch(
+        f"/equipment/hosts/api/relations/{second['equipment_id']}/{host['host_id']}",
+        json={"quantity": 3},
+    )
+    assert updated.status_code == 200
+    assert equipment_service.get_devices_by_host(host["host_id"])[1]["quantity"] == 3
+
+    removed = equipment_routes.delete(
+        f"/equipment/hosts/api/relations/{first['equipment_id']}/{host['host_id']}"
+    )
+    assert removed.status_code == 200
+    assert [row["device_id"] for row in equipment_service.get_devices_by_host(host["host_id"])] == [
+        second["equipment_id"]
+    ]
+
+
+def test_host_routes_validate_and_export_from_resource_service(
+    equipment_routes, equipment_service
+):
+    invalid = equipment_routes.post("/equipment/hosts/add", data={"name": ""})
+    assert invalid.status_code == 200
+    assert "名称不能为空" in invalid.get_data(as_text=True)
+
+    equipment = equipment_service.create_equipment({"name": "路由密码机"})
+    host = equipment_service.create_host_device(
+        {"name": "路由服务器", "category": "计算存储"},
+        relations=[{"device_id": equipment["equipment_id"], "quantity": 2}],
+    )
+    listing = equipment_routes.get("/equipment/hosts/?keyword=路由")
+    assert listing.status_code == 200
+    assert "路由服务器" in listing.get_data(as_text=True)
+
+    exported = equipment_routes.get("/equipment/hosts/export")
+    assert exported.status_code == 200
+    workbook = openpyxl.load_workbook(BytesIO(exported.data), data_only=True)
+    rows = list(workbook.active.iter_rows(values_only=True))
+    assert any(
+        row[0] == host["host_id"] and row[5] == 1 and equipment["equipment_id"] in row[6]
+        for row in rows[1:]
+    )
+
+
+def test_equipment_group_route_uses_bounded_postgres_service(equipment_routes, equipment_service):
+    equipment = equipment_service.create_equipment({"name": "路由设备"})
+    group = equipment_service.create_equipment_group("路由设备组", "张老师")
+    search = equipment_routes.get(
+        f"/equipment/groups/edit/{group['group_id']}?api=search&q=路由"
+    )
+    assert search.status_code == 200
+    assert search.get_json()["items"][0]["equipment_id"] == equipment["equipment_id"]
+    added = equipment_routes.post(
+        f"/equipment/groups/edit/{group['group_id']}",
+        data={"action": "add", "equipment_id": equipment["equipment_id"], "quantity": "2"},
+    )
+    assert added.status_code == 302
+    assert equipment_service.get_equipment_group(group["group_id"])["members"][0]["quantity"] == 2
+
+    invalid = equipment_routes.post(
+        f"/equipment/groups/edit/{group['group_id']}",
+        data={"action": "add", "equipment_id": equipment["equipment_id"], "quantity": "1.5"},
+    )
+    assert invalid.status_code == 302
+
+
+def test_equipment_group_route_paginates_without_hiding_records(
+    equipment_routes, equipment_service
+):
+    for number in range(21):
+        equipment_service.create_equipment_group(f"设备组{number:02d}", "张老师")
+    first = equipment_routes.get("/equipment/groups/")
+    second = equipment_routes.get("/equipment/groups/?page=2")
+    assert first.status_code == second.status_code == 200
+    assert "共 21 条" in first.get_data(as_text=True)
+    assert "第 2 / 2 页" in second.get_data(as_text=True)
+
+
+def test_host_import_commit_writes_same_resource_store(
+    equipment_routes, equipment_service
+):
+    equipment = equipment_service.create_equipment({"name": "导入关联设备"})
+    with equipment_routes.session_transaction() as active_session:
+        active_session["host_import_preview"] = {
+            "filename": "hosts.xlsx", "column_mapping": {},
+            "statistics": {"total": 1, "exact": 1, "fuzzy": 0,
+                           "unmatched": 0, "duplicate": 0},
+            "processed": [{
+                "row_idx": 0, "host_id_raw": "", "name": "导入宿主",
+                "model": "S-1", "category": "计算存储", "form": "机架式",
+                "duplicate_status": None, "existing_host": None,
+                "related_result": {"original": "导入关联设备、跳过设备", "devices": [
+                    {
+                        "name": "导入关联设备", "status": "exact",
+                        "selected": {"equipment_id": equipment["equipment_id"]},
+                        "exact": [], "fuzzy": [],
+                    },
+                    {
+                        "name": "跳过设备", "status": "unmatched",
+                        "selected": None, "exact": [], "fuzzy": [],
+                    },
+                ]},
+            }],
+        }
+    response = equipment_routes.post(
+        "/equipment/hosts/import/commit",
+        data={"related_select_0_1": "_skip_"},
+    )
+    assert response.status_code == 302
+    from urllib.parse import parse_qs, urlparse
+    import json
+    skipped = json.loads(parse_qs(urlparse(response.location).query)["skipped_relations"][0])
+    assert skipped == [{"name": "导入宿主", "device": "跳过设备"}]
+    hosts = equipment_service.list_host_devices(keyword="导入宿主")
+    assert hosts["total"] == 1
+    assert equipment_service.get_devices_by_host(hosts["items"][0]["host_id"])[0][
+        "device_id"
+    ] == equipment["equipment_id"]
 
 
 def test_equipment_and_unit_routes_use_postgres_service(equipment_routes, equipment_service):
@@ -825,6 +988,10 @@ def test_postgresql_equipment_resource_runtime_contract():
             {"name": f"PG宿主{suffix}", "category": "计算存储"},
             relations=[{"device_id": equipment["equipment_id"], "quantity": 1}],
         )
+        imported = service.import_host_devices([{
+            "name": f"PG导入宿主{suffix}", "category": "计算存储",
+            "device_ids": [equipment["equipment_id"]], "action": "new",
+        }])
         page = service.list_equipment(page=1, page_size=1, keyword=equipment_name)
         assert page["total"] == 1
         assert page["items"][0]["equipment_id"] == equipment["equipment_id"]
@@ -836,6 +1003,9 @@ def test_postgresql_equipment_resource_runtime_contract():
         )
         assert service.get_equipment_group(group["group_id"])["members"][0]["location"] == "PG实验室"
         assert service.get_devices_by_host(host["host_id"])[0]["quantity"] == 1
+        assert imported["new"] == 1
+        imported_host = service.list_host_devices(keyword=f"PG导入宿主{suffix}")["items"][0]
+        assert service.get_devices_by_host(imported_host["host_id"])[0]["device_id"] == equipment["equipment_id"]
     finally:
         cleanup = sa.create_engine(os.environ.get(
             "MIGRATION_DATABASE_URL", os.environ["T10_TEST_DATABASE_URL"]
@@ -845,7 +1015,9 @@ def test_postgresql_equipment_resource_runtime_contract():
                 repository.device_host_relations.c.host_id == host["host_id"]
             ))
             connection.execute(repository.host_devices.delete().where(
-                repository.host_devices.c.host_id == host["host_id"]
+                repository.host_devices.c.name.in_([
+                    f"PG宿主{suffix}", f"PG导入宿主{suffix}"
+                ])
             ))
             connection.execute(repository.equipment_group_members.delete().where(
                 repository.equipment_group_members.c.group_id == group["group_id"]

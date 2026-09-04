@@ -188,6 +188,8 @@ def create_app(test_config=None):
         inspector = sa.inspect(engine)
         if all(inspector.has_table(name) for name in (
             "equipment", "knowledge_subclasses", "research_units",
+            "equipment_groups", "equipment_group_members", "host_devices",
+            "host_device_categories", "device_host_relations",
         )):
             from app.repositories.resources import EquipmentResourcesRepository
             from app.services.resources import EquipmentResourcesService

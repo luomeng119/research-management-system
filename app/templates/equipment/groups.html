@@ -69,6 +69,19 @@
                     </tbody>
                 </table>
             </div>
+            {% if total_pages > 1 %}
+            <nav aria-label="设备组分页">
+                <ul class="pagination justify-content-center mb-0">
+                    <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+                        <a class="page-link" href="{{ url_for('equipment_groups.index', page=page-1, project_id=filter_project_id) }}">上一页</a>
+                    </li>
+                    <li class="page-item disabled"><span class="page-link">第 {{ page }} / {{ total_pages }} 页，共 {{ total }} 条</span></li>
+                    <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+                        <a class="page-link" href="{{ url_for('equipment_groups.index', page=page+1, project_id=filter_project_id) }}">下一页</a>
+                    </li>
+                </ul>
+            </nav>
+            {% endif %}
             {% else %}
             <p class="text-muted text-center py-4">暂无设备组，请先创建</p>
             {% endif %}

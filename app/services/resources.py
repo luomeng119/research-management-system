@@ -801,6 +801,41 @@ class EquipmentResourcesService:
                 row = self.repository.get_group_by_project(connection, project_id)
         return dict(row)
 
+    def create_equipment_group(self, project_name, creator, project_id=None):
+        project_id = str(project_id or "").strip() or None
+        project_name = str(project_name or "").strip()
+        if not project_name:
+            raise ResourceServiceError("VALIDATION_ERROR", "设备组名称不能为空", 422)
+        now = datetime.now(timezone.utc)
+        group_id = "FG" + now.strftime("%Y%m%d") + uuid.uuid4().hex[:8].upper()
+        values = {"group_id": group_id, "project_name": project_name,
+                  "project_id": project_id, "creator": str(creator or "").strip(),
+                  "created_at": now, "updated_at": now}
+        try:
+            with self.repository.engine.begin() as connection:
+                if project_id:
+                    self.repository.lock_project_group(connection, project_id)
+                    if self.repository.get_group_by_project(connection, project_id):
+                        raise ResourceServiceError(
+                            "RESOURCE_DUPLICATE", "该项目已有关联设备组", 409
+                        )
+                self.repository.insert_equipment_group(connection, values)
+        except sa.exc.IntegrityError as error:
+            raise ResourceServiceError(
+                "RESOURCE_DUPLICATE", "该项目已有关联设备组", 409
+            ) from error
+        return values
+
+    def list_equipment_groups(self, *, page=1, page_size=100, project_id=None):
+        page = _positive_int(page, "page")
+        page_size = _positive_int(page_size, "pageSize", maximum=100)
+        with self.repository.engine.connect() as connection:
+            rows, total = self.repository.list_equipment_groups(
+                connection, page=page, page_size=page_size,
+                project_id=str(project_id or "").strip() or None,
+            )
+        return {"items": rows, "page": page, "pageSize": page_size, "total": total}
+
     def add_group_member(self, group_id, equipment_id, *, quantity=1,
                          location="", selected_by=""):
         quantity = _positive_int(quantity, "quantity")
@@ -819,6 +854,36 @@ class EquipmentResourcesService:
                 "selected_by": str(selected_by or "").strip(), "selected_at": now,
             })
 
+    def add_group_members(self, group_id, equipment_ids, *, quantity=1,
+                          location="", selected_by=""):
+        quantity = _positive_int(quantity, "quantity")
+        normalized_ids = []
+        seen = set()
+        for value in equipment_ids or []:
+            equipment_id = str(value or "").strip()
+            if equipment_id and equipment_id not in seen:
+                seen.add(equipment_id)
+                normalized_ids.append(equipment_id)
+        if not normalized_ids:
+            raise ResourceServiceError("VALIDATION_ERROR", "请选择设备", 422)
+        group_id = str(group_id or "").strip()
+        now = datetime.now(timezone.utc)
+        with self.repository.engine.begin() as connection:
+            self.repository.lock_equipment_group(connection, group_id)
+            group, _ = self.repository.get_equipment_group(connection, group_id)
+            if group is None:
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "设备组不存在", 404)
+            for equipment_id in normalized_ids:
+                if self.repository.get_equipment(connection, equipment_id) is None:
+                    raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "设备不存在", 404)
+            for equipment_id in normalized_ids:
+                self.repository.upsert_group_member(connection, {
+                    "group_id": group_id, "equipment_id": equipment_id,
+                    "quantity": quantity, "location": str(location or "").strip(),
+                    "selected_by": str(selected_by or "").strip(), "selected_at": now,
+                })
+        return len(normalized_ids)
+
     def get_equipment_group(self, group_id):
         with self.repository.engine.connect() as connection:
             group, members = self.repository.get_equipment_group(
@@ -828,6 +893,27 @@ class EquipmentResourcesService:
             raise ResourceServiceError("RESOURCE_NOT_FOUND", "设备组不存在", 404)
         group["members"] = members
         return group
+
+    def remove_group_member(self, group_id, equipment_id):
+        with self.repository.engine.begin() as connection:
+            self.repository.delete_group_member(
+                connection, str(group_id).strip(), str(equipment_id).strip()
+            )
+
+    def delete_equipment_group(self, group_id):
+        with self.repository.engine.begin() as connection:
+            if not self.repository.delete_equipment_group(connection, str(group_id).strip()):
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "设备组不存在", 404)
+
+    def available_equipment(self, group_id, *, keyword=None, category=None, form=None):
+        with self.repository.engine.connect() as connection:
+            items = self.repository.list_available_equipment(
+                connection, str(group_id).strip(), keyword=str(keyword or "").strip() or None,
+                category=str(category or "").strip() or None,
+                form=str(form or "").strip() or None, limit=20,
+            )
+            facets = self.repository.equipment_facets(connection)
+        return {"items": items, **facets}
 
     @staticmethod
     def _relations(values):
@@ -869,6 +955,96 @@ class EquipmentResourcesService:
             row = self.repository.get_host_device(connection, host_id)
         return dict(row)
 
+    def match_equipment_text(self, text):
+        from app.utils.fuzzy_match import _levenshtein, _normalize, split_device_names
+
+        result = {"original": str(text or ""), "devices": []}
+        with self.repository.engine.connect() as connection:
+            for name in split_device_names(text):
+                exact, candidates = self.repository.equipment_match_candidates(
+                    connection, name, limit=100
+                )
+                if exact:
+                    result["devices"].append({
+                        "name": name, "exact": exact, "fuzzy": [],
+                        "status": "exact", "selected": exact[0],
+                    })
+                    continue
+                cleaned = _normalize(name)
+                fuzzy = []
+                for row in candidates:
+                    row_name = str(row.get("name") or "")
+                    row_model = str(row.get("model") or "")
+                    if cleaned and (
+                        cleaned in row_name or cleaned in row_model
+                        or row_name in cleaned or row_model in cleaned
+                    ):
+                        fuzzy.append(row)
+                    elif len(name) > 5 and len(cleaned) > 5 and (
+                        _levenshtein(name, row_name) < 3
+                        or _levenshtein(cleaned, row_name) < 3
+                        or _levenshtein(name, row_model) < 3
+                    ):
+                        fuzzy.append(row)
+                result["devices"].append({
+                    "name": name, "exact": [], "fuzzy": fuzzy,
+                    "status": "fuzzy" if fuzzy else "unmatched", "selected": None,
+                })
+        return result
+
+    def import_host_devices(self, rows):
+        now = datetime.now(timezone.utc)
+        result = {"new": 0, "overwrite": 0, "skip": 0,
+                  "relations": 0, "skipped_relations": []}
+        with self.repository.engine.begin() as connection:
+            for row in rows or []:
+                name = str(row.get("name") or "").strip()
+                if not name or row.get("action") == "skip":
+                    result["skip"] += 1
+                    continue
+                category = str(row.get("category") or "").strip()
+                if category and self.repository.get_host_category(connection, category) is None:
+                    self.repository.insert_host_category(connection, category, now)
+                existing_id = str(row.get("existing_host_id") or "").strip()
+                if existing_id and row.get("action") == "overwrite":
+                    if not self.repository.update_host_device(connection, existing_id, {
+                        "name": name, "model": str(row.get("model") or "").strip(),
+                        "category": category, "form": str(row.get("form") or "").strip(),
+                        "updated_at": now,
+                    }):
+                        raise ResourceServiceError("RESOURCE_NOT_FOUND", "宿主设备不存在", 404)
+                    host_id = existing_id
+                    current = {
+                        item["device_id"]: {
+                            "device_id": item["device_id"], "quantity": item["quantity"]
+                        }
+                        for item in self.repository.get_devices_by_host(connection, host_id)
+                    }
+                    result["overwrite"] += 1
+                else:
+                    host_id = "HD" + now.strftime("%Y%m%d") + uuid.uuid4().hex[:10].upper()
+                    self.repository.insert_host_device(connection, {
+                        "host_id": host_id, "name": name,
+                        "model": str(row.get("model") or "").strip(),
+                        "category": category, "form": str(row.get("form") or "").strip(),
+                        "created_at": now, "updated_at": now,
+                    })
+                    current = {}
+                    result["new"] += 1
+                for device_id in row.get("device_ids") or []:
+                    device_id = str(device_id or "").strip()
+                    if not device_id:
+                        continue
+                    if self.repository.get_equipment(connection, device_id) is None:
+                        raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "关联设备不存在", 404)
+                    if device_id not in current:
+                        result["relations"] += 1
+                    current[device_id] = {"device_id": device_id, "quantity": 1}
+                self.repository.replace_host_relations(
+                    connection, host_id, list(current.values()), now
+                )
+        return result
+
     def replace_host_relations(self, host_id, relations):
         host_id = str(host_id or "").strip()
         normalized = self._relations(relations)
@@ -882,6 +1058,147 @@ class EquipmentResourcesService:
                 connection, host_id, normalized, datetime.now(timezone.utc)
             )
 
+    def upsert_host_relations(self, host_id, relations):
+        host_id = str(host_id or "").strip()
+        incoming = self._relations(relations)
+        now = datetime.now(timezone.utc)
+        with self.repository.engine.begin() as connection:
+            if self.repository.lock_host_device(connection, host_id) is None:
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "宿主设备不存在", 404)
+            current = {
+                row["device_id"]: {"device_id": row["device_id"], "quantity": row["quantity"]}
+                for row in self.repository.get_devices_by_host(connection, host_id)
+            }
+            for row in incoming:
+                if self.repository.get_equipment(connection, row["device_id"]) is None:
+                    raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "关联设备不存在", 404)
+                current[row["device_id"]] = row
+            self.repository.replace_host_relations(connection, host_id, list(current.values()), now)
+
+    def update_host_relation(self, host_id, device_id, quantity):
+        host_id, device_id = str(host_id or "").strip(), str(device_id or "").strip()
+        quantity = _positive_int(quantity, "quantity")
+        now = datetime.now(timezone.utc)
+        with self.repository.engine.begin() as connection:
+            if self.repository.lock_host_device(connection, host_id) is None:
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "宿主设备不存在", 404)
+            current = self.repository.get_devices_by_host(connection, host_id)
+            found = False
+            normalized = []
+            for row in current:
+                item = {"device_id": row["device_id"], "quantity": row["quantity"]}
+                if row["device_id"] == device_id:
+                    item["quantity"] = quantity
+                    found = True
+                normalized.append(item)
+            if not found:
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "设备关联不存在", 404)
+            self.repository.replace_host_relations(connection, host_id, normalized, now)
+
+    def remove_host_relation(self, host_id, device_id):
+        host_id, device_id = str(host_id or "").strip(), str(device_id or "").strip()
+        now = datetime.now(timezone.utc)
+        with self.repository.engine.begin() as connection:
+            if self.repository.lock_host_device(connection, host_id) is None:
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "宿主设备不存在", 404)
+            current = self.repository.get_devices_by_host(connection, host_id)
+            normalized = [
+                {"device_id": row["device_id"], "quantity": row["quantity"]}
+                for row in current if row["device_id"] != device_id
+            ]
+            if len(normalized) == len(current):
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "设备关联不存在", 404)
+            self.repository.replace_host_relations(connection, host_id, normalized, now)
+
     def get_devices_by_host(self, host_id):
         with self.repository.engine.connect() as connection:
             return self.repository.get_devices_by_host(connection, str(host_id).strip())
+
+    def list_host_devices(self, *, page=1, page_size=20, category=None,
+                          form=None, keyword=None):
+        page = _positive_int(page, "page")
+        page_size = _positive_int(page_size, "pageSize", maximum=100)
+        with self.repository.engine.connect() as connection:
+            rows, total = self.repository.list_host_devices(
+                connection, page=page, page_size=page_size,
+                category=str(category or "").strip() or None,
+                form=str(form or "").strip() or None,
+                keyword=str(keyword or "").strip() or None,
+            )
+            for row in rows:
+                devices = self.repository.get_devices_by_host(connection, row["host_id"])
+                names = [item["name"] for item in devices]
+                row["_device_summary"] = "无" if not names else (
+                    "、".join(names) if len(names) <= 2 else f"{names[0]}、{names[1]}等{len(names)}台"
+                )
+        return {"items": rows, "page": page, "pageSize": page_size, "total": total}
+
+    def get_host_device(self, host_id):
+        with self.repository.engine.connect() as connection:
+            row = self.repository.get_host_device(connection, str(host_id).strip())
+        return dict(row) if row else None
+
+    def update_host_device(self, host_id, payload, *, relations=None):
+        host_id = str(host_id or "").strip()
+        payload = payload or {}
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ResourceServiceError("VALIDATION_ERROR", "宿主设备名称不能为空", 422)
+        normalized = self._relations(relations)
+        now = datetime.now(timezone.utc)
+        with self.repository.engine.begin() as connection:
+            if not self.repository.update_host_device(connection, host_id, {
+                "name": name, "model": str(payload.get("model") or "").strip(),
+                "category": str(payload.get("category") or "").strip(),
+                "form": str(payload.get("form") or "").strip(), "updated_at": now,
+            }):
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "宿主设备不存在", 404)
+            for relation in normalized:
+                if self.repository.get_equipment(connection, relation["device_id"]) is None:
+                    raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "关联设备不存在", 404)
+            self.repository.replace_host_relations(connection, host_id, normalized, now)
+        return self.get_host_device(host_id)
+
+    def delete_host_device(self, host_id):
+        with self.repository.engine.begin() as connection:
+            if not self.repository.delete_host_device(connection, str(host_id).strip()):
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "宿主设备不存在", 404)
+
+    def list_host_categories(self):
+        with self.repository.engine.connect() as connection:
+            return self.repository.list_host_categories(connection)
+
+    def export_host_devices(self):
+        with self.repository.engine.connect() as connection:
+            rows = self.repository.export_host_devices(connection)
+            for row in rows:
+                row["devices"] = self.repository.get_devices_by_host(
+                    connection, row["host_id"]
+                )
+        return rows
+
+    def create_host_category(self, name):
+        name = str(name or "").strip()
+        if not name:
+            raise ResourceServiceError("VALIDATION_ERROR", "类型名称不能为空", 422)
+        try:
+            with self.repository.engine.begin() as connection:
+                if self.repository.get_host_category(connection, name):
+                    raise ResourceServiceError("RESOURCE_DUPLICATE", "类型已存在", 409)
+                self.repository.insert_host_category(connection, name, datetime.now(timezone.utc))
+        except sa.exc.IntegrityError as error:
+            raise ResourceServiceError("RESOURCE_DUPLICATE", "类型已存在", 409) from error
+
+    def merge_host_category(self, old_name, new_name):
+        old_name, new_name = str(old_name or "").strip(), str(new_name or "").strip()
+        if not old_name or not new_name or old_name == new_name:
+            raise ResourceServiceError("VALIDATION_ERROR", "类型合并参数无效", 422)
+        with self.repository.engine.begin() as connection:
+            if self.repository.get_host_category(connection, new_name) is None:
+                self.repository.insert_host_category(connection, new_name, datetime.now(timezone.utc))
+            self.repository.merge_host_category(connection, old_name, new_name, datetime.now(timezone.utc))
+
+    def delete_host_category(self, name):
+        with self.repository.engine.begin() as connection:
+            if not self.repository.delete_host_category(connection, str(name or "").strip()):
+                raise ResourceServiceError("RESOURCE_IN_USE", "该类型有关联设备，无法删除", 409)

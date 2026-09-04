@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
-from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify
-from app.models import HostDeviceModel, HostDeviceCategoryModel, DeviceHostRelationModel, EquipmentModel
+from flask import Blueprint, current_app, render_template, request, redirect, url_for, session, flash, jsonify
+from app.services.resources import ResourceServiceError
 
 bp = Blueprint('host_devices', __name__, url_prefix='/equipment/hosts')
+
+
+def _service():
+    service = current_app.extensions.get('equipment_resources_service')
+    if service is None:
+        raise RuntimeError('equipment resources service is not configured')
+    return service
 
 
 def _check_login():
@@ -16,43 +23,23 @@ def index():
     if not _check_login():
         return redirect(url_for('auth.login'))
 
-    host_model = HostDeviceModel()
-    category_model = HostDeviceCategoryModel()
-    rel_model = DeviceHostRelationModel()
-
     category_filter = request.args.get('category', '')
     form_filter = request.args.get('form', '')
     keyword = request.args.get('keyword', '')
     page = int(request.args.get('page', 1))
     per_page = 20
 
-    all_hosts, total = host_model.get_all(
-        category=category_filter if category_filter else None,
-        form=form_filter if form_filter else None,
-        keyword=keyword if keyword else None,
-        page=page, per_page=per_page
+    result = _service().list_host_devices(
+        category=category_filter, form=form_filter, keyword=keyword,
+        page=page, page_size=per_page,
     )
-
-    # 补充关联设备数量和摘要
-    for h in all_hosts:
-        count = rel_model.get_device_count_by_host(h['host_id'])
-        h['_device_count'] = count
-        # 获取关联设备名称摘要
-        devices = rel_model.get_devices_by_host(h['host_id'])
-        if not devices:
-            h['_device_summary'] = '无'
-        elif len(devices) == 1:
-            h['_device_summary'] = devices[0]['name']
-        elif len(devices) == 2:
-            h['_device_summary'] = f"{devices[0]['name']}、{devices[1]['name']}"
-        else:
-            h['_device_summary'] = f"{devices[0]['name']}、{devices[1]['name']}等{len(devices)}台"
+    all_hosts, total = result['items'], result['total']
 
     total_pages = (total + per_page - 1) // per_page if total > 0 else 1
 
     return render_template('host_devices/index.html',
                          hosts=all_hosts,
-                         categories=category_model.get_all(),
+                         categories=_service().list_host_categories(),
                          category_filter=category_filter,
                          form_filter=form_filter,
                          keyword=keyword,
@@ -66,9 +53,7 @@ def add():
     if not _check_login():
         return redirect(url_for('auth.login'))
 
-    category_model = HostDeviceCategoryModel()
-    rel_model = DeviceHostRelationModel()
-    equipment_model = EquipmentModel()
+    service = _service()
 
     if request.method == 'POST':
         name = request.form.get('name', '').strip()
@@ -79,32 +64,41 @@ def add():
         if not name:
             flash('名称不能为空', 'error')
             return render_template('host_devices/add.html',
-                                 categories=category_model.get_all(),
+                                 categories=service.list_host_categories(),
                                  selected_relations=[])
 
         # 处理新增类型（需要先处理，因为要用最终类型名称保存宿主设备）
         new_category = request.form.get('new_category', '').strip()
         if new_category:
-            existing = category_model.get_by_name(new_category)
-            if not existing:
-                category_model.add(new_category)
+            try:
+                service.create_host_category(new_category)
+            except ResourceServiceError as error:
+                if error.code != 'RESOURCE_DUPLICATE':
+                    raise
             category = new_category
-
-        host_model = HostDeviceModel()
-        host_id = host_model.add(name, model, category, form)
-
-        # 保存关联关系
         device_ids = request.form.getlist('device_id')
         quantities = request.form.getlist('quantity')
-        for device_id, qty in zip(device_ids, quantities):
-            if device_id:
-                rel_model.add_relation(device_id, host_id, max(1, int(qty or 1)))
+        relations = [
+            {'device_id': device_id, 'quantity': qty or 1}
+            for device_id, qty in zip(device_ids, quantities) if device_id
+        ]
+        try:
+            service.create_host_device(
+                {'name': name, 'model': model, 'category': category, 'form': form},
+                relations=relations,
+            )
+        except ResourceServiceError as error:
+            flash(error.message, 'error')
+            return render_template(
+                'host_devices/add.html', categories=service.list_host_categories(),
+                selected_relations=[],
+            ), error.status_code
 
         flash('宿主设备添加成功', 'success')
         return redirect(url_for('host_devices.index'))
 
     return render_template('host_devices/add.html',
-                         categories=category_model.get_all(),
+                         categories=service.list_host_categories(),
                          selected_relations=[])
 
 
@@ -113,11 +107,8 @@ def edit(host_id):
     if not _check_login():
         return redirect(url_for('auth.login'))
 
-    host_model = HostDeviceModel()
-    category_model = HostDeviceCategoryModel()
-    rel_model = DeviceHostRelationModel()
-
-    host = host_model.get_by_id(host_id)
+    service = _service()
+    host = service.get_host_device(host_id)
     if not host:
         flash('宿主设备不存在', 'error')
         return redirect(url_for('host_devices.index'))
@@ -132,31 +123,43 @@ def edit(host_id):
             flash('名称不能为空', 'error')
             return render_template('host_devices/edit.html',
                                  host=host,
-                                 categories=category_model.get_all(),
-                                 selected_relations=rel_model.get_devices_by_host(host_id))
+                                 categories=service.list_host_categories(),
+                                 selected_relations=service.get_devices_by_host(host_id))
 
-        host_model.update(host_id, name=name, model=model, category=category, form=form)
-
-        # 重建关联关系：先删后加
-        rel_model.delete_by_host(host_id)
         device_ids = request.form.getlist('device_id')
         quantities = request.form.getlist('quantity')
-        for device_id, qty in zip(device_ids, quantities):
-            if device_id:
-                rel_model.add_relation(device_id, host_id, max(1, int(qty or 1)))
-
-        # 处理新增类型
+        relations = [
+            {'device_id': device_id, 'quantity': qty or 1}
+            for device_id, qty in zip(device_ids, quantities) if device_id
+        ]
         new_category = request.form.get('new_category', '').strip()
-        if new_category and not category_model.get_by_name(new_category):
-            category_model.add(new_category)
+        if new_category:
+            try:
+                service.create_host_category(new_category)
+            except ResourceServiceError as error:
+                if error.code != 'RESOURCE_DUPLICATE':
+                    raise
+            category = new_category
+        try:
+            service.update_host_device(
+                host_id, {'name': name, 'model': model, 'category': category, 'form': form},
+                relations=relations,
+            )
+        except ResourceServiceError as error:
+            flash(error.message, 'error')
+            return render_template(
+                'host_devices/edit.html', host=host,
+                categories=service.list_host_categories(),
+                selected_relations=service.get_devices_by_host(host_id),
+            ), error.status_code
 
         flash('宿主设备更新成功', 'success')
         return redirect(url_for('host_devices.detail', host_id=host_id))
 
-    selected_relations = rel_model.get_devices_by_host(host_id)
+    selected_relations = service.get_devices_by_host(host_id)
     return render_template('host_devices/edit.html',
                          host=host,
-                         categories=category_model.get_all(),
+                         categories=service.list_host_categories(),
                          selected_relations=selected_relations)
 
 
@@ -165,15 +168,13 @@ def detail(host_id):
     if not _check_login():
         return redirect(url_for('auth.login'))
 
-    host_model = HostDeviceModel()
-    rel_model = DeviceHostRelationModel()
-
-    host = host_model.get_by_id(host_id)
+    service = _service()
+    host = service.get_host_device(host_id)
     if not host:
         flash('宿主设备不存在', 'error')
         return redirect(url_for('host_devices.index'))
 
-    related_devices = rel_model.get_devices_by_host(host_id)
+    related_devices = service.get_devices_by_host(host_id)
     return render_template('host_devices/detail.html',
                          host=host,
                          related_devices=related_devices)
@@ -183,9 +184,12 @@ def detail(host_id):
 def delete(host_id):
     if not _check_login():
         return redirect(url_for('auth.login'))
-    host_model = HostDeviceModel()
-    host_model.delete(host_id)
-    flash('宿主设备已删除', 'success')
+    try:
+        _service().delete_host_device(host_id)
+    except ResourceServiceError as error:
+        flash(error.message, 'error')
+    else:
+        flash('宿主设备已删除', 'success')
     return redirect(url_for('host_devices.index'))
 
 
@@ -193,14 +197,7 @@ def delete(host_id):
 def categories():
     if not _check_login():
         return redirect(url_for('auth.login'))
-    category_model = HostDeviceCategoryModel()
-    host_model = HostDeviceModel()
-    all_categories = category_model.get_all()
-
-    # 统计每个类型的设备数量
-    for cat in all_categories:
-        hosts, _ = host_model.get_all(category=cat['name'], per_page=1000)
-        cat['_device_count'] = len(hosts)
+    all_categories = _service().list_host_categories()
 
     return render_template('host_devices/categories.html',
                          categories=all_categories)
@@ -213,12 +210,11 @@ def categories_add():
     name = request.form.get('name', '').strip()
     if not name:
         return jsonify({'success': False, 'message': '类型名称不能为空'})
-    category_model = HostDeviceCategoryModel()
-    existing = category_model.get_by_name(name)
-    if existing:
-        return jsonify({'success': False, 'message': '类型已存在'})
-    category_model.add(name)
-    return jsonify({'success': True})
+    try:
+        _service().create_host_category(name)
+        return jsonify({'success': True})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
 @bp.route('/categories/merge', methods=['POST'])
@@ -231,9 +227,11 @@ def categories_merge():
         return jsonify({'success': False, 'message': '参数不完整'})
     if old_name == new_name:
         return jsonify({'success': False, 'message': '不能合并到自身'})
-    category_model = HostDeviceCategoryModel()
-    category_model.rename(old_name, new_name)
-    return jsonify({'success': True})
+    try:
+        _service().merge_host_category(old_name, new_name)
+        return jsonify({'success': True})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
 @bp.route('/categories/delete', methods=['POST'])
@@ -241,11 +239,11 @@ def categories_delete():
     if not _check_login():
         return jsonify({'success': False, 'message': '未登录'})
     name = request.form.get('name', '').strip()
-    category_model = HostDeviceCategoryModel()
-    result = category_model.delete(name)
-    if not result:
-        return jsonify({'success': False, 'message': '该类型有关联设备，无法删除'})
-    return jsonify({'success': True})
+    try:
+        _service().delete_host_category(name)
+        return jsonify({'success': True})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
 # ---------- API ----------
@@ -255,8 +253,7 @@ def api_relations(host_id):
     """获取宿主设备关联的密码设备列表（含数量）"""
     if not _check_login():
         return jsonify({'success': False})
-    rel_model = DeviceHostRelationModel()
-    devices = rel_model.get_devices_by_host(host_id)
+    devices = _service().get_devices_by_host(host_id)
     return jsonify({'success': True, 'data': devices})
 
 
@@ -270,10 +267,11 @@ def api_relations_add():
     relations = data.get('relations', [])  # [{device_id, quantity}, ...]
     if not host_id:
         return jsonify({'success': False, 'message': 'host_id required'})
-    rel_model = DeviceHostRelationModel()
-    for r in relations:
-        rel_model.add_relation(r['device_id'], host_id, r.get('quantity', 1))
-    return jsonify({'success': True})
+    try:
+        _service().upsert_host_relations(host_id, relations)
+        return jsonify({'success': True})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
 @bp.route('/api/relations/<device_id>/<host_id>', methods=['PATCH'])
@@ -283,9 +281,11 @@ def api_relation_patch(device_id, host_id):
         return jsonify({'success': False})
     data = request.get_json() or {}
     quantity = data.get('quantity', 1)
-    rel_model = DeviceHostRelationModel()
-    rel_model.update_quantity(device_id, host_id, quantity)
-    return jsonify({'success': True})
+    try:
+        _service().update_host_relation(host_id, device_id, quantity)
+        return jsonify({'success': True})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
 @bp.route('/api/relations/<device_id>/<host_id>', methods=['DELETE'])
@@ -293,9 +293,11 @@ def api_relation_delete(device_id, host_id):
     """移除关联"""
     if not _check_login():
         return jsonify({'success': False})
-    rel_model = DeviceHostRelationModel()
-    rel_model.remove_relation(device_id, host_id)
-    return jsonify({'success': True})
+    try:
+        _service().remove_host_relation(host_id, device_id)
+        return jsonify({'success': True})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
 @bp.route('/api/search')
@@ -306,8 +308,8 @@ def api_search():
     keyword = request.args.get('keyword', '')
     page = int(request.args.get('page', 1))
     per_page = 20
-    host_model = HostDeviceModel()
-    hosts, total = host_model.get_all(keyword=keyword, page=page, per_page=per_page)
+    result = _service().list_host_devices(keyword=keyword, page=page, page_size=per_page)
+    hosts, total = result['items'], result['total']
     return jsonify({'success': True, 'data': hosts, 'total': total, 'page': page})
 
 
@@ -322,10 +324,7 @@ def export():
     from io import BytesIO
     import openpyxl
 
-    host_model = HostDeviceModel()
-    rel_model = DeviceHostRelationModel()
-
-    all_hosts, _ = host_model.get_all(per_page=10000)
+    all_hosts = _service().export_host_devices()
 
     output = BytesIO()
     workbook = openpyxl.Workbook()
@@ -337,8 +336,8 @@ def export():
                '关联设备ID', '关联设备名称', '创建时间', '更新时间'])
 
     for h in all_hosts:
-        device_count = rel_model.get_device_count_by_host(h['host_id'])
-        devices = rel_model.get_devices_by_host(h['host_id'])
+        devices = h['devices']
+        device_count = len(devices)
         device_ids = '、'.join([d['device_id'] for d in devices]) if devices else ''
         device_names = '、'.join([d['name'] for d in devices]) if devices else ''
         ws.append([
@@ -441,9 +440,8 @@ def import_preview():
         except Exception:
             return jsonify({'success': False, 'message': '列映射参数错误'})
 
-        from app.utils.fuzzy_match import match_equipment
-        host_model = HostDeviceModel()
-        category_model = HostDeviceCategoryModel()
+        service = _service()
+        existing_categories = {item['name'] for item in service.list_host_categories()}
 
         related_col_idx = column_mapping.get('related_equipment')
 
@@ -470,7 +468,7 @@ def import_preview():
             duplicate_status = None
             existing_host = None
             if host_id_raw and str(host_id_raw).startswith('HD'):
-                existing_host = host_model.get_by_id(str(host_id_raw))
+                existing_host = service.get_host_device(str(host_id_raw))
                 if existing_host:
                     duplicate_status = 'exists'
 
@@ -478,7 +476,7 @@ def import_preview():
             related_result = {'original': '', 'devices': []}
             if related_col_idx is not None and related_col_idx < len(row):
                 related_text = str(row[related_col_idx] or '').strip()
-                related_result = match_equipment(related_text)
+                related_result = service.match_equipment_text(related_text)
 
                 for dev in related_result['devices']:
                     if dev['status'] == 'exact':
@@ -491,8 +489,7 @@ def import_preview():
             # 新增类型检测
             is_new_category = False
             if category:
-                existing_cats = [c['name'] for c in category_model.get_all()]
-                if category not in existing_cats:
+                if category not in existing_categories:
                     is_new_category = True
 
             processed.append({
@@ -571,18 +568,10 @@ def import_commit():
     if not preview_data:
         return jsonify({'success': False, 'message': '会话过期，请重新上传'})
 
-    host_model = HostDeviceModel()
-    category_model = HostDeviceCategoryModel()
-    rel_model = DeviceHostRelationModel()
-
-    imported_new = 0
-    imported_overwrite = 0
-    skipped = 0
-    relations_created = 0
-    skipped_relations = []
-
-    from app.utils.fuzzy_match import split_device_names
     import json
+
+    import_rows = []
+    skipped_relations = []
 
     # 遍历每行，按用户修正执行写入
     for row_data in preview_data['processed']:
@@ -593,43 +582,14 @@ def import_commit():
         model = request.form.get(f'model_{row_idx}', row_data['model']).strip()
         category = request.form.get(f'category_{row_idx}', row_data['category']).strip()
         form = request.form.get(f'form_{row_idx}', row_data['form']).strip()
-        host_id_raw = request.form.get(f'host_id_{row_idx}', row_data['host_id_raw']).strip()
-
         # 重复处理选择
         dup_action = request.form.get(f'dup_action_{row_idx}', '')
 
         if not name:
-            skipped += 1
+            import_rows.append({'name': '', 'action': 'skip'})
             continue
 
-        # 处理新增类型
-        if category:
-            existing_cats = [c['name'] for c in category_model.get_all()]
-            if category not in existing_cats:
-                category_model.add(category)
-
-        # 写入 host_devices
-        saved_host_id = None
-        if row_data['duplicate_status'] == 'exists':
-            if dup_action == 'skip':
-                skipped += 1
-            elif dup_action == 'overwrite':
-                host_model.update(row_data['existing_host']['host_id'],
-                                  name=name, model=model, category=category, form=form)
-                saved_host_id = row_data['existing_host']['host_id']
-                imported_overwrite += 1
-            elif dup_action == 'new':
-                saved_host_id = host_model.add(name, model, category, form)
-                imported_new += 1
-            else:
-                # 默认新建
-                saved_host_id = host_model.add(name, model, category, form)
-                imported_new += 1
-        else:
-            saved_host_id = host_model.add(name, model, category, form)
-            imported_new += 1
-
-        # 处理关联关系
+        device_ids = []
         related_result = row_data['related_result']
         for dev_idx, dev_match in enumerate(related_result.get('devices', [])):
             # 用户选择的设备ID
@@ -638,7 +598,7 @@ def import_commit():
                 # 用户跳过该关联
                 skipped_relations.append({
                     'name': row_data['name'],
-                    'device': dev_match.get('name', '')
+                    'device': dev_match.get('name', ''),
                 })
                 continue
             if not selected_id:
@@ -650,23 +610,34 @@ def import_commit():
                 elif dev_match.get('fuzzy'):
                     selected_id = dev_match['fuzzy'][0].get('equipment_id')
 
-            if selected_id and saved_host_id:
-                try:
-                    rel_model.add_relation(selected_id, saved_host_id, 1)
-                    relations_created += 1
-                except Exception:
-                    pass
+            if selected_id:
+                device_ids.append(selected_id)
+
+        import_rows.append({
+            'name': name, 'model': model, 'category': category, 'form': form,
+            'existing_host_id': (
+                row_data.get('existing_host', {}).get('host_id')
+                if row_data.get('existing_host') else None
+            ),
+            'action': dup_action or 'new', 'device_ids': device_ids,
+        })
+
+    try:
+        result = _service().import_host_devices(import_rows)
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
+    result['skipped_relations'] = skipped_relations
 
     # 清除 session
     session.pop('host_import_preview', None)
 
     # 跳转到结果页
     return redirect(url_for('host_devices.import_done',
-                            new=imported_new,
-                            overwrite=imported_overwrite,
-                            skip=skipped,
-                            relations=relations_created,
-                            skipped_relations=json.dumps(skipped_relations)))
+                            new=result['new'],
+                            overwrite=result['overwrite'],
+                            skip=result['skip'],
+                            relations=result['relations'],
+                            skipped_relations=json.dumps(result['skipped_relations'])))
 
 
 @bp.route('/import/done')

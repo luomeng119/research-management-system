@@ -1,12 +1,20 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify, send_file, current_app
 from datetime import datetime
-from app.models import EquipmentModel, EquipmentGroupModel, ProjectModel, SecurityProjectModel, CryptoProjectModel
+from app.models import ProjectModel, SecurityProjectModel, CryptoProjectModel
 from app.routes._project_bridge import all_legacy_projects
+from app.services.resources import ResourceServiceError
 import openpyxl
 from io import BytesIO
 
 bp = Blueprint('equipment_groups', __name__, url_prefix='/equipment/groups')
+
+
+def _service():
+    service = current_app.extensions.get('equipment_resources_service')
+    if service is None:
+        raise RuntimeError('equipment resources service is not configured')
+    return service
 
 def get_all_projects():
     """获取所有类型的项目（科研项目、安全保密项目、密码应用项目）"""
@@ -64,9 +72,19 @@ def index():
         return redirect(url_for('auth.login'))
     
     project_id = request.args.get('project_id', '').strip()
-    model = EquipmentGroupModel()
-    groups = model.get_all(project_id if project_id else None)
-    return render_template('equipment/groups.html', groups=groups, filter_project_id=project_id)
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+    except ValueError:
+        page = 1
+    result = _service().list_equipment_groups(
+        page=page, page_size=20, project_id=project_id
+    )
+    total_pages = max(1, (result['total'] + 19) // 20)
+    return render_template(
+        'equipment/groups.html', groups=result['items'],
+        filter_project_id=project_id, page=page, total_pages=total_pages,
+        total=result['total'],
+    )
 
 @bp.route('/new', methods=['GET', 'POST'])
 def new():
@@ -98,15 +116,12 @@ def new():
                 project_name = datetime.now().strftime('%Y-%m-%d项目')
         
         creator = session.get('user')
-        model = EquipmentGroupModel()
-        result = model.create_group(project_name, creator, project_id)
-        
-        # 检查是否有错误
-        if isinstance(result, dict) and 'error' in result:
-            flash(result['error'], 'error')
+        try:
+            result = _service().create_equipment_group(project_name, creator, project_id)
+        except ResourceServiceError as error:
+            flash(error.message, 'error')
             return render_template('equipment/group_new.html', my_projects=my_projects)
-        
-        group_id = result
+        group_id = result['group_id']
         flash('设备组创建成功', 'success')
         return redirect(url_for('equipment_groups.edit', group_id=group_id))
     
@@ -117,11 +132,10 @@ def edit(group_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    group_model = EquipmentGroupModel()
-    equipment_model = EquipmentModel()
-    
-    group = group_model.get_by_id(group_id)
-    if not group:
+    service = _service()
+    try:
+        group = service.get_equipment_group(group_id)
+    except ResourceServiceError:
         flash('设备组不存在', 'error')
         return redirect(url_for('equipment_groups.index'))
     
@@ -131,60 +145,47 @@ def edit(group_id):
         filter_category = request.args.get('category', '').strip()
         filter_form = request.args.get('form', '').strip()
         
-        added_ids = [m['equipment_id'] for m in group['members']]
-        all_equipment = equipment_model.get_all()
-        available_equipment = [e for e in all_equipment if e['equipment_id'] not in added_ids]
-        
-        if search:
-            available_equipment = [e for e in available_equipment 
-                if search.lower() in (e.get('name') or '').lower() 
-                or search.lower() in (e.get('model') or '').lower()]
-        if filter_category:
-            available_equipment = [e for e in available_equipment if e.get('category') == filter_category]
-        if filter_form:
-            available_equipment = [e for e in available_equipment if e.get('form') == filter_form]
-        
-        return jsonify({'items': available_equipment[:20]})
+        result = service.available_equipment(
+            group_id, keyword=search, category=filter_category, form=filter_form
+        )
+        return jsonify({'items': result['items']})
     
     search = request.args.get('search', '').strip()
     filter_category = request.args.get('category', '').strip()
     filter_form = request.args.get('form', '').strip()
     
-    added_ids = [m['equipment_id'] for m in group['members']]
-    all_equipment = equipment_model.get_all()
-    available_equipment = [e for e in all_equipment if e['equipment_id'] not in added_ids]
-    
-    # 获取唯一筛选选项
-    categories = sorted(list(set(e.get('category') for e in all_equipment if e.get('category'))))
-    forms = sorted(list(set(e.get('form') for e in all_equipment if e.get('form'))))
-    
-    if search:
-        available_equipment = [e for e in available_equipment 
-            if search.lower() in (e.get('name') or '').lower() 
-            or search.lower() in (e.get('model') or '').lower()]
-    if filter_category:
-        available_equipment = [e for e in available_equipment if e.get('category') == filter_category]
-    if filter_form:
-        available_equipment = [e for e in available_equipment if e.get('form') == filter_form]
+    available = service.available_equipment(
+        group_id, keyword=search, category=filter_category, form=filter_form
+    )
+    available_equipment = available['items']
+    categories, forms = available['categories'], available['forms']
     
     if request.method == 'POST':
         action = request.form.get('action')
         equipment_id = request.form.get('equipment_id')
         equipment_ids = request.form.getlist('equipment_ids')
-        quantity = int(request.form.get('quantity', 1))
+        quantity = request.form.get('quantity', 1)
         
-        if action == 'add':
-            if equipment_ids:
-                for eid in equipment_ids:
-                    group_model.add_member(group_id, eid, quantity, session.get('user'))
-                flash(f'成功添加 {len(equipment_ids)} 台设备', 'success')
-            elif equipment_id:
-                group_model.add_member(group_id, equipment_id, quantity, session.get('user'))
-                flash('添加成功', 'success')
-        elif action == 'remove' and equipment_id:
-            group_model.remove_member(group_id, equipment_id)
-            flash('移除成功', 'success')
-        
+        try:
+            if action == 'add':
+                if equipment_ids:
+                    added = service.add_group_members(
+                        group_id, equipment_ids, quantity=quantity,
+                        selected_by=session.get('user')
+                    )
+                    flash(f'成功添加 {added} 台设备', 'success')
+                elif equipment_id:
+                    service.add_group_member(
+                        group_id, equipment_id, quantity=quantity,
+                        selected_by=session.get('user')
+                    )
+                    flash('添加成功', 'success')
+            elif action == 'remove' and equipment_id:
+                service.remove_group_member(group_id, equipment_id)
+                flash('移除成功', 'success')
+        except ResourceServiceError as error:
+            flash(error.message, 'error')
+
         return redirect(url_for('equipment_groups.edit', group_id=group_id))
     
     return render_template('equipment/group_edit.html', group=group, available_equipment=available_equipment, categories=categories, forms=forms)
@@ -194,18 +195,20 @@ def delete(group_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     
-    model = EquipmentGroupModel()
-    model.delete_group(group_id)
-    return jsonify({'success': True, 'message': '删除成功'})
+    try:
+        _service().delete_equipment_group(group_id)
+        return jsonify({'success': True, 'message': '删除成功'})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 @bp.route('/export/<group_id>')
 def export(group_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    model = EquipmentGroupModel()
-    group = model.get_by_id(group_id)
-    if not group:
+    try:
+        group = _service().get_equipment_group(group_id)
+    except ResourceServiceError:
         flash('设备组不存在', 'error')
         return redirect(url_for('equipment_groups.index'))
     

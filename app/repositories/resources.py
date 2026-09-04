@@ -430,6 +430,25 @@ class EquipmentResourcesRepository:
     def insert_equipment_group(self, connection, values):
         connection.execute(self.equipment_groups.insert().values(**values))
 
+    def list_equipment_groups(self, connection, *, page, page_size, project_id=None):
+        counts = sa.select(
+            self.equipment_group_members.c.group_id,
+            sa.func.count().label("member_count"),
+        ).group_by(self.equipment_group_members.c.group_id).subquery()
+        statement = sa.select(
+            self.equipment_groups,
+            sa.func.coalesce(counts.c.member_count, 0).label("member_count"),
+        ).outerjoin(counts, counts.c.group_id == self.equipment_groups.c.group_id)
+        if project_id:
+            statement = statement.where(self.equipment_groups.c.project_id == project_id)
+        total = int(connection.scalar(sa.select(sa.func.count()).select_from(
+            statement.subquery()
+        )) or 0)
+        rows = connection.execute(paginate(statement.order_by(
+            self.equipment_groups.c.created_at.desc(), self.equipment_groups.c.id.desc()
+        ), page=page, page_size=page_size)).mappings()
+        return [dict(row) for row in rows], total
+
     def get_equipment_group(self, connection, group_id):
         group = connection.execute(sa.select(self.equipment_groups).where(
             self.equipment_groups.c.group_id == group_id
@@ -440,7 +459,11 @@ class EquipmentResourcesRepository:
             self.equipment_group_members,
             self.equipment.c.name, self.equipment.c.model,
             self.equipment.c.category, self.equipment.c.form,
-            self.equipment.c.price, self.equipment.c.tech_status,
+            self.equipment.c.price, self.equipment.c.tech_index,
+            self.equipment.c.tech_status, self.equipment.c.manufacturer,
+            self.equipment.c.main_purpose, self.equipment.c.former_name,
+            self.equipment.c.resource_guarantee,
+            self.equipment.c.installation_requirements,
         ).select_from(self.equipment_group_members.join(
             self.equipment,
             self.equipment_group_members.c.equipment_id == self.equipment.c.equipment_id,
@@ -457,6 +480,14 @@ class EquipmentResourcesRepository:
             statement = statement.with_for_update()
         connection.execute(statement).scalar()
 
+    def lock_host_device(self, connection, host_id):
+        statement = sa.select(self.host_devices.c.id).where(
+            self.host_devices.c.host_id == host_id
+        )
+        if connection.dialect.name == "postgresql":
+            statement = statement.with_for_update()
+        return connection.execute(statement).scalar()
+
     def upsert_group_member(self, connection, values):
         existing = connection.execute(sa.select(self.equipment_group_members.c.id).where(sa.and_(
             self.equipment_group_members.c.group_id == values["group_id"],
@@ -470,6 +501,73 @@ class EquipmentResourcesRepository:
         else:
             connection.execute(self.equipment_group_members.insert().values(**values))
 
+    def delete_group_member(self, connection, group_id, equipment_id):
+        return connection.execute(self.equipment_group_members.delete().where(sa.and_(
+            self.equipment_group_members.c.group_id == group_id,
+            self.equipment_group_members.c.equipment_id == equipment_id,
+        ))).rowcount
+
+    def delete_equipment_group(self, connection, group_id):
+        connection.execute(self.equipment_group_members.delete().where(
+            self.equipment_group_members.c.group_id == group_id
+        ))
+        return connection.execute(self.equipment_groups.delete().where(
+            self.equipment_groups.c.group_id == group_id
+        )).rowcount
+
+    def list_available_equipment(self, connection, group_id, *, keyword=None,
+                                 category=None, form=None, limit=20):
+        member = self.equipment_group_members.alias("member")
+        statement = sa.select(self.equipment).where(~sa.exists(
+            sa.select(1).select_from(member).where(sa.and_(
+                member.c.group_id == group_id,
+                member.c.equipment_id == self.equipment.c.equipment_id,
+            ))
+        ))
+        if keyword:
+            pattern = self._pattern(keyword)
+            statement = statement.where(sa.or_(
+                self.equipment.c.name.ilike(pattern, escape="\\"),
+                self.equipment.c.model.ilike(pattern, escape="\\"),
+            ))
+        if category:
+            statement = statement.where(self.equipment.c.category == category)
+        if form:
+            statement = statement.where(self.equipment.c.form == form)
+        return [dict(row) for row in connection.execute(statement.order_by(
+            self.equipment.c.name, self.equipment.c.id
+        ).limit(limit)).mappings()]
+
+    def equipment_facets(self, connection):
+        def values(column):
+            return [row[0] for row in connection.execute(sa.select(column).where(
+                column.is_not(None), column != ""
+            ).distinct().order_by(column))]
+        return {"categories": values(self.equipment.c.category),
+                "forms": values(self.equipment.c.form)}
+
+    def equipment_match_candidates(self, connection, value, *, limit=100):
+        value = str(value or "").strip()
+        exact = [dict(row) for row in connection.execute(
+            sa.select(self.equipment).where(sa.or_(
+                self.equipment.c.name == value, self.equipment.c.model == value,
+            )).order_by(self.equipment.c.id).limit(limit)
+        ).mappings()]
+        if exact:
+            return exact, []
+        pattern = self._pattern(value)
+        fuzzy = [dict(row) for row in connection.execute(
+            sa.select(self.equipment).where(sa.or_(
+                self.equipment.c.name.ilike(pattern, escape="\\"),
+                self.equipment.c.model.ilike(pattern, escape="\\"),
+            )).order_by(self.equipment.c.id).limit(limit)
+        ).mappings()]
+        if not fuzzy:
+            fuzzy = [dict(row) for row in connection.execute(
+                sa.select(self.equipment).order_by(self.equipment.c.id).limit(limit)
+            ).mappings()]
+        return [], fuzzy
+
     def insert_host_device(self, connection, values):
         connection.execute(self.host_devices.insert().values(**values))
 
@@ -477,6 +575,85 @@ class EquipmentResourcesRepository:
         return connection.execute(sa.select(self.host_devices).where(
             self.host_devices.c.host_id == host_id
         )).mappings().first()
+
+    def list_host_devices(self, connection, *, page, page_size, category=None,
+                          form=None, keyword=None):
+        relation_count = sa.select(sa.func.count()).where(
+            self.device_host_relations.c.host_id == self.host_devices.c.host_id
+        ).correlate(self.host_devices).scalar_subquery()
+        statement = sa.select(
+            self.host_devices, relation_count.label("_device_count")
+        )
+        if category:
+            statement = statement.where(self.host_devices.c.category == category)
+        if form:
+            statement = statement.where(self.host_devices.c.form == form)
+        if keyword:
+            pattern = self._pattern(keyword)
+            statement = statement.where(sa.or_(
+                self.host_devices.c.name.ilike(pattern, escape="\\"),
+                self.host_devices.c.model.ilike(pattern, escape="\\"),
+            ))
+        total = int(connection.scalar(sa.select(sa.func.count()).select_from(
+            statement.subquery()
+        )) or 0)
+        rows = connection.execute(paginate(statement.order_by(
+            self.host_devices.c.created_at.desc(), self.host_devices.c.id.desc()
+        ), page=page, page_size=page_size)).mappings()
+        return [dict(row) for row in rows], total
+
+    def export_host_devices(self, connection):
+        return [dict(row) for row in connection.execute(sa.select(
+            self.host_devices
+        ).order_by(self.host_devices.c.created_at, self.host_devices.c.id)).mappings()]
+
+    def update_host_device(self, connection, host_id, values):
+        return connection.execute(self.host_devices.update().where(
+            self.host_devices.c.host_id == host_id
+        ).values(**values)).rowcount
+
+    def delete_host_device(self, connection, host_id):
+        return connection.execute(self.host_devices.delete().where(
+            self.host_devices.c.host_id == host_id
+        )).rowcount
+
+    def list_host_categories(self, connection):
+        counts = sa.select(
+            self.host_devices.c.category, sa.func.count().label("_device_count")
+        ).group_by(self.host_devices.c.category).subquery()
+        rows = connection.execute(sa.select(
+            self.host_device_categories,
+            sa.func.coalesce(counts.c._device_count, 0).label("_device_count"),
+        ).outerjoin(counts, counts.c.category == self.host_device_categories.c.name).order_by(
+            self.host_device_categories.c.name
+        )).mappings()
+        return [dict(row) for row in rows]
+
+    def get_host_category(self, connection, name):
+        return connection.execute(sa.select(self.host_device_categories).where(
+            self.host_device_categories.c.name == name
+        )).mappings().first()
+
+    def insert_host_category(self, connection, name, now):
+        connection.execute(self.host_device_categories.insert().values(name=name, created_at=now))
+
+    def merge_host_category(self, connection, old_name, new_name, now):
+        connection.execute(self.host_devices.update().where(
+            self.host_devices.c.category == old_name
+        ).values(category=new_name, updated_at=now))
+        return connection.execute(self.host_device_categories.delete().where(
+            self.host_device_categories.c.name == old_name
+        )).rowcount
+
+    def delete_host_category(self, connection, name):
+        if connection.scalar(sa.select(sa.func.count()).select_from(self.host_devices).where(
+            self.host_devices.c.category == name
+        )):
+            return False
+        connection.execute(self.host_device_categories.delete().where(
+            self.host_device_categories.c.name == name
+        ))
+        return True
 
     def replace_host_relations(self, connection, host_id, relations, now):
         connection.execute(self.device_host_relations.delete().where(
