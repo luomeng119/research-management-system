@@ -3,6 +3,7 @@
 {% block title %}添加设备 - 科研管理系统V2{% endblock %}
 
 {% block content %}
+{% if page_error %}<div class="alert alert-danger">{{ page_error }}</div>{% endif %}
 <div class="container-fluid">
     <h2 class="mb-4">添加设备</h2>
     
@@ -83,6 +84,7 @@
             <input type="text" name="former_name" class="form-control">
         </div>
         
+        {% if can_access_files|default(true) %}
         <!-- 设备图片 -->
         <div class="col-md-12">
             <label class="form-label">设备图片（可多选）</label>
@@ -90,6 +92,7 @@
             <div class="mt-2" id="imagePreviewContainer" style="display: flex; flex-wrap: wrap; gap: 10px;"></div>
             <div class="form-text">支持点击上传多张图片或 Ctrl+V 粘贴图片</div>
         </div>
+        {% endif %}
         
         <!-- 功能技术指标 - 单占一行 -->
         <div class="col-12">
@@ -128,6 +131,7 @@
 document.addEventListener('DOMContentLoaded', function() {
     var imageInput = document.getElementById('imageInput');
     var imagePreview = document.getElementById('imagePreview');
+    if (!imageInput) return;
     
     // 文件选择预览 - 支持多图
     imageInput.addEventListener('change', function(e) {

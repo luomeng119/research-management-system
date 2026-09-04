@@ -13,6 +13,8 @@ import sqlalchemy as sa
 from sqlalchemy.pool import StaticPool
 
 from app.repositories.resources import EquipmentResourcesRepository, ResearchResourcesRepository
+from app.repositories.files import FilesRepository
+from app.services.files import FileService, FileServiceError
 from app.services.resources import EquipmentResourcesService, ResearchResourcesService, ResourceServiceError
 
 
@@ -29,6 +31,44 @@ class AuditRecorder:
             raise RuntimeError("audit unavailable")
         self.events.append(event)
         return "audit-id"
+
+
+class EquipmentFileServiceRecorder:
+    def __init__(self):
+        self.items = []
+        self.events = []
+
+    def upload(
+        self, stream, *, original_name, object_type, object_id,
+        actor_user_id, request_id,
+    ):
+        assert object_type == "EQUIPMENT"
+        payload = stream.read()
+        suffix = Path(original_name).suffix.lower()
+        media_type = "image/png" if suffix == ".png" else "application/pdf"
+        item = {
+            "fileId": str(uuid.uuid4()), "versionNo": 1,
+            "originalName": original_name, "mediaType": media_type,
+            "storagePath": f"recorded/{uuid.uuid4().hex}{suffix}",
+            "sha256": "0" * 64, "sizeBytes": len(payload),
+            "objectId": object_id, "actorUserId": actor_user_id,
+            "requestId": request_id,
+        }
+        self.items.append(item)
+        return item
+
+    def list_for_object(self, *, object_type, object_id):
+        assert object_type == "EQUIPMENT"
+        return [
+            {key: value for key, value in item.items() if key not in {
+                "storagePath", "sha256", "sizeBytes", "objectId",
+                "actorUserId", "requestId",
+            }}
+            for item in self.items if item["objectId"] == object_id
+        ]
+
+    def record_event(self, **event):
+        self.events.append(event)
 
 
 def _expert_schema(engine):
@@ -213,6 +253,7 @@ def equipment_routes(expert_engine, equipment_service, tmp_path):
     from app.routes.security_projects import bp as security_projects_bp
     from app.routes.crypto_projects import bp as crypto_projects_bp
     from app.routes.research_units import bp as units_bp
+    from app.web.files import bp as files_bp
 
     app = Flask(
         __name__, template_folder=str(ROOT / "app/templates"),
@@ -225,6 +266,7 @@ def equipment_routes(expert_engine, equipment_service, tmp_path):
     app.jinja_env.globals["csrf_token"] = lambda: "test-csrf"
     app.extensions["database_engine"] = expert_engine
     app.extensions["equipment_resources_service"] = equipment_service
+    app.extensions["file_service"] = EquipmentFileServiceRecorder()
     app.add_url_rule("/test/login", endpoint="auth.login", view_func=lambda: "")
     app.add_url_rule("/test/logout", endpoint="auth.logout", view_func=lambda: "")
     app.add_url_rule("/test/users", endpoint="users.index", view_func=lambda: "")
@@ -236,6 +278,7 @@ def equipment_routes(expert_engine, equipment_service, tmp_path):
     app.register_blueprint(security_projects_bp)
     app.register_blueprint(crypto_projects_bp)
     app.register_blueprint(units_bp)
+    app.register_blueprint(files_bp)
     client = app.test_client()
     with client.session_transaction() as active_session:
         active_session.update(
@@ -623,6 +666,106 @@ def test_host_routes_validate_and_export_from_resource_service(
         row[0] == equipment["equipment_id"] and host["host_id"] in row[14]
         for row in equipment_rows[1:]
     )
+
+
+def test_equipment_images_and_attachments_use_controlled_file_service(
+    equipment_routes, equipment_service, monkeypatch
+):
+    class LogRecorder:
+        def add(self, **_values):
+            return None
+
+    monkeypatch.setattr("app.routes.equipment.OperationLogModel", LogRecorder)
+    created = equipment_routes.post(
+        "/equipment/add",
+        data={
+            "name": "带图设备", "category": "通用设备",
+            "equipment_images": (BytesIO(b"png-image"), "设备图.png"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert created.status_code == 302
+    equipment = equipment_service.list_equipment(keyword="带图设备")["items"][0]
+
+    uploaded = equipment_routes.post(
+        f"/equipment/upload_file/{equipment['equipment_id']}",
+        data={"related_file": (BytesIO(b"%PDF-1.7\nreport"), "试验报告.pdf")},
+        content_type="multipart/form-data",
+    )
+    assert uploaded.status_code == 200
+    assert uploaded.get_json()["file"]["originalName"] == "试验报告.pdf"
+
+    file_service = equipment_routes.application.extensions["file_service"]
+    assert [item["originalName"] for item in file_service.items] == [
+        "设备图.png", "试验报告.pdf",
+    ]
+    assert {item["objectId"] for item in file_service.items} == {
+        equipment["equipment_id"]
+    }
+    detail = equipment_routes.get(f"/equipment/detail/{equipment['equipment_id']}")
+    assert detail.status_code == 200
+    html = detail.get_data(as_text=True)
+    assert "设备图.png" in html
+    assert "试验报告.pdf" in html
+    assert "/api/files/" in html
+
+
+def test_equipment_files_enforce_business_role_and_audit_failures(
+    equipment_routes, equipment_service, monkeypatch
+):
+    equipment = equipment_service.create_equipment({"name": "权限设备"})
+    file_service = equipment_routes.application.extensions["file_service"]
+    file_service.upload(
+        BytesIO(b"document"), original_name="内部附件.pdf",
+        object_type="EQUIPMENT", object_id=equipment["equipment_id"],
+        actor_user_id=7, request_id="seed",
+    )
+
+    with equipment_routes.session_transaction() as active_session:
+        active_session["role"] = "SYSTEM_MAINTAINER"
+    detail = equipment_routes.get(f"/equipment/detail/{equipment['equipment_id']}")
+    assert detail.status_code == 200
+    maintainer_html = detail.get_data(as_text=True)
+    assert "内部附件.pdf" not in maintainer_html
+    assert "const attachmentForm" in maintainer_html
+    assert "if (attachmentForm)" in maintainer_html
+    forbidden = equipment_routes.post(
+        f"/equipment/upload_file/{equipment['equipment_id']}",
+        data={"related_file": (BytesIO(b"new"), "new.pdf")},
+        content_type="multipart/form-data",
+    )
+    assert forbidden.status_code == 403
+    assert len(file_service.items) == 1
+
+    with equipment_routes.session_transaction() as active_session:
+        active_session["role"] = "BUSINESS_USER"
+    monkeypatch.setattr(
+        file_service, "upload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            FileServiceError("UNSUPPORTED_MEDIA_TYPE", "文件内容与类型不匹配", 415)
+        ),
+    )
+    rejected = equipment_routes.post(
+        f"/equipment/upload_file/{equipment['equipment_id']}",
+        data={"related_file": (BytesIO(b"bad"), "bad.pdf")},
+        content_type="multipart/form-data",
+    )
+    assert rejected.status_code == 415
+    assert file_service.events[-1]["operation"] == "UPLOAD"
+    assert file_service.events[-1]["result"] == "FAILURE"
+    assert file_service.events[-1]["error_code"] == "UNSUPPORTED_MEDIA_TYPE"
+
+    monkeypatch.setattr(
+        file_service, "list_for_object",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            FileServiceError("FILE_OPERATION_FAILED", "附件读取失败", 500)
+        ),
+    )
+    unavailable = equipment_routes.get(f"/equipment/detail/{equipment['equipment_id']}")
+    assert unavailable.status_code == 200
+    assert "附件暂不可用：附件读取失败" in unavailable.get_data(as_text=True)
+    assert file_service.events[-1]["operation"] == "LIST"
+    assert file_service.events[-1]["result"] == "FAILURE"
 
 
 def test_equipment_group_route_uses_bounded_postgres_service(equipment_routes, equipment_service):
@@ -1160,13 +1303,24 @@ def test_postgresql_expert_runtime_contract():
     not os.environ.get("T10_TEST_DATABASE_URL"),
     reason="requires isolated PostgreSQL",
 )
-def test_postgresql_equipment_resource_runtime_contract():
+def test_postgresql_equipment_resource_runtime_contract(tmp_path):
     engine = sa.create_engine(os.environ["T10_TEST_DATABASE_URL"])
     repository = EquipmentResourcesRepository(engine)
     service = EquipmentResourcesService(repository)
     suffix = uuid.uuid4().hex[:10]
     equipment_name = f"PG设备{suffix}"
     unit_name = f"PG研制单位{suffix}"
+    users = sa.Table("users", sa.MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        owner_id = connection.execute(users.insert().values(
+            username=f"equipment-{suffix}", password="test-only",
+            role="BUSINESS_USER", name="张老师", status="active",
+            directory_permissions={}, must_change_password=False, version=1,
+        ).returning(users.c.id)).scalar_one()
+    file_service = FileService(
+        FilesRepository(engine), AuditRecorder(), storage_root=tmp_path / "equipment-files",
+        max_bytes=1024 * 1024, preview_max_bytes=1024 * 1024,
+    )
     try:
         equipment = service.create_equipment({
             "name": equipment_name, "category": "密码设备", "price": "99.50"
@@ -1208,6 +1362,21 @@ def test_postgresql_equipment_resource_runtime_contract():
             row["equipment_id"] == equipment["equipment_id"] and row["hosts"]
             for row in service.export_equipment()
         )
+        file_service.upload(
+            BytesIO(b"\x89PNG\r\n\x1a\ncontrolled-image"),
+            original_name="PG设备图.png", object_type="EQUIPMENT",
+            object_id=equipment["equipment_id"], actor_user_id=owner_id,
+            request_id=f"req-equipment-image-{suffix}",
+        )
+        file_service.upload(
+            BytesIO(b"%PDF-1.7\ncontrolled-attachment"),
+            original_name="PG试验报告.pdf", object_type="EQUIPMENT",
+            object_id=equipment["equipment_id"], actor_user_id=owner_id,
+            request_id=f"req-equipment-file-{suffix}",
+        )
+        assert {item["originalName"] for item in file_service.list_for_object(
+            object_type="EQUIPMENT", object_id=equipment["equipment_id"]
+        )} == {"PG试验报告.pdf", "PG设备图.png"}
         assert imported["new"] == 1
         imported_host = service.list_host_devices(keyword=f"PG导入宿主{suffix}")["items"][0]
         assert service.get_devices_by_host(imported_host["host_id"])[0]["device_id"] == equipment["equipment_id"]

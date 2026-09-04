@@ -12,6 +12,8 @@ import uuid
 from datetime import datetime
 
 from app.utils import import_progress as ip
+from app.security.auth import BUSINESS_USER, current_identity
+from app.services.files import FileServiceError
 from app.services.resources import ResourceServiceError
 
 bp = Blueprint('equipment', __name__, url_prefix='/equipment')
@@ -22,6 +24,70 @@ def _equipment_resources_service():
     if service is None:
         raise RuntimeError('equipment resources service is not configured')
     return service
+
+
+def _file_service():
+    service = current_app.extensions.get('file_service')
+    if service is None:
+        raise FileServiceError('FILE_SERVICE_UNAVAILABLE', '附件服务不可用', 503)
+    return service
+
+
+def _business_identity():
+    identity = current_identity()
+    if identity is None:
+        raise FileServiceError('UNAUTHORIZED', '未登录', 401)
+    if identity.role != BUSINESS_USER:
+        raise FileServiceError('FORBIDDEN', '无权访问业务附件', 403)
+    return identity
+
+
+def _can_access_equipment_files():
+    identity = current_identity()
+    return bool(identity and identity.role == BUSINESS_USER)
+
+
+def _equipment_files(equipment_id):
+    if not _can_access_equipment_files():
+        return []
+    return _file_service().list_for_object(
+        object_type='EQUIPMENT', object_id=equipment_id
+    )
+
+
+def _record_equipment_file_failure(operation, error, original_name=None):
+    identity = current_identity()
+    service = current_app.extensions.get('file_service')
+    if identity is None or service is None:
+        return
+    try:
+        service.record_event(
+            operation=operation, actor_user_id=identity.user_id,
+            request_id=getattr(request, 'request_id', 'equipment-file-upload'),
+            file_id=None, result='FAILURE', error_code=error.code,
+            file_type=os.path.splitext(original_name or '')[1].lstrip('.').lower() or None,
+        )
+    except FileServiceError:
+        current_app.logger.warning('equipment file failure audit unavailable')
+
+
+def _upload_equipment_images(equipment_id, image_files):
+    identity = _business_identity()
+    uploaded = 0
+    for image_file in image_files:
+        if not image_file or not image_file.filename:
+            continue
+        extension = os.path.splitext(image_file.filename)[1].lower()
+        if extension not in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}:
+            raise FileServiceError('INVALID_FILE', '设备图片格式不支持')
+        _file_service().upload(
+            image_file.stream, original_name=image_file.filename,
+            object_type='EQUIPMENT', object_id=equipment_id,
+            actor_user_id=identity.user_id,
+            request_id=getattr(request, 'request_id', 'equipment-image-upload'),
+        )
+        uploaded += 1
+    return uploaded
 
 
 def _safe_filename(filename):
@@ -152,6 +218,15 @@ def add():
         resource_guarantee = request.form.get('resource_guarantee', '').strip()
 
         subclass = request.form.get('subclass', '').strip()
+        image_files = request.files.getlist('equipment_images')
+        if image_files and any(f.filename for f in image_files):
+            try:
+                _business_identity()
+            except FileServiceError as error:
+                return render_template(
+                    'equipment/add.html', subclasses_json=get_subclasses_json(),
+                    can_access_files=False, page_error=error.message,
+                ), error.status_code
         try:
             created = _equipment_resources_service().create_equipment({
                 'name': name, 'model': model, 'category': category, 'form': form,
@@ -170,32 +245,21 @@ def add():
         log_model = OperationLogModel()
         log_model.add(module='equipment', operation_type='添加设备', file_name=name, operator=session.get('user', '未知'))
 
-        # 处理图片上传 - 支持多图
-        image_files = request.files.getlist('equipment_images')
-        image_paths = []
         if image_files and any(f.filename for f in image_files):
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            base_dir = os.path.dirname(base_dir)
-            img_dir = os.path.join(base_dir, 'uploads', 'equipment_images')
-            os.makedirs(img_dir, exist_ok=True)
-            for idx, image_file in enumerate(image_files):
-                if image_file.filename:
-                    ext = image_file.filename.rsplit('.', 1)[-1].lower() if '.' in image_file.filename else ''
-                    if ext in ['jpg', 'jpeg', 'png', 'gif']:
-                        img_name = f"{equipment_id}_{idx}.{ext}"
-                        img_path = os.path.join(img_dir, img_name)
-                        image_file.save(img_path)
-                        image_paths.append(f"/uploads/equipment_images/{img_name}")
-                        log_model.add(module='equipment', operation_type='上传图片', file_name=image_file.filename, operator=session.get('user', '未知'))
-            if image_paths:
-                _equipment_resources_service().update_equipment(
-                    equipment_id, {'equipmentImage': ';'.join(image_paths)}
-                )
+            try:
+                _upload_equipment_images(equipment_id, image_files)
+            except FileServiceError as error:
+                first_name = next((f.filename for f in image_files if f.filename), None)
+                _record_equipment_file_failure('UPLOAD', error, first_name)
+                flash(f'设备已创建，但图片上传失败：{error.message}', 'warning')
 
         flash('设备添加成功', 'success')
         return redirect(url_for('equipment.index'))
 
-    return render_template('equipment/add.html', subclasses_json=get_subclasses_json())
+    return render_template(
+        'equipment/add.html', subclasses_json=get_subclasses_json(),
+        can_access_files=_can_access_equipment_files(),
+    )
 
 @bp.route('/detail/<equipment_id>')
 def detail(equipment_id):
@@ -213,7 +277,20 @@ def detail(equipment_id):
     except ResourceServiceError:
         related_hosts = []
 
-    return render_template('equipment/detail.html', equipment=equipment, related_hosts=related_hosts)
+    file_error = None
+    try:
+        files = _equipment_files(equipment_id)
+    except FileServiceError as error:
+        _record_equipment_file_failure('LIST', error)
+        files = []
+        file_error = error.message
+    return render_template(
+        'equipment/detail.html', equipment=equipment, related_hosts=related_hosts,
+        image_files=[item for item in files if item.get('mediaType', '').startswith('image/')],
+        related_files=[item for item in files if not item.get('mediaType', '').startswith('image/')],
+        can_access_files=_can_access_equipment_files(),
+        file_error=file_error,
+    )
 
 @bp.route('/edit/<equipment_id>', methods=['GET', 'POST'])
 def edit(equipment_id):
@@ -241,6 +318,16 @@ def edit(equipment_id):
         former_name = request.form.get('former_name', '').strip()
         resource_guarantee = request.form.get('resource_guarantee', '').strip()
         subclass = request.form.get('subclass', '').strip()
+        image_files = request.files.getlist('equipment_images')
+        if image_files and any(f.filename for f in image_files):
+            try:
+                _business_identity()
+            except FileServiceError as error:
+                return render_template(
+                    'equipment/edit.html', equipment=equipment,
+                    subclasses_json=get_subclasses_json(), image_files=[],
+                    can_access_files=False, page_error=error.message,
+                ), error.status_code
 
         try:
             equipment_service.update_equipment(equipment_id, {
@@ -258,35 +345,31 @@ def edit(equipment_id):
                 subclasses_json=get_subclasses_json(),
             ), error.status_code
 
-        # 处理图片上传
-        # 处理图片上传 - 支持多图
-        image_files = request.files.getlist('equipment_images')
         if image_files and any(f.filename for f in image_files):
-            # 使用绝对路径确保目录创建正确
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            base_dir = os.path.dirname(base_dir)  # 再往上一级到项目根目录
-            img_dir = os.path.join(base_dir, 'uploads', 'equipment_images')
-            os.makedirs(img_dir, exist_ok=True)
-            log_model = OperationLogModel()  # 初始化日志模型
-            image_paths = []
-            for idx, image_file in enumerate(image_files):
-                if image_file.filename:
-                    ext = image_file.filename.rsplit('.', 1)[-1].lower() if '.' in image_file.filename else ''
-                    if ext in ['jpg', 'jpeg', 'png', 'gif']:
-                        img_name = f"{equipment_id}_{idx}.{ext}"
-                        img_path = os.path.join(img_dir, img_name)
-                        image_file.save(img_path)
-                        image_paths.append(f"/uploads/equipment_images/{img_name}")
-                        log_model.add(module='equipment', operation_type='上传图片', file_name=image_file.filename, operator=session.get('user', '未知'))
-            if image_paths:
-                equipment_service.update_equipment(
-                    equipment_id, {'equipmentImage': ';'.join(image_paths)}
-                )
+            try:
+                _upload_equipment_images(equipment_id, image_files)
+            except FileServiceError as error:
+                first_name = next((f.filename for f in image_files if f.filename), None)
+                _record_equipment_file_failure('UPLOAD', error, first_name)
+                flash(f'设备信息已保存，但图片上传失败：{error.message}', 'warning')
 
         flash('设备更新成功', 'success')
         return redirect(url_for('equipment.detail', equipment_id=equipment_id))
 
-    return render_template('equipment/edit.html', equipment=equipment, subclasses_json=get_subclasses_json())
+    file_error = None
+    try:
+        files = _equipment_files(equipment_id)
+    except FileServiceError as error:
+        _record_equipment_file_failure('LIST', error)
+        files = []
+        file_error = error.message
+    return render_template(
+        'equipment/edit.html', equipment=equipment,
+        subclasses_json=get_subclasses_json(),
+        image_files=[item for item in files if item.get('mediaType', '').startswith('image/')],
+        can_access_files=_can_access_equipment_files(),
+        file_error=file_error,
+    )
 
 @bp.route('/delete/<equipment_id>', methods=['POST'])
 def delete(equipment_id):
@@ -313,38 +396,37 @@ def upload_file(equipment_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
 
+    try:
+        identity = _business_identity()
+    except FileServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
+
     if 'related_file' not in request.files:
-        return jsonify({'success': False, 'message': '请选择文件'})
+        error = FileServiceError('FILE_REQUIRED', '请选择文件')
+        _record_equipment_file_failure('UPLOAD', error)
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
     file = request.files['related_file']
     if file.filename == '':
-        return jsonify({'success': False, 'message': '请选择文件'})
+        error = FileServiceError('FILE_REQUIRED', '请选择文件')
+        _record_equipment_file_failure('UPLOAD', error)
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
-    equipment_model = EquipmentModel()
-    equipment = equipment_model.get_by_id(equipment_id)
-    if not equipment:
-        return jsonify({'success': False, 'message': '设备不存在'})
-
-    # 保存文件 - 使用绝对路径
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    base_dir = os.path.dirname(base_dir)  # 再往上一级到项目根目录
-    file_dir = os.path.join(base_dir, 'uploads', 'equipment_files', equipment_id)
-    os.makedirs(file_dir, exist_ok=True)
-    safe_name = _safe_filename(file.filename)
-    file_path = os.path.join(file_dir, safe_name)
-    file.save(file_path)
-
-    # 更新关联
-    existing = equipment['related_files'] or ''
-    new_file = f"/uploads/equipment_files/{equipment_id}/{safe_name}"
-    updated = new_file if not existing else existing + ',' + new_file
-    equipment_model.update(equipment_id, related_files=updated)
-
-    # 记录操作日志
-    log_model = OperationLogModel()
-    log_model.add(module='equipment', operation_type='上传文件', file_name=safe_name, operator=session.get('user', '未知'))
-
-    return jsonify({'success': True, 'message': '上传成功'})
+    try:
+        result = _file_service().upload(
+            file.stream, original_name=file.filename,
+            object_type='EQUIPMENT', object_id=equipment_id,
+            actor_user_id=identity.user_id,
+            request_id=getattr(request, 'request_id', 'equipment-file-upload'),
+        )
+        return jsonify({
+            'success': True, 'message': '上传成功',
+            'file': {key: value for key, value in result.items() if key != 'storagePath'},
+        })
+    except FileServiceError as error:
+        if error.code not in {'UNAUTHORIZED', 'FORBIDDEN'}:
+            _record_equipment_file_failure('UPLOAD', error, file.filename)
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 @bp.route('/export')
 def export():

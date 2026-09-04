@@ -22,19 +22,31 @@
     
     <div class="row">
         <div class="col-md-4">
-            {% if equipment['equipment_image'] %}
+            {% if can_access_files %}
+            {% if image_files or equipment['equipment_image'] %}
             <div class="row g-2">
-                {% for img_path in equipment['equipment_image'].split(';') %}
+                {% for image in image_files %}
+                {% set image_url = url_for('files.preview_file', file_id=image.fileId, version_no=image.versionNo, objectType='EQUIPMENT', objectId=equipment.equipment_id) %}
                 <div class="col-6">
-                    <img src="{{ img_path }}" alt="{{ equipment['name'] }}" class="img-fluid rounded" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#imgModal" onclick="document.getElementById('modalImg').src='{{ img_path }}'">
+                    <img src="{{ image_url }}" alt="{{ image.originalName }}" class="img-fluid rounded equipment-image" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#imgModal" data-image-url="{{ image_url }}">
                 </div>
                 {% endfor %}
+                {% if equipment['equipment_image'] %}
+                {% for img_path in equipment['equipment_image'].split(';') %}
+                <div class="col-6">
+                    <img src="{{ img_path }}" alt="{{ equipment['name'] }}" class="img-fluid rounded equipment-image" style="cursor:pointer" data-bs-toggle="modal" data-bs-target="#imgModal" data-image-url="{{ img_path }}">
+                </div>
+                {% endfor %}
+                {% endif %}
             </div>
             {% else %}
             <div class="text-center text-muted py-5">
                 <i class="bi bi-image fs-1"></i>
                 <p>暂无图片</p>
             </div>
+            {% endif %}
+            {% else %}
+            <div class="text-center text-muted py-5">业务附件仅业务用户可见</div>
             {% endif %}
         </div>
         <div class="col-md-8">
@@ -61,6 +73,33 @@
             </div>
         </div>
     </div>
+
+    {% if can_access_files %}
+    <div class="mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5>相关附件</h5>
+        </div>
+        <form id="equipmentAttachmentForm" action="{{ url_for('equipment.upload_file', equipment_id=equipment.equipment_id) }}" method="post" enctype="multipart/form-data" class="row g-2 mb-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="col-md-8"><input type="file" name="related_file" class="form-control" required></div>
+            <div class="col-md-4"><button type="submit" class="btn btn-outline-primary"><i class="bi bi-paperclip"></i> 上传附件</button></div>
+        </form>
+        {% if file_error %}
+        <div class="alert alert-warning">附件暂不可用：{{ file_error }}</div>
+        {% elif related_files %}
+        <div class="list-group">
+            {% for file in related_files %}
+            <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" href="{{ url_for('files.download_file', file_id=file.fileId, version_no=file.versionNo, objectType='EQUIPMENT', objectId=equipment.equipment_id) }}">
+                <span><i class="bi bi-file-earmark"></i> {{ file.originalName }}</span>
+                <span class="text-muted small">下载</span>
+            </a>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-muted small">暂无附件</div>
+        {% endif %}
+    </div>
+    {% endif %}
 
     <!-- 关联宿主设备区块 -->
     <div class="mt-4">
@@ -148,6 +187,25 @@
 <script>
 let selectedHostIds = new Set();
 let currentDeviceId = {{ equipment.equipment_id|tojson }};
+
+document.querySelectorAll('.equipment-image').forEach(function(image) {
+    image.addEventListener('click', function() {
+        document.getElementById('modalImg').src = image.dataset.imageUrl;
+    });
+});
+
+const attachmentForm = document.getElementById('equipmentAttachmentForm');
+if (attachmentForm) attachmentForm.addEventListener('submit', function(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    fetch(form.action, {method: 'POST', body: new FormData(form), credentials: 'same-origin'})
+        .then(async function(response) {
+            const result = await response.json();
+            if (!response.ok || !result.success) throw new Error(result.message || '上传失败');
+            window.location.reload();
+        })
+        .catch(function(error) { alert(error.message); });
+});
 
 function escapeHost(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {

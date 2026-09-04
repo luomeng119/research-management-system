@@ -3,6 +3,8 @@
 {% block title %}编辑设备 - 科研管理系统V2{% endblock %}
 
 {% block content %}
+{% if page_error %}<div class="alert alert-danger">{{ page_error }}</div>{% endif %}
+{% if file_error %}<div class="alert alert-warning">设备图片暂不可用：{{ file_error }}</div>{% endif %}
 <div class="container-fluid">
     <h2 class="mb-4">编辑设备</h2>
     
@@ -86,17 +88,24 @@
             <input type="text" name="former_name" class="form-control" value="{{ equipment['former_name'] or '' }}">
         </div>
         
+        {% if can_access_files|default(true) %}
         <!-- 设备图片 -->
         <div class="col-md-12">
             <label class="form-label">设备图片（可多选）</label>
             <input type="file" name="equipment_images" class="form-control" accept="image/*" id="imageInput" multiple>
             <div class="mt-2" id="imagePreviewContainer">
+                {% for image in image_files|default([]) %}
+                <img src="{{ url_for('files.preview_file', file_id=image.fileId, version_no=image.versionNo, objectType='EQUIPMENT', objectId=equipment.equipment_id) }}" alt="{{ image.originalName }}" style="max-width: 150px; max-height: 120px;" class="border rounded me-2">
+                {% endfor %}
                 {% if equipment['equipment_image'] %}
-                <img src="{{ equipment['equipment_image'] }}" alt="当前图片" style="max-width: 150px; max-height: 120px;" class="border rounded">
+                {% for img_path in equipment['equipment_image'].split(';') %}
+                <img src="{{ img_path }}" alt="当前图片" style="max-width: 150px; max-height: 120px;" class="border rounded me-2">
+                {% endfor %}
                 {% endif %}
             </div>
             <div class="form-text">支持点击上传多张图片或 Ctrl+V 粘贴图片</div>
         </div>
+        {% endif %}
         
         <!-- 功能技术指标 - 单占一行 -->
         <div class="col-12">
@@ -135,6 +144,7 @@
 document.addEventListener('DOMContentLoaded', function() {
     var imageInput = document.getElementById('imageInput');
     var container = document.getElementById('imagePreviewContainer');
+    if (!imageInput) return;
     
     // 文件选择预览 - 支持多图
     imageInput.addEventListener('change', function(e) {
