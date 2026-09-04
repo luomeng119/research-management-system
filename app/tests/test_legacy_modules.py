@@ -205,17 +205,23 @@ def equipment_service(expert_engine):
 
 
 @pytest.fixture
-def equipment_routes(expert_engine, equipment_service):
+def equipment_routes(expert_engine, equipment_service, tmp_path):
     from app.routes.equipment import bp as equipment_bp
     from app.routes.equipment_groups import bp as groups_bp
     from app.routes.host_devices import bp as hosts_bp
+    from app.routes.projects import bp as projects_bp
+    from app.routes.security_projects import bp as security_projects_bp
+    from app.routes.crypto_projects import bp as crypto_projects_bp
     from app.routes.research_units import bp as units_bp
 
     app = Flask(
         __name__, template_folder=str(ROOT / "app/templates"),
         static_folder=str(ROOT / "app/static"),
     )
-    app.config.update(TESTING=True, SECRET_KEY="test-secret")
+    app.config.update(
+        TESTING=True, SECRET_KEY="test-secret",
+        UPLOAD_DIR=str(tmp_path / "uploads"),
+    )
     app.jinja_env.globals["csrf_token"] = lambda: "test-csrf"
     app.extensions["database_engine"] = expert_engine
     app.extensions["equipment_resources_service"] = equipment_service
@@ -226,6 +232,9 @@ def equipment_routes(expert_engine, equipment_service):
     app.register_blueprint(equipment_bp)
     app.register_blueprint(groups_bp)
     app.register_blueprint(hosts_bp)
+    app.register_blueprint(projects_bp)
+    app.register_blueprint(security_projects_bp)
+    app.register_blueprint(crypto_projects_bp)
     app.register_blueprint(units_bp)
     client = app.test_client()
     with client.session_transaction() as active_session:
@@ -314,6 +323,142 @@ def test_group_bulk_add_is_atomic(equipment_service):
         )
     assert caught.value.code == "EQUIPMENT_NOT_FOUND"
     assert equipment_service.get_equipment_group(group["group_id"])["members"] == []
+
+
+def test_project_equipment_link_update_and_unlink_are_project_scoped(equipment_service):
+    equipment = equipment_service.create_equipment({"name": "项目设备"})
+    linked = equipment_service.link_project_equipment(
+        "KY-001", "科研课题", "张老师", equipment["equipment_id"],
+        quantity=2, location="一号实验室",
+    )
+    project = equipment_service.project_equipment("KY-001")
+    assert project["items"][0]["quantity"] == 2
+    assert project["items"][0]["location"] == "一号实验室"
+
+    with pytest.raises(ResourceServiceError) as wrong_project:
+        equipment_service.update_project_equipment(
+            "KY-OTHER", linked["group_id"], equipment["equipment_id"], quantity=3
+        )
+    assert wrong_project.value.code == "RESOURCE_NOT_FOUND"
+
+    equipment_service.update_project_equipment(
+        "KY-001", linked["group_id"], equipment["equipment_id"],
+        quantity=3, location="二号实验室",
+    )
+    assert equipment_service.project_equipment("KY-001")["items"][0]["quantity"] == 3
+    equipment_service.unlink_project_equipment(
+        "KY-001", linked["group_id"], equipment["equipment_id"]
+    )
+    assert equipment_service.project_equipment("KY-001")["items"] == []
+
+
+def test_general_project_equipment_routes_use_resource_service(
+    equipment_routes, equipment_service, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.routes.projects._get_project",
+        lambda project_id: {"project_id": project_id, "name": "科研课题"},
+    )
+    equipment = equipment_service.create_equipment({"name": "项目路由设备"})
+    detail = equipment_routes.get("/projects/detail/KY-001")
+    assert detail.status_code == 200
+    detail_html = detail.get_data(as_text=True)
+    assert f'value="{equipment["equipment_id"]}"' in detail_html
+    assert "escapeEq(eq.name)" in detail_html
+    assert "new URLSearchParams" in detail_html
+    linked = equipment_routes.post("/projects/link_equipment/KY-001", data={
+        "equipment_id": equipment["equipment_id"], "quantity": "2",
+        "location": "一号实验室",
+    })
+    assert linked.status_code == 200
+    requirements = equipment_routes.get(
+        "/projects/get_equipment_requirements/KY-001"
+    ).get_json()["equipment"]
+    assert requirements[0]["location"] == "一号实验室"
+    group_id = requirements[0]["group_id"]
+
+    updated = equipment_routes.post(
+        f"/projects/update_equipment/KY-001/{group_id}/{equipment['equipment_id']}",
+        data={"quantity": "3", "location": "二号实验室"},
+    )
+    assert updated.status_code == 200
+    assert equipment_service.project_equipment("KY-001")["items"][0]["quantity"] == 3
+
+    exported = equipment_routes.get("/projects/export_equipment/KY-001")
+    assert exported.status_code == 200
+    rows = list(openpyxl.load_workbook(BytesIO(exported.data), data_only=True).active.values)
+    assert ("项目路由设备", None, None, 3, "二号实验室") in rows
+
+    removed = equipment_routes.post(
+        f"/projects/unlink_equipment/KY-001/{group_id}/{equipment['equipment_id']}"
+    )
+    assert removed.status_code == 200
+    assert equipment_service.project_equipment("KY-001")["items"] == []
+
+
+def test_project_equipment_search_reaches_later_pages(
+    equipment_routes, equipment_service
+):
+    created = [
+        equipment_service.create_equipment({"name": f"长期设备{number:02d}"})
+        for number in range(25)
+    ]
+    response = equipment_routes.get("/equipment/api/search?keyword=长期设备&page=2")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["total"] == 25
+    second_page_ids = {item["id"] for item in payload["items"]}
+    first_page_ids = {
+        item["id"] for item in equipment_routes.get(
+            "/equipment/api/search?keyword=长期设备&page=1"
+        ).get_json()["items"]
+    }
+    assert len(second_page_ids) == 5
+    assert second_page_ids.isdisjoint(first_page_ids)
+    assert second_page_ids.issubset({item["equipment_id"] for item in created})
+
+
+@pytest.mark.parametrize(
+    ("module_name", "prefix", "project_id"),
+    [
+        ("security_projects", "security_projects", "BM-001"),
+        ("crypto_projects", "crypto_projects", "MM-001"),
+    ],
+)
+def test_special_project_equipment_routes_use_resource_service(
+    equipment_routes, equipment_service, monkeypatch,
+    module_name, prefix, project_id,
+):
+    monkeypatch.setattr(
+        f"app.routes.{module_name}._get_project",
+        lambda value: {"project_id": value, "name": "专项课题"},
+    )
+    equipment = equipment_service.create_equipment({"name": f"{prefix}设备"})
+    linked = equipment_routes.post(f"/{prefix}/link_equipment/{project_id}", data={
+        "equipment_id": equipment["equipment_id"], "quantity": "2",
+        "location": "专项实验室",
+    })
+    assert linked.status_code == 200
+    item = equipment_service.project_equipment(project_id)["items"][0]
+    assert item["location"] == "专项实验室"
+
+    updated = equipment_routes.post(
+        f"/{prefix}/update_equipment/{project_id}/{item['group_id']}/{equipment['equipment_id']}",
+        data={"quantity": "4", "location": "二号专项实验室"},
+    )
+    assert updated.status_code == 200
+    assert equipment_service.project_equipment(project_id)["items"][0]["quantity"] == 4
+
+    exported = equipment_routes.get(f"/{prefix}/export_equipment/{project_id}")
+    assert exported.status_code == 200
+    rows = list(openpyxl.load_workbook(BytesIO(exported.data), data_only=True).active.values)
+    assert (f"{prefix}设备", None, None, 4, "二号专项实验室") in rows
+
+    removed = equipment_routes.post(
+        f"/{prefix}/unlink_equipment/{project_id}/{item['group_id']}/{equipment['equipment_id']}"
+    )
+    assert removed.status_code == 200
+    assert equipment_service.project_equipment(project_id)["items"] == []
 
 
 def test_host_device_relations_are_replaced_atomically(equipment_service):
@@ -984,6 +1129,10 @@ def test_postgresql_equipment_resource_runtime_contract():
             group["group_id"], equipment["equipment_id"], quantity=2,
             location="PG实验室", selected_by="张老师",
         )
+        service.update_project_equipment(
+            f"PG-PROJECT-{suffix}", group["group_id"], equipment["equipment_id"],
+            quantity=3, location="PG二号实验室",
+        )
         host = service.create_host_device(
             {"name": f"PG宿主{suffix}", "category": "计算存储"},
             relations=[{"device_id": equipment["equipment_id"], "quantity": 1}],
@@ -1001,7 +1150,7 @@ def test_postgresql_equipment_resource_runtime_contract():
         assert any(
             row["id"] == subclass["id"] for row in service.list_subclasses("密码设备")
         )
-        assert service.get_equipment_group(group["group_id"])["members"][0]["location"] == "PG实验室"
+        assert service.project_equipment(f"PG-PROJECT-{suffix}")["items"][0]["location"] == "PG二号实验室"
         assert service.get_devices_by_host(host["host_id"])[0]["quantity"] == 1
         assert imported["new"] == 1
         imported_host = service.list_host_devices(keyword=f"PG导入宿主{suffix}")["items"][0]

@@ -1,17 +1,25 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, jsonify, current_app, send_file
-from app.models import ProjectModel, EquipmentModel, EquipmentGroupModel
+from app.models import ProjectModel
 from app.routes._project_bridge import (
     legacy_page, safe_project_documents_path, safe_project_path,
 )
 from app.security.auth import current_identity
 from app.services.projects import ProjectServiceError
+from app.services.resources import ResourceServiceError
 import os
 import re
 import zipfile
 from datetime import datetime
 
 bp = Blueprint('projects', __name__, url_prefix='/projects')
+
+
+def _equipment_service():
+    service = current_app.extensions.get('equipment_resources_service')
+    if service is None:
+        raise RuntimeError('equipment resources service is not configured')
+    return service
 
 FOLDER_TYPES = ['任务输入文件', '研究成果文件', '院内审查文件', '机关审查文件', '成果上报文件']
 
@@ -241,58 +249,21 @@ def detail(project_id):
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     
-    service = current_app.extensions.get('project_service')
-    if service is not None:
-        try:
-            project = service.get_legacy(category='GENERAL_RESEARCH', business_id=project_id)
-        except ProjectServiceError:
-            project = None
-    else:
-        project = ProjectModel().get_by_id(project_id)
+    project = _get_project(project_id)
     if not project:
         flash('项目不存在', 'error')
         return redirect(url_for('projects.index'))
     
-    equipment_model = EquipmentModel()
-    equipment_group_model = EquipmentGroupModel()
     try:
         project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
     except ValueError:
         return jsonify({'success': False, 'message': '非法路径'}), 400
     folder_tree = build_folder_tree(project_dir)
-    # 获取项目关联的设备组（通过 project_id 关联）
-    project_groups = equipment_group_model.get_all(project_id)
-    # 获取设备组中的所有设备
-    project_equipment = []
-    for group in project_groups:
-        group_detail = equipment_group_model.get_by_id(group['group_id'])
-        if group_detail and group_detail.get('members'):
-            for m in group_detail['members']:
-                project_equipment.append({
-                    'id': m['equipment_id'],
-                    'group_id': group['group_id'],
-                    'equipment_id': m['equipment_id'],
-                    'quantity': m.get('quantity', 1),
-                    'location': '',
-                    'name': m.get('name'),
-                    'model': m.get('model'),
-                    'category': m.get('category'),
-                    'form': m.get('form'),
-                    'price': m.get('price'),
-                    'tech_index': m.get('tech_index'),
-                    'tech_status': m.get('tech_status'),
-                    'manufacturer': m.get('manufacturer'),
-                    'equipment_image': m.get('equipment_image'),
-                    'related_files': '',
-                    'main_purpose': m.get('main_purpose'),
-                    'former_name': m.get('former_name'),
-                    'resource_guarantee': m.get('resource_guarantee'),
-                    'installation_requirements': m.get('installation_requirements'),
-                    'created_at': m.get('selected_at')
-                })
-    all_equipment = equipment_model.get_all()
-    available_equipment = all_equipment if isinstance(all_equipment, list) else []
-    return render_template('projects/detail.html', project=project, category='research', folder_tree=folder_tree, folder_types=FOLDER_TYPES, project_equipment=project_equipment, available_equipment=available_equipment, project_groups=project_groups)
+    resources = _equipment_service().project_equipment(project_id)
+    project_groups = resources['groups']
+    project_equipment = resources['items']
+    available_equipment = resources['available']
+    return render_template('projects/detail.html', project=project, category='research', folder_tree=folder_tree, folder_types=FOLDER_TYPES, project_equipment=project_equipment, available_equipment=available_equipment, available_equipment_total=resources['available_total'], project_groups=project_groups)
 
 @bp.route('/upload/<project_id>', methods=['POST'])
 def upload(project_id):
@@ -592,60 +563,39 @@ def link_equipment(project_id):
         return jsonify({'success': False, 'message': '请选择设备'})
 
     # 获取或创建项目关联的设备组
-    equipment_group_model = EquipmentGroupModel()
     project_name = project['name'] if project else project_id
-    group_id = equipment_group_model.get_or_create_by_project(project_id, project_name, leader)
-    equipment_group_model.add_member(group_id, equipment_id, int(quantity), leader, location)
-    return jsonify({'success': True, 'message': '关联成功'})
+    try:
+        _equipment_service().link_project_equipment(
+            project_id, project_name, leader, equipment_id,
+            quantity=quantity, location=location,
+        )
+        return jsonify({'success': True, 'message': '关联成功'})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 @bp.route('/unlink_equipment/<project_id>/<group_id>/<equipment_id>', methods=['POST'])
 def unlink_equipment(project_id, group_id, equipment_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-    leader = session.get('user')
     project = _get_project(project_id)
     if not project:
         return jsonify({'success': False, 'message': '项目不存在'}), 404
-    equipment_group_model = EquipmentGroupModel()
-    equipment_group_model.remove_member(group_id, equipment_id)
-    return jsonify({'success': True, 'message': '取消关联成功'})
+    try:
+        _equipment_service().unlink_project_equipment(project_id, group_id, equipment_id)
+        return jsonify({'success': True, 'message': '取消关联成功'})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 @bp.route('/get_equipment_requirements/<project_id>')
 def get_equipment_requirements(project_id):
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
-    equipment_model = EquipmentModel()
-    equipment_group_model = EquipmentGroupModel()
     project = _get_project(project_id)
     if not project:
         return jsonify({'success': False, 'message': '项目不存在'})
     
     # 从设备组获取设备
-    project_groups = equipment_group_model.get_all(project_id)
-    result = []
-    for group in project_groups:
-        group_detail = equipment_group_model.get_by_id(group['group_id'])
-        if group_detail and group_detail.get('members'):
-            for m in group_detail['members']:
-                result.append({
-                    'id': m['equipment_id'],
-                    'equipment_id': m['equipment_id'],
-                    'name': m.get('name'),
-                    'model': m.get('model'),
-                    'category': m.get('category'),
-                    'form': m.get('form'),
-                    'price': m.get('price'),
-                    'tech_index': m.get('tech_index'),
-                    'tech_status': m.get('tech_status'),
-                    'manufacturer': m.get('manufacturer'),
-                    'equipment_image': m.get('equipment_image'),
-                    'related_files': '',
-                    'created_at': m.get('selected_at'),
-                    'installation_requirements': m.get('installation_requirements'),
-                    'main_purpose': m.get('main_purpose'),
-                    'former_name': m.get('former_name'),
-                    'resource_guarantee': m.get('resource_guarantee')
-                })
+    result = _equipment_service().project_equipment(project_id)['items']
     return jsonify({'success': True, 'equipment': result})
 
 @bp.route('/export_equipment/<project_id>')
@@ -659,9 +609,7 @@ def export_equipment(project_id):
         return redirect(url_for('projects.index'))
     
     # 获取项目设备（从设备组获取）
-    equipment_group_model = EquipmentGroupModel()
-    project_groups = equipment_group_model.get_all(project_id)
-    equipment_model = EquipmentModel()
+    project_equipment = _equipment_service().project_equipment(project_id)['items']
     
     # 创建Excel
     import io
@@ -675,17 +623,11 @@ def export_equipment(project_id):
     ws.append(['设备名称', '型号', '分类', '数量', '使用位置'])
     
     # 数据
-    for group in project_groups:
-        group_detail = equipment_group_model.get_by_id(group['group_id'])
-        if group_detail and group_detail.get('members'):
-            for m in group_detail['members']:
-                ws.append([
-                    m.get('name', ''),
-                    m.get('model', ''),
-                    m.get('category', ''),
-                    m.get('quantity', 1),
-                    m.get('location', '')
-                ])
+    for item in project_equipment:
+        ws.append([
+            item.get('name', ''), item.get('model', ''), item.get('category', ''),
+            item.get('quantity', 1), item.get('location', '')
+        ])
     
     # 保存到内存
     output = io.BytesIO()
@@ -709,9 +651,14 @@ def update_equipment(project_id, group_id, equipment_id):
         return jsonify({'success': False, 'message': '项目不存在'}), 404
     quantity = request.form.get('quantity', '').strip()
     location = request.form.get('location', '').strip()
-    equipment_group_model = EquipmentGroupModel()
-    equipment_group_model.update_member(group_id, equipment_id, int(quantity) if quantity else None, location)
-    return jsonify({'success': True, 'message': '更新成功'})
+    try:
+        _equipment_service().update_project_equipment(
+            project_id, group_id, equipment_id,
+            quantity=quantity or 1, location=location,
+        )
+        return jsonify({'success': True, 'message': '更新成功'})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 @bp.route('/update_field/<project_id>', methods=['POST'])
 def update_project_field(project_id):

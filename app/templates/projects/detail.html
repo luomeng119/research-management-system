@@ -324,6 +324,13 @@
                         </tbody>
                     </table>
                 </div>
+                <div class="text-center mt-2">
+                    <button type="button" id="eqLoadMore" class="btn btn-outline-secondary btn-sm"
+                            onclick="loadEquipmentCandidates(true)"
+                            {% if available_equipment_total <= available_equipment|length %}style="display:none"{% endif %}>
+                        加载更多
+                    </button>
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -336,21 +343,62 @@
 <script>
 var projectUpdateUrl = '/{{ "projects" if category in ("research", "projects", "") else category + "_projects" }}';
 var eqSelected = [];
+var eqPage = 1;
+var eqTotal = {{ available_equipment_total|default(available_equipment|length) }};
+var eqSearchTimer = null;
 
 function filterEquipment() {
-    var search = document.getElementById('eqSearch').value.toLowerCase();
-    var category = document.getElementById('eqCategory').value;
-    var selectedIds = eqSelected.map(function(e) { return e.id; });
-    document.querySelectorAll('.eq-row').forEach(function(row) {
-        var input = row.querySelector('input');
-        var name = (input.dataset.name || '').toLowerCase();
-        var model = (input.dataset.model || '').toLowerCase();
-        var cat = input.dataset.category || '';
-        var match = (search === '' || name.includes(search) || model.includes(search)) && (category === '' || cat.includes(category));
-        var isSelected = selectedIds.indexOf(input.value) !== -1;
-        row.style.display = (isSelected || match) ? '' : 'none';
+    clearTimeout(eqSearchTimer);
+    eqSearchTimer = setTimeout(function() { loadEquipmentCandidates(false); }, 250);
+}
+
+function escapeEq(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
     });
+}
+
+function renderEquipmentCandidates(items, append) {
+    var tbody = document.getElementById('equipmentList');
+    if (!append) tbody.innerHTML = '';
+    items.forEach(function(e) {
+        var row = document.createElement('tr');
+        row.className = 'eq-row';
+        row.dataset.eqId = e.id;
+        row.innerHTML = '<td><input type="checkbox" name="eqSelect" value="' + escapeEq(e.id) + '"' +
+            ' data-name="' + escapeEq(e.name) + '" data-model="' + escapeEq(e.model) +
+            '" data-category="' + escapeEq(e.category) + '"></td>' +
+            '<td><strong>' + escapeEq(e.name) + '</strong></td>' +
+            '<td><small class="text-muted">' + escapeEq(e.model || '') + '</small></td>' +
+            '<td><span class="badge bg-secondary">' + escapeEq(e.category || '') + '</span></td>' +
+            '<td><small>' + escapeEq(e.form || '-') + '</small></td>' +
+            '<td><small>' + escapeEq(e.price || '-') + '</small></td>' +
+            '<td><small>' + escapeEq(e.manufacturer || '') + '</small></td>';
+        tbody.appendChild(row);
+    });
+    bindEquipmentCheckboxes();
     updateEqSelectedDisplay();
+}
+
+function loadEquipmentCandidates(append) {
+    eqPage = append ? eqPage + 1 : 1;
+    var params = new URLSearchParams({
+        keyword: document.getElementById('eqSearch').value,
+        category: document.getElementById('eqCategory').value,
+        page: eqPage
+    });
+    fetch('/equipment/api/search?' + params.toString())
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.success) throw new Error(data.message || '加载失败');
+            eqTotal = data.total;
+            renderEquipmentCandidates(data.items, append);
+            document.getElementById('eqLoadMore').style.display = eqPage * data.pageSize < data.total ? '' : 'none';
+        })
+        .catch(function() {
+            if (append) eqPage -= 1;
+            alert('设备列表加载失败，请重试');
+        });
 }
 
 function updateEqSelectedDisplay() {
@@ -361,10 +409,10 @@ function updateEqSelectedDisplay() {
     tbody.innerHTML = '';
     eqSelected.forEach(function(eq, idx) {
         var row = document.createElement('tr');
-        row.innerHTML = '<td><input type="checkbox" checked disabled value="' + eq.id + '"></td>' +
-            '<td title="' + eq.name + '">' + (eq.name.length > 20 ? eq.name.substring(0,20) + '...' : eq.name) + '</td>' +
-            '<td title="' + eq.model + '">' + (eq.model && eq.model.length > 20 ? eq.model.substring(0,20) + '...' : (eq.model || '')) + '</td>' +
-            '<td><span class="badge bg-secondary">' + eq.category + '</span></td>' +
+        row.innerHTML = '<td><input type="checkbox" checked disabled value="' + escapeEq(eq.id) + '"></td>' +
+            '<td title="' + escapeEq(eq.name) + '">' + escapeEq(eq.name.length > 20 ? eq.name.substring(0,20) + '...' : eq.name) + '</td>' +
+            '<td title="' + escapeEq(eq.model) + '">' + escapeEq(eq.model && eq.model.length > 20 ? eq.model.substring(0,20) + '...' : (eq.model || '')) + '</td>' +
+            '<td><span class="badge bg-secondary">' + escapeEq(eq.category) + '</span></td>' +
             '<td><input type="number" class="form-control form-control-sm" value="1" min="1" style="width:60px;"></td>' +
             '<td><input type="text" class="form-control form-control-sm" placeholder="使用位置"></td>' +
             '<td><button type="button" class="btn btn-sm btn-outline-danger" onclick="removeEq(' + idx + ')">移除</button></td>';
@@ -383,9 +431,10 @@ function removeEq(idx) {
     updateEqSelectedDisplay();
 }
 
-// 监听checkbox变化
-document.addEventListener('DOMContentLoaded', function() {
+function bindEquipmentCheckboxes() {
     document.querySelectorAll('.eq-row input').forEach(function(cb) {
+        if (cb.dataset.bound === '1') return;
+        cb.dataset.bound = '1';
         cb.addEventListener('change', function() {
             if (this.checked) {
                 eqSelected.push({
@@ -401,6 +450,11 @@ document.addEventListener('DOMContentLoaded', function() {
             updateEqSelectedDisplay();
         });
     });
+}
+
+// 监听checkbox变化
+document.addEventListener('DOMContentLoaded', function() {
+    bindEquipmentCheckboxes();
 });
 
 function confirmEquipment() {
@@ -416,10 +470,13 @@ function confirmEquipment() {
         });
         var quantity = row ? row.querySelector('input[type="number"]').value : 1;
         var location = row ? row.querySelector('input[type="text"]').value : '';
-        return fetch(projectUpdateUrl + '/link_equipment/' + projectId, {
+        var body = new URLSearchParams({
+            equipment_id: eq.id, quantity: quantity, location: location
+        });
+        return fetch(projectUpdateUrl + '/link_equipment/' + encodeURIComponent(projectId), {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'equipment_id=' + eq.id + '&quantity=' + quantity + '&location=' + location
+            body: body.toString()
         }).then(function(r) { return r.json(); });
     });
     Promise.all(promises).then(function(results) {

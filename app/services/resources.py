@@ -916,6 +916,112 @@ class EquipmentResourcesService:
         return {"items": items, **facets}
 
     @staticmethod
+    def _project_candidate(row):
+        item = dict(row)
+        item["id"] = item["equipment_id"]
+        return item
+
+    def search_equipment_candidates(self, *, keyword=None, category=None,
+                                    page=1, page_size=20):
+        page = _positive_int(page, "page")
+        page_size = _positive_int(page_size, "pageSize", maximum=50)
+        with self.repository.engine.connect() as connection:
+            rows, total = self.repository.list_equipment(
+                connection, page=page, page_size=page_size,
+                keyword=str(keyword or "").strip() or None,
+                category=str(category or "").strip() or None,
+            )
+        return {
+            "items": [self._project_candidate(row) for row in rows],
+            "page": page, "pageSize": page_size, "total": total,
+        }
+
+    def project_equipment(self, project_id, *, available_page_size=20):
+        project_id = str(project_id or "").strip()
+        with self.repository.engine.connect() as connection:
+            groups, _ = self.repository.list_equipment_groups(
+                connection, page=1, page_size=100, project_id=project_id
+            )
+            items = []
+            for group in groups:
+                _, members = self.repository.get_equipment_group(
+                    connection, group["group_id"]
+                )
+                for member in members:
+                    member["id"] = member["equipment_id"]
+                    member["group_id"] = group["group_id"]
+                    member["related_files"] = ""
+                    items.append(member)
+            available, available_total = self.repository.list_equipment(
+                connection, page=1,
+                page_size=_positive_int(
+                    available_page_size, "pageSize", maximum=100
+                ),
+            )
+        return {
+            "groups": groups, "items": items,
+            "available": [self._project_candidate(row) for row in available],
+            "available_total": available_total,
+        }
+
+    def link_project_equipment(self, project_id, project_name, creator,
+                               equipment_id, *, quantity=1, location=""):
+        project_id = str(project_id or "").strip()
+        project_name = str(project_name or "").strip()
+        equipment_id = str(equipment_id or "").strip()
+        quantity = _positive_int(quantity, "quantity")
+        if not project_id or not project_name or not equipment_id:
+            raise ResourceServiceError("VALIDATION_ERROR", "项目和设备不能为空", 422)
+        now = datetime.now(timezone.utc)
+        with self.repository.engine.begin() as connection:
+            self.repository.lock_project_group(connection, project_id)
+            group = self.repository.get_group_by_project(connection, project_id)
+            if group is None:
+                group_id = "FG" + now.strftime("%Y%m%d") + uuid.uuid4().hex[:8].upper()
+                self.repository.insert_equipment_group(connection, {
+                    "group_id": group_id, "project_name": project_name,
+                    "project_id": project_id, "creator": str(creator or "").strip(),
+                    "created_at": now, "updated_at": now,
+                })
+                group = self.repository.get_group_by_project(connection, project_id)
+            if self.repository.get_equipment(connection, equipment_id) is None:
+                raise ResourceServiceError("EQUIPMENT_NOT_FOUND", "设备不存在", 404)
+            self.repository.lock_equipment_group(connection, group["group_id"])
+            self.repository.upsert_group_member(connection, {
+                "group_id": group["group_id"], "equipment_id": equipment_id,
+                "quantity": quantity, "location": str(location or "").strip(),
+                "selected_by": str(creator or "").strip(), "selected_at": now,
+            })
+        return {"group_id": group["group_id"], "equipment_id": equipment_id}
+
+    def unlink_project_equipment(self, project_id, group_id, equipment_id):
+        with self.repository.engine.begin() as connection:
+            self.repository.lock_equipment_group(connection, str(group_id).strip())
+            group, _ = self.repository.get_equipment_group(connection, str(group_id).strip())
+            if group is None or group.get("project_id") != str(project_id).strip():
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "项目设备关联不存在", 404)
+            if not self.repository.delete_group_member(
+                connection, str(group_id).strip(), str(equipment_id).strip()
+            ):
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "项目设备关联不存在", 404)
+
+    def update_project_equipment(self, project_id, group_id, equipment_id, *,
+                                 quantity=1, location=""):
+        quantity = _positive_int(quantity, "quantity")
+        with self.repository.engine.begin() as connection:
+            self.repository.lock_equipment_group(connection, str(group_id).strip())
+            group, _ = self.repository.get_equipment_group(connection, str(group_id).strip())
+            if group is None or group.get("project_id") != str(project_id).strip():
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "项目设备关联不存在", 404)
+            if not self.repository.update_group_member(
+                connection, str(group_id).strip(), str(equipment_id).strip(), {
+                    "quantity": quantity, "location": str(location or "").strip(),
+                    "selected_at": datetime.now(timezone.utc),
+                }
+            ):
+                raise ResourceServiceError("RESOURCE_NOT_FOUND", "项目设备关联不存在", 404)
+
+    @staticmethod
     def _relations(values):
         normalized = []
         seen = set()

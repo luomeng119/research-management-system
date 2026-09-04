@@ -515,6 +515,12 @@ class EquipmentResourcesRepository:
             self.equipment_groups.c.group_id == group_id
         )).rowcount
 
+    def update_group_member(self, connection, group_id, equipment_id, values):
+        return connection.execute(self.equipment_group_members.update().where(sa.and_(
+            self.equipment_group_members.c.group_id == group_id,
+            self.equipment_group_members.c.equipment_id == equipment_id,
+        )).values(**values)).rowcount
+
     def list_available_equipment(self, connection, group_id, *, keyword=None,
                                  category=None, form=None, limit=20):
         member = self.equipment_group_members.alias("member")

@@ -826,6 +826,8 @@ def import_commit():
         daemon=True,
         name=f'import-{task_id[:8]}',
     )
+
+
     t.start()
 
     return jsonify({
@@ -834,6 +836,21 @@ def import_commit():
         'total': total,
         'sse_url': f'/equipment/import/progress/{task_id}',
     })
+
+
+@bp.route('/api/search')
+def api_search():
+    if 'user' not in session:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    try:
+        result = _equipment_resources_service().search_equipment_candidates(
+            keyword=request.args.get('keyword', ''),
+            category=request.args.get('category', ''),
+            page=request.args.get('page', 1), page_size=20,
+        )
+        return jsonify({'success': True, **result})
+    except ResourceServiceError as error:
+        return jsonify({'success': False, 'message': error.message}), error.status_code
 
 
 def _do_import_thread(task_id: str, preview_data: dict, form_data: dict):
