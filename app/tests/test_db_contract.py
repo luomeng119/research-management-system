@@ -987,16 +987,24 @@ def test_api_contract_samples_insert_and_invalid_enums_are_rejected(runtime_engi
                 .returning(drafts.c.id)
             )
         )
-        for category in (
-            "GENERAL_RESEARCH",
-            "SECURITY_CONFIDENTIALITY",
-            "CRYPTO_APPLICATION",
+        for category, table_name in (
+            ("GENERAL_RESEARCH", "projects"),
+            ("SECURITY_CONFIDENTIALITY", "security_projects"),
+            ("CRYPTO_APPLICATION", "crypto_projects"),
         ):
-            connection.execute(
+            registry_id = connection.scalar(
                 registry.insert().values(
                     category=category,
                     business_id=f"{category}-{marker}",
                     proposal_id=proposal_id if category == "GENERAL_RESEARCH" else None,
+                ).returning(registry.c.id)
+            )
+            # These committed contract samples also participate in whole-database backup checks.
+            category_table = sa.Table(table_name, metadata, autoload_with=connection)
+            connection.execute(
+                category_table.insert().values(
+                    project_id=f"{category}-{marker}", registry_id=registry_id,
+                    name="数据库契约样例项目", leader="张老师", status="任务下达",
                 )
             )
 

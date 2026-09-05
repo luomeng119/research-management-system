@@ -10,7 +10,7 @@ for t12_name in MIGRATION_DATABASE_URL DATABASE_URL \
   fi
 done
 
-for t12_command in curl node; do
+for t12_command in curl node pg_dump; do
   if ! command -v "$t12_command" >/dev/null 2>&1; then
     echo "required acceptance command is unavailable: $t12_command" >&2
     exit 69
@@ -194,6 +194,22 @@ t12_password=""
   --expected "$t12_browser_result" --output "$t12_evidence_root/journey-persistence.json"
 
 stop_t12_waitress
+
+# Snapshot only after the owned service is stopped: database and file writes are quiescent.
+t12_backup_root="$t12_evidence_root/backup"
+mkdir -m 700 "$t12_backup_root"
+cp -R "$t12_runtime_root" "$t12_backup_root/payload"
+env -i PATH="$PATH" PYTHONPATH="$PYTHONPATH" \
+  PGHOST=127.0.0.1 PGPORT="$T02_ISOLATED_POSTGRES_PORT" \
+  PGDATABASE="$T02_ISOLATED_POSTGRES_DATABASE" \
+  PGUSER="rm_v1_t02_migration_$T02_ISOLATED_POSTGRES_PORT" \
+  DATABASE_URL="$MIGRATION_DATABASE_URL" \
+  "$t12_python" scripts/verify_offline.py snapshot \
+  --data-root "$t12_runtime_root" --package-root "$t12_backup_root" \
+  --output "$t12_backup_root/manifest.json" \
+  --pg-dump-exe "$(command -v pg_dump)" --dump-output "$t12_backup_root/database.dump"
+"$t12_python" scripts/verify_offline.py verify-package \
+  --package-root "$t12_backup_root" --manifest "$t12_backup_root/manifest.json"
 
 echo "POSIX production-chain acceptance passed: PostgreSQL + Waitress + Chromium"
 echo "Evidence retained at: $t12_evidence_root"
