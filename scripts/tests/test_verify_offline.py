@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -12,6 +14,38 @@ import sqlalchemy as sa
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "verify_offline.py"
+
+
+@pytest.mark.skipif(not os.environ.get("T02_ISOLATED_POSTGRES_ROOT"), reason="requires owned PostgreSQL harness")
+def test_real_dump_uses_snapshot_database_despite_conflicting_pg_environment(tmp_path, monkeypatch):
+    """Catches pg_dump connecting via stale shell PG* instead of the snapshot engine."""
+    module = _load_module()
+    engine = sa.create_engine(os.environ["DATABASE_URL"])
+    try:
+        with engine.connect() as connection:
+            database, port = connection.execute(sa.text(
+                "SELECT current_database(), inet_server_port()"
+            )).one()
+        assert database == os.environ["T02_ISOLATED_POSTGRES_DATABASE"]
+        assert port == int(os.environ["T02_ISOLATED_POSTGRES_PORT"])
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        package = tmp_path / "package"
+        shutil.copytree(runtime, package / "payload")
+        monkeypatch.setenv("PGHOST", "127.0.0.1")
+        monkeypatch.setenv("PGPORT", "9")
+        monkeypatch.setenv("PGDATABASE", "wrong_backup_database")
+        monkeypatch.setenv("PGUSER", "wrong_backup_user")
+        dump = package / "database.dump"
+        manifest = module.create_consistent_postgres_backup(
+            engine, runtime, package, package / "manifest.json", Path(shutil.which("pg_dump")), dump,
+        )
+        module.verify_package(package, manifest)
+        listed = subprocess.run([shutil.which("pg_restore"), "--list", str(dump)], capture_output=True, text=True, check=True)
+        assert "TABLE DATA public proposals" in listed.stdout
+        assert manifest["database"]["relations"]["project_registry_to_category_table"] == 0
+    finally:
+        engine.dispose()
 
 
 def _load_module():
@@ -332,6 +366,7 @@ def test_postgres_backup_manifest_uses_the_connection_that_exported_the_dump_sna
 
     class Engine:
         dialect = SimpleNamespace(name="postgresql")
+        url = sa.engine.make_url("postgresql://backup@127.0.0.1/owned_backup")
 
         def connect(self):
             return ConnectionContext(connection)
@@ -342,7 +377,7 @@ def test_postgres_backup_manifest_uses_the_connection_that_exported_the_dump_sna
         observed["connection"] = connection
         return {"sameSnapshot": True}
 
-    def run(command, check):
+    def run(command, check, env):
         observed["command"] = command
         observed["check"] = check
         return SimpleNamespace(returncode=0)

@@ -486,6 +486,16 @@ def create_consistent_postgres_backup(
 ) -> dict[str, object]:
     if engine.dialect.name != "postgresql":
         raise VerificationError("exported backup snapshots require PostgreSQL")
+    url = engine.url
+    if not url.host or not url.username or not url.database or url.query:
+        raise VerificationError("backup requires an explicit PostgreSQL host, user and database without query parameters")
+    # Do not let shell PGHOST/PGSERVICE/PGHOSTADDR redirect pg_dump away from the snapshot.
+    dump_environment = {key: value for key, value in os.environ.items() if not key.upper().startswith("PG")}
+    dump_environment.update({
+        "PGHOST": url.host, "PGPORT": str(url.port or 5432),
+        "PGUSER": url.username, "PGDATABASE": url.database,
+        "PGPASSWORD": str(url.password or ""),
+    })
     dump_output = Path(dump_output).absolute()
     dump_output.parent.mkdir(parents=True, exist_ok=True)
     with engine.connect() as connection:
@@ -500,6 +510,7 @@ def create_consistent_postgres_backup(
             completed = subprocess.run(
                 postgres_dump_command(pg_dump_exe, dump_output, snapshot_id),
                 check=False,
+                env=dump_environment,
             )
             if completed.returncode != 0:
                 raise VerificationError(
