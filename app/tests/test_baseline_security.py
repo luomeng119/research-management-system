@@ -127,6 +127,73 @@ def test_test_and_bare_upload_routes_are_not_registered(app_factory):
     assert "/uploads/<path:filename>" not in rules
 
 
+@pytest.mark.parametrize("path_kind", ["absolute", "relative", "encoded", "symlink"])
+def test_argumentation_download_cannot_escape_document_directory(app_factory, tmp_path, path_kind):
+    app = app_factory()
+    private = tmp_path / "private.txt"
+    private.write_text("not-a-business-document", encoding="utf-8")
+    document_dir = tmp_path / "data" / "documents"
+    document_dir.mkdir(parents=True)
+    link = document_dir / "linked.docx"
+    link.symlink_to(private)
+    path = {
+        "absolute": str(private),
+        "relative": "../private.txt",
+        "encoded": "%2e%2e%2fprivate.txt",
+        "symlink": "data/documents/linked.docx",
+    }[path_kind]
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["user"] = "zhanglaoshi"
+    response = client.get("/argumentation/download", query_string={"path": path})
+    assert response.status_code in (400, 404)
+    assert b"not-a-business-document" not in response.data
+    assert str(tmp_path).encode() not in response.data
+
+
+def test_argumentation_download_retains_generated_document(app_factory, tmp_path):
+    app = app_factory()
+    document_dir = tmp_path / "data" / "documents"
+    document_dir.mkdir(parents=True)
+    document = document_dir / "科研方案.docx"
+    document.write_bytes(b"generated-document-test-fixture")
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["user"] = "zhanglaoshi"
+    response = client.get("/argumentation/download", query_string={"path": "data/documents/科研方案.docx"})
+    assert response.status_code == 200
+    assert response.data == b"generated-document-test-fixture"
+
+
+def test_argumentation_generate_download_uses_safe_web_reference(app_factory, tmp_path):
+    import io
+    from docx import Document
+
+    app = app_factory()
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session["user"] = "zhanglaoshi"
+    response = client.post("/argumentation/generate_word", json={
+        "project_name": "../科研方案", "category": "research",
+        "template": [{"id": "background", "title": "研究背景"}],
+        "content": {"background": "已有实验材料"},
+    })
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    reference = payload["word_path"]
+    assert reference.startswith("data/documents/")
+    assert ".." not in reference
+    assert "\\" not in reference
+    assert reference.count("/") == 2
+    download = client.get("/argumentation/download", query_string={"path": reference})
+    assert download.status_code == 200
+    content = Document(io.BytesIO(download.data))
+    assert content.paragraphs[0].text == "../科研方案"
+    assert content.paragraphs[-1].text == "已有实验材料"
+    assert len(list((tmp_path / "data" / "documents").glob("*.docx"))) == 1
+
+
 def test_critical_existing_business_urls_remain_registered(app_factory):
     app = app_factory()
     rules = {rule.rule for rule in app.url_map.iter_rules()}

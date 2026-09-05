@@ -3,7 +3,7 @@
 方案论证模块 - 路由
 """
 import os
-import urllib
+from pathlib import Path
 from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for, send_file
 from flask import current_app
 import json
@@ -334,7 +334,7 @@ def generate_word():
             return jsonify({'success': False, 'message': '参数不完整'})
         
         # 文件名
-        word_filename = f"{project_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}.docx"
+        word_filename = f"论证方案-{uuid.uuid4().hex}.docx"
         word_dir = os.path.join(current_app.config.get('DATA_DIR', 'data'), 'documents')
         os.makedirs(word_dir, exist_ok=True)
         word_path = os.path.join(word_dir, word_filename)
@@ -375,7 +375,7 @@ def generate_word():
         doc.save(word_path)
         
         # 返回相对路径
-        relative_path = os.path.join('data/documents', word_filename)
+        relative_path = f'data/documents/{word_filename}'
         
         return jsonify({
             'success': True, 
@@ -524,17 +524,22 @@ def download_word():
     if not filepath:
         return "缺少文件路径", 400
     
-    # 转换为绝对路径
-    data_dir = current_app.config.get('DATA_DIR', 'data')
-    # 去掉 URL 编码的目录前缀
-    if 'data/documents/' in filepath:
-        filename = filepath.split('/')[-1]
-        filepath = os.path.join(data_dir, 'documents', filename)
-    elif not filepath.startswith('/'):
-        filepath = os.path.join(data_dir, filepath)
-    
-    filepath = urllib.parse.unquote(filepath)
-    if not os.path.exists(filepath):
-        return "文件不存在: " + filepath, 404
-    
-    return send_file(filepath, as_attachment=True)
+    # Only accept the legacy reference emitted by generate_word, never an OS path.
+    prefix = 'data/documents/'
+    if not filepath.startswith(prefix):
+        return "非法文档引用", 400
+    filename = filepath[len(prefix):]
+    if (not filename or any(part in filename for part in ('/', '\\', '\x00', '%'))
+            or Path(filename).suffix.lower() not in {'.docx', '.doc'}):
+        return "非法文档引用", 400
+    data_root = Path(current_app.config['DATA_DIR']).resolve()
+    document_root = data_root / 'documents'
+    candidate = document_root / filename
+    try:
+        if (document_root.is_symlink() or candidate.is_symlink()
+                or candidate.resolve().parent != document_root
+                or not candidate.is_file()):
+            return "文件不存在", 404
+    except (OSError, ValueError):
+        return "文件不存在", 404
+    return send_file(candidate, as_attachment=True)
