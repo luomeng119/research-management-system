@@ -143,9 +143,9 @@
                             <span class="badge bg-success">设备清单</span>
                             {% endif %}
                         </h5>
-                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="editChapter('{{ chapter.id }}')">
+                        {% if not is_version_view %}<button type="button" class="btn btn-outline-primary btn-sm" onclick="editChapter('{{ chapter.id }}')">
                             <i class="bi bi-pencil"></i> 编辑章节
-                        </button>
+                        </button>{% endif %}
                     </div>
                     
                     {% if chapter.children %}
@@ -165,9 +165,9 @@
                         {% if chapter.type == 'device_list' %}
                         <!-- 设备清单 -->
                         <div class="device-list-selector">
-                            <button type="button" class="btn btn-outline-success btn-sm mb-2" onclick="selectDevicesForList('{{ chapter.id }}')">
+                            {% if not is_version_view %}<button type="button" class="btn btn-outline-success btn-sm mb-2" onclick="selectDevicesForList('{{ chapter.id }}')">
                                 <i class="bi bi-plus-circle"></i> 添加设备到清单
-                            </button>
+                            </button>{% endif %}
                             <input type="hidden" name="device_list_{{ chapter.id }}" id="device_list_{{ chapter.id }}">
                             <div id="device_list_content_{{ chapter.id }}" class="mt-2"></div>
                         </div>
@@ -175,7 +175,7 @@
                         <!-- 设备引用 - 自动从项目设备选型获取 -->
                         <div class="device-ref-auto" data-chapter="{{ chapter.id }}">
                             <input type="hidden" name="device_ref_{{ chapter.id }}" id="device_ref_{{ chapter.id }}">
-                            <button type="button" class="btn btn-outline-primary btn-sm" onclick="selectDevice('{{ chapter.id }}')">选择设备</button>
+                            {% if not is_version_view %}<button type="button" class="btn btn-outline-primary btn-sm" onclick="selectDevice('{{ chapter.id }}')">选择设备</button>{% endif %}
                             <div id="device_info_{{ chapter.id }}" class="mt-2"></div>
                         </div>
                         {% else %}
@@ -199,6 +199,7 @@
 </div>
 
 <!-- 设备选择弹窗 -->
+{% if not is_version_view %}
 <div class="modal" id="deviceModal" tabindex="-1">
     <input type="hidden" id="currentDeviceRef" value="">
     <div class="modal-dialog modal-xl">
@@ -233,8 +234,6 @@
                     <table class="table table-bordered table-sm table-striped table-hover">
                         <thead class="table-light"><tr><th style="width:30px;"></th><th>设备名称</th><th>型号</th><th>分类</th><th>形态</th><th>单价(万)</th><th>研制单位</th><th style="width:60px;">操作</th></tr></thead>
                         <tbody id="selectedDevicesBody"></tbody>
-                    </table>
-                </div>
                     </table>
                 </div>
                 <!-- 待选设备列表 - 表格风格 -->
@@ -353,12 +352,60 @@
     </div>
 </div>
 
+{% endif %}
 <script src="/static/quill/quill.min.js"></script>
 <script>
 // 全局变量
 var editors = {};
 var templateContent = {{ (template_content | tojson | safe) }};
 var savedContent = {{ saved_content | tojson }};
+var equipmentRecords = {{ equipment_list | tojson }};
+
+function renderSavedDevices(input) {
+    var isList = input.name.startsWith('device_list_');
+    var chapter = input.name.slice(isList ? 12 : 11);
+    var target = document.getElementById((isList ? 'device_list_content_' : 'device_info_') + chapter);
+    if (!target) return;
+    target.replaceChildren();
+    var body = target;
+    if (isList && input.value) {
+        var table = document.createElement('table');
+        table.className = 'table table-sm';
+        var head = table.createTHead().insertRow();
+        ['设备名称', '型号', '技术指标', '技术状态', '研制单位'].forEach(function(label) {
+            var cell = document.createElement('th');
+            cell.textContent = label;
+            head.appendChild(cell);
+        });
+        body = table.createTBody();
+        target.appendChild(table);
+    }
+    input.value.split(',').filter(Boolean).forEach(function(id) {
+        var equipment = equipmentRecords.find(function(item) { return String(item.id) === id; });
+        if (isList) {
+            var cells = equipment
+                ? [equipment.name || id, equipment.model, equipment.tech_index, equipment.tech_status, equipment.manufacturer]
+                : ['设备已不可用（ID：' + id + '）', '', '', '', ''];
+            var tableRow = body.insertRow();
+            cells.forEach(function(value) { tableRow.insertCell().textContent = value || '-'; });
+            return;
+        }
+        var row = document.createElement('div');
+        row.textContent = equipment
+            ? (equipment.name || id) + '（' + (equipment.model || '未登记型号') + '）'
+            : '设备已不可用（ID：' + id + '）';
+        target.appendChild(row);
+    });
+}
+
+function restoreDeviceFields() {
+    document.querySelectorAll('[name^="device_ref_"], [name^="device_list_"]').forEach(function(input) {
+        if (Object.prototype.hasOwnProperty.call(savedContent, input.name)) {
+            input.value = typeof savedContent[input.name] === 'string' ? savedContent[input.name] : '';
+        }
+        renderSavedDevices(input);
+    });
+}
 var templateVersion = {{ template_version | tojson }};
 var templateIdentity = {{ template_id | tojson }};
 var isVersionView = {{ is_version_view | tojson }};
@@ -395,13 +442,14 @@ function initDeviceRefAuto() {
 
 document.addEventListener('DOMContentLoaded', function() {
     // 初始化设备过滤（确保在页面加载时就运行）
-    initDeviceFilter();
+    if (!isVersionView) initDeviceFilter();
     
     // 自动填充设备引用
-    initDeviceRefAuto();
+    if (!isVersionView) initDeviceRefAuto();
     
     // 初始化所有文本编辑器
     initEditors();
+    restoreDeviceFields();
 });
 
 
@@ -524,10 +572,7 @@ function selectDeviceConfirm2() {
     
     // 隐藏弹窗 - 先移除焦点
     document.activeElement.blur();
-    document.getElementById('deviceModal').style.display = 'none';
-    document.getElementById('deviceModal').setAttribute('aria-hidden', 'true');
-    document.body.classList.remove('modal-open');
-    document.body.style.overflow = '';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('deviceModal')).hide();
     
     // 保存设备ID（多ID用逗号分隔）
     var refInput = document.getElementById('device_ref_' + refId);
@@ -596,16 +641,12 @@ function confirmSave() {
     
     // 收集所有设备引用
     document.querySelectorAll('[name^="device_ref_"]').forEach(function(el) {
-        if (el.value) {
-            content[el.name] = el.value;
-        }
+        content[el.name] = el.value;
     });
     
     // 收集所有设备清单
     document.querySelectorAll('[name^="device_list_"]').forEach(function(el) {
-        if (el.value) {
-            content[el.name] = el.value;
-        }
+        content[el.name] = el.value;
     });
     
     var changeNote = document.getElementById('changeNote').value;
@@ -726,7 +767,7 @@ function initEditors() {
             theme: 'snow',
             placeholder: '请输入内容...',
             modules: {
-                toolbar: [
+                toolbar: isVersionView ? false : [
                     ['bold', 'italic', 'underline', 'strike'],
                     [{ 'list': 'ordered'}, { 'list': 'bullet' }],
                     [{ 'header': [1, 2, 3, false] }],

@@ -125,7 +125,7 @@ def _editor_context(category, project, document, *, version=None):
         for item in [chapter, *chapter.get('children', [])]:
             if 'content' in item:
                 template_content[item['id']] = item['content']
-    equipment = get_equipment() if version is None else []
+    equipment = get_equipment()
     return dict(
         category=category,
         category_name={'research': '科研项目', 'security': '安全保密项目', 'crypto': '密码应用项目'}[category],
