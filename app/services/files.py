@@ -809,6 +809,8 @@ class FileService:
                         request_id=request_id, started=started,
                     )
                     return {"fileId": file_id, "status": "ARCHIVED"}
+                if self.repository.has_multiple_links(connection, file_id=file_id):
+                    raise FileServiceError("FILE_SHARED", "文件被多处引用，不能单独归档", 409)
                 if not self.repository.archive_file(
                     connection,
                     file_id=file_id,

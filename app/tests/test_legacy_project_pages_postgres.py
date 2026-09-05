@@ -461,11 +461,18 @@ fields.renameForm.onsubmit({preventDefault() {}});
                     "expectedFileId": files[0]["fileId"],
                 }, headers={"X-CSRF-Token": csrf})
                 assert shared.status_code == 409 and shared.json["code"] == "FILE_SHARED"
+                with pytest.raises(FileServiceError) as shared_archive:
+                    service.archive(files[0]["fileId"], object_type="PROJECT", object_id=project["businessId"],
+                                    actor_user_id=user_id, request_id="shared-archive-must-not-change")
+                assert shared_archive.value.code == "FILE_SHARED" and shared_archive.value.status_code == 409
                 for business_id in (project["businessId"], other["businessId"]):
                     retained = service.list_project_paths(business_id)
                     assert [(row["path"], row["name"], row["versionNo"]) for row in retained] == [
                         ("任务输入文件/renamed.txt", "renamed.txt", 2),
                     ]
+                    content = client.get(f"/api/files/{files[0]['fileId']}/versions/2/download",
+                                         query_string={"objectType": "PROJECT", "objectId": business_id})
+                    assert content.status_code == 200 and content.data == b"second revision"
                 reverse_file = service.upload_project_path(
                     io.BytesIO(b"reverse ordering bytes"), original_name="before.txt", folder="任务输入文件",
                     project_id=project["businessId"], actor_user_id=user_id, request_id="reverse-upload",
