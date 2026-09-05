@@ -56,9 +56,10 @@ def get_all_templates():
     return _repository().get_all_templates()
 
 
-def save_template(template_id, name, category, file_path, chapter_tree):
+def save_template(template_id, name, category, file_path, chapter_tree, *, expected_version=None, expected_template_id=None):
     return _repository().save_template(
-        template_id, name, category, file_path, chapter_tree
+        template_id, name, category, file_path, chapter_tree, expected_version=expected_version,
+        expected_template_id=expected_template_id,
     )
 
 

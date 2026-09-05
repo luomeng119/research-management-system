@@ -123,6 +123,8 @@
 
 <script>
 var templateData = {{ template_data | tojson }};
+var templateVersion = {{ template_version | tojson }};
+var templateIdentity = {{ template_id | tojson }};
 
 function showTemplateModal() {
     var modal = new bootstrap.Modal(document.getElementById('templateModal'));
@@ -171,6 +173,7 @@ function saveChapterTree() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             category: '{{ category }}',
+            expected_template_id: templateIdentity, expected_version: templateVersion,
             chapter_tree: JSON.stringify(templateData)
         })
     })
@@ -185,6 +188,8 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
     e.preventDefault();
     var formData = new FormData(this);
     formData.append('category', '{{ category }}');
+    formData.set('expected_version', String(templateVersion));
+    formData.set('expected_template_id', templateIdentity || '');
     
     fetch('/argumentation/template/upload', {
         method: 'POST',

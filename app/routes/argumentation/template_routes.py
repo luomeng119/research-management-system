@@ -4,6 +4,7 @@
 """
 from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for
 import json
+from app.repositories.argumentation import ArgumentationConflict
 
 # 导入模型
 from app.models_argumentation import (
@@ -13,6 +14,11 @@ from app.models_argumentation import (
 )
 
 template_bp = Blueprint('template', __name__, url_prefix='/template')
+
+
+@template_bp.errorhandler(ArgumentationConflict)
+def stale_template(error):
+    return jsonify({'success': False, 'message': str(error)}), 409
 
 
 @template_bp.errorhandler(ValueError)
@@ -81,7 +87,9 @@ def edit(category):
     return render_template('template/edit.html',
                         category=category,
                         category_name=category_names.get(category, category),
-                        template_data=template_data)
+                        template_data=template_data,
+                        template_version=template['version'] if template else 0,
+                        template_id=template['template_id'] if template else None)
 
 
 @template_bp.route('/api/save', methods=['POST'])
@@ -102,9 +110,14 @@ def api_save():
     template_id = f'{category}_v1'
     chapter_tree = json.dumps(template_data, ensure_ascii=False)
     
-    save_template(template_id, template_data.get('name', ''), category, '', chapter_tree)
+    existing = get_template_by_category(category)
+    version = save_template(existing['template_id'] if existing else template_id,
+                            template_data.get('name', ''), category, None, chapter_tree,
+                            expected_version=data.get('expected_version'),
+                            expected_template_id=data.get('expected_template_id'))
     
-    return jsonify({'success': True, 'message': '模板保存成功'})
+    return jsonify({'success': True, 'message': '模板保存成功', 'version': version,
+                    'template_id': existing['template_id'] if existing else template_id})
 
 
 @template_bp.route('/api/get/<category>')
@@ -123,4 +136,5 @@ def api_get(category):
     else:
         template_data = {'chapters': []}
     
-    return jsonify({'success': True, 'template': template_data})
+    return jsonify({'success': True, 'template': template_data, 'version': template['version'] if template else 0,
+                    'template_id': template['template_id'] if template else None})

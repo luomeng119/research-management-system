@@ -359,6 +359,8 @@
 var editors = {};
 var templateContent = {{ (template_content | tojson | safe) }};
 var savedContent = {{ saved_content | tojson }};
+var templateVersion = {{ template_version | tojson }};
+var templateIdentity = {{ template_id | tojson }};
 var isVersionView = {{ is_version_view | tojson }};
 var currentDeviceRef = null;
 var currentDeviceList = null;
@@ -919,12 +921,14 @@ function saveAsTemplate() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             category: '{{ category }}',
-            chapter_tree: JSON.stringify(templateData)
+            chapter_tree: JSON.stringify(templateData),
+            expected_template_id: templateIdentity, expected_version: templateVersion
         })
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
         alert(data.message || '模板保存成功');
+        if (data.success) { templateVersion = data.version; templateIdentity = data.template_id; }
     })
     .catch(function(err) {
         alert('保存失败: ' + err);

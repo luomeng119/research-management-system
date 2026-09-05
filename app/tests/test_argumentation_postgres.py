@@ -17,6 +17,128 @@ from app import create_app
 from app.security.auth import hash_password
 
 
+def template_version(client, category='research'):
+    if category not in {'research', 'crypto', 'security'}:
+        return 0
+    return client.get(f'/template/api/get/{category}').json['version']
+
+
+def template_identity(client, category='research'):
+    if category not in {'research', 'crypto', 'security'}:
+        return ''
+    return client.get(f'/template/api/get/{category}').json['template_id'] or ''
+
+
+def test_template_version_cannot_target_another_template(argumentation_runtime):
+    _, client, headers, engine, _ = argumentation_runtime
+    first, second = f'a-{uuid.uuid4().hex}', f'b-{uuid.uuid4().hex}'
+    with engine.begin() as connection:
+        for template_id in [first, second]:
+            connection.execute(sa.text(
+                "INSERT INTO doc_templates(template_id,name,category,version,chapter_tree) "
+                "VALUES (:id,:id,'security',1000,'{\"chapters\": []}'::jsonb)"
+            ), {'id': template_id})
+    response = client.post('/template/api/save', headers=headers, json={
+        'category': 'security', 'expected_version': 1000, 'expected_template_id': first,
+        'template_data': {'chapters': [{'id': 'x', 'title': '不可写入另一个模板'}]},
+    })
+    assert response.status_code == 409
+    with engine.connect() as connection:
+        assert connection.execute(sa.text(
+            'SELECT version FROM doc_templates WHERE template_id=:id'
+        ), {'id': second}).scalar_one() == 1000
+    with engine.begin() as connection:
+        connection.execute(sa.text('DELETE FROM doc_templates WHERE template_id IN (:a,:b)'),
+                           {'a': first, 'b': second})
+
+
+@pytest.mark.parametrize('initial_version', [0, 1])
+def test_template_simultaneous_writers_have_one_winner(argumentation_runtime, initial_version):
+    from app.repositories.argumentation import ArgumentationConflict, ArgumentationRepository
+
+    _, _, _, engine, _ = argumentation_runtime
+    repository = ArgumentationRepository(engine)
+    template_id = f'concurrent-{uuid.uuid4().hex}'
+    if initial_version:
+        repository.save_template(template_id, 'initial', 'research', None,
+                                 {'chapters': []}, expected_version=0)
+    barrier = Barrier(2)
+
+    def save(name):
+        barrier.wait(timeout=10)
+        try:
+            version = repository.save_template(template_id, name, 'research', None,
+                                               {'chapters': [{'id': 'a', 'title': name}]},
+                                               expected_version=initial_version, expected_template_id=template_id)
+            return name, version
+        except ArgumentationConflict:
+            return name, None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(save, ['first', 'second']))
+    winners = [(name, version) for name, version in outcomes if version is not None]
+    assert len(winners) == 1
+    assert winners[0][1] == initial_version + 1
+    with engine.connect() as connection:
+        row = connection.execute(sa.text(
+            'SELECT name, version, chapter_tree FROM doc_templates WHERE template_id=:id'
+        ), {'id': template_id}).one()
+    assert row.name == winners[0][0]
+    assert row.version == initial_version + 1
+    assert row.chapter_tree['chapters'][0]['title'] == winners[0][0]
+    with engine.begin() as connection:
+        connection.execute(sa.text('DELETE FROM doc_templates WHERE template_id=:id'), {'id': template_id})
+
+
+def test_stale_template_upload_preserves_existing_file(argumentation_runtime):
+    from docx import Document
+
+    app, client, headers, engine, _ = argumentation_runtime
+    version = template_version(client)
+
+    def upload(expected):
+        content = io.BytesIO()
+        Document().save(content)
+        content.seek(0)
+        return client.post('/argumentation/template/upload', headers=headers, data={
+            'category': 'research', 'expected_version': expected, 'expected_template_id': template_identity(client),
+            'file': (content, 'template.docx'),
+        })
+
+    assert upload(version).status_code == 200
+    root = Path(app.config['DATA_DIR']) / 'templates'
+    before = {p: p.read_bytes() for p in root.iterdir()}
+    assert upload(version).status_code == 409
+    assert {p: p.read_bytes() for p in root.iterdir()} == before
+    current = template_version(client)
+    assert client.post('/template/api/save', headers=headers, json={
+        'category': 'research', 'template_data': {'chapters': []}, 'expected_version': current, 'expected_template_id': template_identity(client),
+    }).status_code == 200
+    with engine.connect() as connection:
+        path = connection.execute(sa.text(
+            "SELECT file_path FROM doc_templates WHERE template_id='research_v1'"
+        )).scalar_one()
+    assert Path(path) in before
+    assert Path(path).read_bytes() == before[Path(path)]
+
+
+@pytest.mark.parametrize('endpoint', ['/template/api/save', '/argumentation/template/edit'])
+def test_template_stale_editor_is_rejected(argumentation_runtime, endpoint):
+    _, client, headers, _, _ = argumentation_runtime
+    version = client.get('/template/api/get/research').json.get('version', 0)
+    first = {'chapters': [{'id': 'saved', 'title': '先保存的内容'}]}
+    assert client.post('/template/api/save', headers=headers, json={
+        'category': 'research', 'template_data': first, 'expected_version': version, 'expected_template_id': template_identity(client),
+    }).status_code == 200
+    response = client.post(endpoint, headers=headers, json={
+        'category': 'research', 'template_data': {'chapters': []},
+        'chapter_tree': json.dumps({'chapters': []}), 'expected_version': version, 'expected_template_id': template_identity(client),
+    })
+    assert response.status_code == 409
+    assert response.json['success'] is False
+    assert client.get('/template/api/get/research').json['template'] == first
+
+
 def test_template_upload_rejects_symlink_directory(argumentation_runtime, tmp_path):
     from docx import Document
 
@@ -34,7 +156,7 @@ def test_template_upload_rejects_symlink_directory(argumentation_runtime, tmp_pa
     content.seek(0)
     response = client.post(
         "/argumentation/template/upload",
-        data={"category": "research", "file": (content, "template.docx")},
+        data={"category": "research", "expected_version": template_version(client), "expected_template_id": template_identity(client), "file": (content, "template.docx")},
         headers=headers,
     )
     assert response.status_code == 500
@@ -55,7 +177,7 @@ def test_template_upload_rejects_forged_docx_without_persistence(argumentation_r
         )).all()
     response = client.post(
         "/argumentation/template/upload",
-        data={"category": "research", "file": (io.BytesIO(b"not a Word document"), "fake.docx")},
+        data={"category": "research", "expected_version": template_version(client), "expected_template_id": template_identity(client), "file": (io.BytesIO(b"not a Word document"), "fake.docx")},
         headers=headers,
     )
     assert response.status_code == 415
@@ -81,14 +203,14 @@ def test_template_database_failure_removes_only_new_upload(argumentation_runtime
     content.seek(0)
 
     def fail_insert(conn, cursor, statement, parameters, context, many):
-        if statement.lstrip().upper().startswith("INSERT INTO DOC_TEMPLATES"):
+        if statement.lstrip().upper().startswith(("INSERT INTO DOC_TEMPLATES", "UPDATE DOC_TEMPLATES")):
             raise RuntimeError("injected template persistence failure")
 
     sa.event.listen(engine, "before_cursor_execute", fail_insert)
     try:
         response = client.post(
             "/argumentation/template/upload",
-            data={"category": "research", "file": (content, "template.docx")},
+            data={"category": "research", "expected_version": template_version(client), "expected_template_id": template_identity(client), "file": (content, "template.docx")},
             headers=headers,
         )
     finally:
@@ -105,14 +227,14 @@ def test_template_upload_preserves_existing_chapters(argumentation_runtime):
     _, client, headers, _, _ = argumentation_runtime
     tree = {"name": "已有模板", "chapters": [{"id": "existing", "title": "已有研究内容"}]}
     assert client.post("/template/api/save", headers=headers, json={
-        "category": "research", "template_data": tree,
+        "category": "research", "template_data": tree, "expected_version": template_version(client), "expected_template_id": template_identity(client),
     }).json["success"] is True
     content = io.BytesIO()
     Document().save(content)
     content.seek(0)
     response = client.post(
         "/argumentation/template/upload",
-        data={"category": "research", "file": (content, "template.docx")},
+        data={"category": "research", "expected_version": template_version(client), "expected_template_id": template_identity(client), "file": (content, "template.docx")},
         headers=headers,
     )
     assert response.status_code == 200
@@ -131,7 +253,7 @@ def test_template_upload_rejects_category_before_file_write(argumentation_runtim
         )).all()
     response = client.post(
         "/argumentation/template/upload",
-        data={"category": category, "file": (io.BytesIO(b"test"), "template.docx")},
+        data={"category": category, "expected_version": template_version(client, category), "expected_template_id": template_identity(client, category), "file": (io.BytesIO(b"test"), "template.docx")},
         headers=headers,
     )
     assert response.status_code == 400
@@ -156,7 +278,7 @@ def test_template_upload_accepts_existing_category_values(argumentation_runtime,
     content.seek(0)
     response = client.post(
         "/argumentation/template/upload",
-        data={"category": category, "file": (content, "template.docx")},
+        data={"category": category, "expected_version": template_version(client, category), "expected_template_id": template_identity(client, category), "file": (content, "template.docx")},
         headers=headers,
     )
     assert response.status_code == 200
@@ -244,7 +366,7 @@ def test_template_editor_persists_to_postgres_without_sqlite(argumentation_runti
         "/template/api/save",
         json={
             "category": "research",
-            "template_data": tree,
+            "template_data": tree, "expected_version": template_version(client), "expected_template_id": template_identity(client),
         },
         headers=headers,
     )
@@ -411,7 +533,7 @@ def test_invalid_template_structure_does_not_replace_saved_template(
         "/template/api/save",
         json={
             "category": "research",
-            "template_data": tree,
+            "template_data": tree, "expected_version": template_version(client), "expected_template_id": template_identity(client),
         },
         headers=headers,
     )

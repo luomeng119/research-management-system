@@ -27,6 +27,16 @@ from app.services.files import FileServiceError
 
 argumentation_bp = Blueprint('argumentation', __name__)
 
+
+@argumentation_bp.errorhandler(ArgumentationConflict)
+def template_conflict(error):
+    return jsonify({'success': False, 'message': str(error)}), 409
+
+
+@argumentation_bp.errorhandler(ValueError)
+def invalid_argumentation(error):
+    return jsonify({'success': False, 'message': str(error)}), 400
+
 # 板块分类
 CATEGORIES = {
     '科研项目': 'research',
@@ -86,9 +96,10 @@ def init_template_data():
             ]
         }
         
-        save_template(sample_template['template_id'], sample_template['name'], cat, '', json.dumps(sample_template, ensure_ascii=False))
-def _template_data(category):
-    stored = get_template_by_category(category)
+        save_template(sample_template['template_id'], sample_template['name'], cat, '', json.dumps(sample_template, ensure_ascii=False), expected_version=0)
+def _template_data(category, stored=...):
+    if stored is ...:
+        stored = get_template_by_category(category)
     if stored and stored.get('chapter_tree'):
         return json.loads(stored['chapter_tree'])
     return {'chapters': [
@@ -106,7 +117,8 @@ def _template_data(category):
 
 
 def _editor_context(category, project, document, *, version=None):
-    template_data = _template_data(category)
+    stored_template = get_template_by_category(category)
+    template_data = _template_data(category, stored_template)
     content = json.loads(document['content']) if document and document.get('content') else {}
     template_content = {}
     for chapter in template_data.get('chapters', []):
@@ -118,6 +130,8 @@ def _editor_context(category, project, document, *, version=None):
         category=category,
         category_name={'research': '科研项目', 'security': '安全保密项目', 'crypto': '密码应用项目'}[category],
         project=project, template=template_data, template_data=template_data,
+        template_version=stored_template['version'] if stored_template else 0,
+        template_id=stored_template['template_id'] if stored_template else None,
         template_content=template_content, document=document, saved_content=content,
         equipment_list=equipment,
         categories=sorted({item['category'] for item in equipment if item.get('category')}),
@@ -139,7 +153,9 @@ def index(category):
     return render_template(
         'argumentation/index.html', category=category,
         category_name={'research': '科研项目', 'crypto': '密码应用项目', 'security': '安全保密项目'}[category],
-        projects=projects, template=template, template_data=_template_data(category),
+        projects=projects, template=template, template_data=_template_data(category, template),
+        template_version=template['version'] if template else 0,
+        template_id=template['template_id'] if template else None,
     )
 
 
@@ -310,6 +326,10 @@ def upload_template():
 
     if category not in CATEGORIES.values():
         return jsonify({'success': False, 'message': '请选择有效板块'}), 400
+    expected = request.form.get('expected_version', '')
+    if not expected.isascii() or not expected.isdecimal():
+        raise ValueError('请刷新模板后再上传：缺少有效版本')
+    expected_version = int(expected)
     
     if file.filename == '':
         return jsonify({'success': False, 'message': '请选择文件'})
@@ -340,23 +360,30 @@ def upload_template():
     file_path = upload_dir / f"{uuid.uuid4().hex}.docx"
     
     # 上传替换源文件，不清空已编辑章节，也不冒充自动解析 Word。
-    chapter_tree = json.dumps(_template_data(category), ensure_ascii=False)
+    existing = get_template_by_category(category)
+    chapter_tree = json.dumps(_template_data(category, existing), ensure_ascii=False)
     
     # 保存模板
-    template_id = f"{category}_v1"
+    template_id = existing['template_id'] if existing else f"{category}_v1"
     created = False
     try:
         with file_path.open('xb') as destination:
             created = True
             shutil.copyfileobj(file.stream, destination)
-        save_template(template_id, name, category, str(file_path), chapter_tree)
+        version = save_template(template_id, name, category, str(file_path), chapter_tree,
+                                expected_version=expected_version,
+                                expected_template_id=request.form.get('expected_template_id'))
+    except ArgumentationConflict:
+        if created:
+            file_path.unlink(missing_ok=True)
+        raise
     except Exception:
         if created:
             file_path.unlink(missing_ok=True)
         current_app.logger.exception('Template upload persistence failed')
         return jsonify({'success': False, 'message': '模板保存失败，请稍后重试'}), 500
     
-    return jsonify({'success': True, 'message': '模板上传成功'})
+    return jsonify({'success': True, 'message': '模板上传成功', 'version': version, 'template_id': template_id})
 
 
 @argumentation_bp.route('/template/edit', methods=['POST'])
@@ -365,7 +392,9 @@ def edit_template():
     if 'user' not in session:
         return jsonify({'success': False, 'message': '请先登录'})
     
-    data = request.json
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise ValueError('模板参数格式不正确')
     category = data.get('category')
     chapter_tree = data.get('chapter_tree')
     
@@ -379,12 +408,17 @@ def edit_template():
     
     if existing:
         # 更新
-        save_template(template_id, existing['name'], category, existing['file_path'], chapter_tree)
+        version = save_template(existing['template_id'], existing['name'], category, None, chapter_tree,
+                                expected_version=data.get('expected_version'),
+                                expected_template_id=data.get('expected_template_id'))
     else:
         # 创建新模板
-        save_template(template_id, category_name, category, '', chapter_tree)
+        version = save_template(template_id, category_name, category, None, chapter_tree,
+                                expected_version=data.get('expected_version'),
+                                expected_template_id=data.get('expected_template_id'))
     
-    return jsonify({'success': True, 'message': '模板保存成功'})
+    return jsonify({'success': True, 'message': '模板保存成功', 'version': version,
+                    'template_id': existing['template_id'] if existing else template_id})
 
 
 def init_argumentation_routes(app):

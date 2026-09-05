@@ -12,6 +12,8 @@
   <p id="template-result" role="status" class="mt-3"></p>
 </form>
 <script>
+var templateVersion = {{ template_version | tojson }};
+var templateIdentity = {{ template_id | tojson }};
 document.getElementById('template-editor').addEventListener('submit', async function (event) {
   event.preventDefault();
   var result = document.getElementById('template-result');
@@ -20,9 +22,10 @@ document.getElementById('template-editor').addEventListener('submit', async func
     tree.name = document.getElementById('template-name').value;
     var response = await fetch({{ url_for('template.api_save') | tojson }}, {
       method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': {{ csrf_token() | tojson }}},
-      body: JSON.stringify({category: {{ category | tojson }}, template_data: tree})
+      body: JSON.stringify({category: {{ category | tojson }}, template_data: tree, expected_template_id: templateIdentity, expected_version: templateVersion})
     });
     var data = await response.json();
+    if (response.ok && data.success) { templateVersion = data.version; templateIdentity = data.template_id; }
     result.textContent = data.message || '保存失败，请重试';
   } catch (error) { result.textContent = '未保存：请检查章节 JSON 格式，或稍后重试。'; }
 });

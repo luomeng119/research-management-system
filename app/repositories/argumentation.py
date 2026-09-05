@@ -74,35 +74,36 @@ class ArgumentationRepository:
                 ).mappings()
             ]
 
-    def save_template(self, template_id, name, category, file_path, chapter_tree):
+    def save_template(self, template_id, name, category, file_path, chapter_tree, *, expected_version, expected_template_id=None):
         if isinstance(chapter_tree, str):
             chapter_tree = json.loads(chapter_tree)
         if category not in self.projects or not isinstance(name, str):
             raise ValueError("模板类别或名称不正确")
         self.validate_tree(chapter_tree)
+        if type(expected_version) is not int or expected_version < 0:
+            raise ValueError("请刷新模板后再保存：缺少有效版本")
+        if expected_version > 0 and expected_template_id != template_id:
+            raise ArgumentationConflict("当前模板已变化，请刷新后重试；当前修改尚未保存")
         now = datetime.now(timezone.utc)
-        statement = insert(self.templates).values(
-            template_id=template_id,
-            name=name,
-            category=category,
-            file_path=file_path,
-            chapter_tree=chapter_tree,
-            version=1,
-            created_at=now,
-            updated_at=now,
-        )
-        statement = statement.on_conflict_do_update(
-            index_elements=[self.templates.c.template_id],
-            set_={
-                "name": name,
-                "file_path": file_path,
-                "chapter_tree": chapter_tree,
-                "version": self.templates.c.version + 1,
-                "updated_at": now,
-            },
-        )
+        values = dict(name=name, chapter_tree=chapter_tree, updated_at=now)
+        if file_path is not None:
+            values['file_path'] = file_path
+        if expected_version == 0:
+            statement = insert(self.templates).values(
+                **values, template_id=template_id, category=category,
+                version=1, created_at=now,
+            ).on_conflict_do_nothing(index_elements=[self.templates.c.template_id])
+        else:
+            statement = self.templates.update().where(
+                self.templates.c.template_id == template_id,
+                self.templates.c.category == category,
+                self.templates.c.version == expected_version,
+            ).values(**values, version=self.templates.c.version + 1)
         with self.engine.begin() as connection:
-            connection.execute(statement)
+            version = connection.execute(statement.returning(self.templates.c.version)).scalar_one_or_none()
+            if version is None:
+                raise ArgumentationConflict("模板已被其他页面更新，请刷新后重试；当前修改尚未保存")
+            return version
 
     @staticmethod
     def validate_tree(tree):
