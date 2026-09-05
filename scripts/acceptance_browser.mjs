@@ -20,6 +20,8 @@ const baselinePath = required('ACCEPTANCE_BASELINE');
 const outboundPath = required('ACCEPTANCE_OUTBOUND');
 const resultPath = required('ACCEPTANCE_RESULT');
 const username = required('ACCEPTANCE_USERNAME');
+const phase = process.env.ACCEPTANCE_PHASE || 'before-backup';
+if (!['before-backup', 'after-restore'].includes(phase)) throw new Error('Unknown acceptance phase.');
 const outbound = [];
 const browserErrors = [];
 const expectedValidationErrors = [];
@@ -39,6 +41,12 @@ try {
   const context = await browser.newContext({ baseURL, serviceWorkers: 'block' });
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
+    if (phase === 'after-restore' && !['GET', 'HEAD', 'OPTIONS'].includes(route.request().method())
+        && url.href !== new URL('/auth/login', baseURL).href) {
+      browserErrors.push({ type: 'unexpected-restore-write', url: url.href, method: route.request().method() });
+      await route.abort('blockedbyclient');
+      return;
+    }
     if (['http:', 'https:'].includes(url.protocol)
         && !['127.0.0.1', 'localhost'].includes(url.hostname)) {
       outbound.push(route.request().url());
@@ -160,6 +168,18 @@ try {
   await open('/utils/', '文档校对');
   await page.locator('.container').getByRole('button', { name: '当前未启用', exact: true }).waitFor({ state: 'visible' });
 
+  if (phase === 'after-restore') {
+    const previous = JSON.parse(fs.readFileSync(required('ACCEPTANCE_PREVIOUS_RESULT'), 'utf8'));
+    expect(previous.status).toBe('PASSED');
+    await open(`/proposals/${encodeURIComponent(previous.journey.proposalBusinessId)}`, previous.journey.title);
+    await expect(page.getByRole('heading', { name: previous.journey.title, exact: true })).toBeVisible();
+    await open(`/projects/${encodeURIComponent(previous.journey.projectId)}/overview`, previous.journey.title);
+    await expect(page.locator('#projectStatusLabel')).toContainText('已结题');
+    await page.getByRole('tab', { name: /成果/ }).click();
+    await expect(page.getByText(previous.journey.outputTitle, { exact: true })).toBeVisible();
+    journey.restored = { proposalBusinessId: previous.journey.proposalBusinessId, projectId: previous.journey.projectId, readOnly: true };
+    await page.screenshot({ path: `${resultPath}.png`, fullPage: true });
+  } else {
   await runJourney(page, journey);
   // Retained editor: exercise real controls, persistence and a fresh history view.
   page.on('dialog', dialog => dialog.accept());
@@ -286,6 +306,7 @@ try {
   await expect(page.locator('#device_list_content_list2')).toContainText(probeName);
   await expect(page.locator('[data-device-probe]')).toHaveCount(0);
   journey.retainedArgumentation.plainTextDeviceLabels = true;
+  }
   if (outbound.length !== 0) throw new Error('Non-local browser requests were observed.');
   if (browserErrors.length !== 0) throw new Error(`Browser errors observed: ${JSON.stringify(browserErrors)}`);
   if (expectedValidationErrors.length > 1) throw new Error('Unexpected repeated validation response.');

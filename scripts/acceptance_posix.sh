@@ -10,7 +10,7 @@ for t12_name in MIGRATION_DATABASE_URL DATABASE_URL \
   fi
 done
 
-for t12_command in curl node pg_dump; do
+for t12_command in curl node pg_dump pg_restore createdb psql pg_ctl; do
   if ! command -v "$t12_command" >/dev/null 2>&1; then
     echo "required acceptance command is unavailable: $t12_command" >&2
     exit 69
@@ -29,8 +29,10 @@ fi
 t12_python=.venv/bin/python
 export PYTHONPATH="$PWD"
 
-"$t12_python" - <<'PY'
+validate_t12_database() {
+"$t12_python" - "$1" <<'PY'
 import os
+import sys
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -38,7 +40,7 @@ import sqlalchemy as sa
 
 expected_data = (Path(os.environ["T02_ISOLATED_POSTGRES_ROOT"]) / "data").resolve()
 expected_port = int(os.environ["T02_ISOLATED_POSTGRES_PORT"])
-expected_database = os.environ["T02_ISOLATED_POSTGRES_DATABASE"]
+expected_database = sys.argv[1]
 if not expected_data.is_dir():
     raise SystemExit(f"isolated PostgreSQL data directory is unavailable: {expected_data}")
 pid_lines = (expected_data / "postmaster.pid").read_text(encoding="utf-8").splitlines()
@@ -72,6 +74,8 @@ for variable in ("MIGRATION_DATABASE_URL", "DATABASE_URL"):
             f"{variable} is not bound to the isolated PostgreSQL harness"
         )
 PY
+}
+validate_t12_database "$T02_ISOLATED_POSTGRES_DATABASE"
 
 mkdir -p build
 t12_evidence_root=$(mktemp -d "$PWD/build/acceptance-posix.XXXXXX")
@@ -126,6 +130,7 @@ printf '%s\n' "$t12_password" | "$t12_python" scripts/acceptance_business.py ens
 "$t12_python" scripts/acceptance_business.py seed \
   --username "$ACCEPTANCE_USERNAME" --output "$t12_baseline"
 
+start_t12_waitress() {
 env -i \
   PATH="$PATH" \
   HOME="${HOME:-}" \
@@ -174,6 +179,8 @@ expected = {
 if payload != expected:
     raise SystemExit(f"unexpected readiness payload: {payload!r}")
 PY
+}
+start_t12_waitress
 
 printf '%s\n' "$t12_password" | env -i \
   PATH="$PATH" \
@@ -186,7 +193,6 @@ printf '%s\n' "$t12_password" | env -i \
   ACCEPTANCE_RESULT="$t12_browser_result" \
   ACCEPTANCE_USERNAME="$ACCEPTANCE_USERNAME" \
   node scripts/acceptance_browser.mjs
-t12_password=""
 
 "$t12_python" scripts/acceptance_business.py verify \
   --expected "$t12_baseline" --output "$t12_after"
@@ -202,14 +208,70 @@ cp -R "$t12_runtime_root" "$t12_backup_root/payload"
 env -i PATH="$PATH" PYTHONPATH="$PYTHONPATH" \
   PGHOST=127.0.0.1 PGPORT="$T02_ISOLATED_POSTGRES_PORT" \
   PGDATABASE="$T02_ISOLATED_POSTGRES_DATABASE" \
-  PGUSER="rm_v1_t02_migration_$T02_ISOLATED_POSTGRES_PORT" \
-  DATABASE_URL="$MIGRATION_DATABASE_URL" \
+  PGUSER="rm_v1_t02_runtime_$T02_ISOLATED_POSTGRES_PORT" \
+  DATABASE_URL="$DATABASE_URL" \
   "$t12_python" scripts/verify_offline.py snapshot \
   --data-root "$t12_runtime_root" --package-root "$t12_backup_root" \
   --output "$t12_backup_root/manifest.json" \
   --pg-dump-exe "$(command -v pg_dump)" --dump-output "$t12_backup_root/database.dump"
 "$t12_python" scripts/verify_offline.py verify-package \
   --package-root "$t12_backup_root" --manifest "$t12_backup_root/manifest.json"
+pg_restore --list --no-password "$t12_backup_root/database.dump" >/dev/null
+
+# A distinct database and an exclusively-created directory: never clean the source.
+t12_restore_database="rm_v1_t12_restore_$T02_ISOLATED_POSTGRES_PORT"
+t12_restore_root="$t12_evidence_root/restored-runtime"
+t12_migration_role="rm_v1_t02_migration_$T02_ISOLATED_POSTGRES_PORT"
+t12_runtime_role="rm_v1_t02_runtime_$T02_ISOLATED_POSTGRES_PORT"
+mkdir -m 700 "$t12_restore_root"
+env -i PATH="$PATH" PGHOST=127.0.0.1 PGPORT="$T02_ISOLATED_POSTGRES_PORT" \
+  PGUSER="$(id -un)" createdb --no-password --template=template0 \
+  --owner="$t12_migration_role" "$t12_restore_database"
+t12_restore_tables=$(env -i PATH="$PATH" PGHOST=127.0.0.1 \
+  PGPORT="$T02_ISOLATED_POSTGRES_PORT" PGUSER="$t12_migration_role" \
+  psql --no-password --dbname="$t12_restore_database" -At -v ON_ERROR_STOP=1 \
+  -c "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')")
+if [[ "$t12_restore_tables" != "0" || -n "$(ls -A "$t12_restore_root")" ]]; then
+  echo "restore target is not empty; refusing to restore" >&2
+  exit 70
+fi
+env -i PATH="$PATH" PGHOST=127.0.0.1 PGPORT="$T02_ISOLATED_POSTGRES_PORT" \
+  PGUSER="$(id -un)" psql --no-password --dbname="$t12_restore_database" \
+  -v ON_ERROR_STOP=1 -c "ALTER SCHEMA public OWNER TO $t12_migration_role" >/dev/null
+env -i PATH="$PATH" PGHOST=127.0.0.1 PGPORT="$T02_ISOLATED_POSTGRES_PORT" \
+  PGUSER="$t12_migration_role" pg_restore --dbname="$t12_restore_database" \
+  --exit-on-error --single-transaction --no-owner --no-privileges --no-password \
+  "$t12_backup_root/database.dump"
+cp -R "$t12_backup_root/payload/." "$t12_restore_root/"
+export MIGRATION_DATABASE_URL="postgresql+psycopg://$t12_migration_role@127.0.0.1:$T02_ISOLATED_POSTGRES_PORT/$t12_restore_database"
+export DATABASE_URL="postgresql+psycopg://$t12_runtime_role@127.0.0.1:$T02_ISOLATED_POSTGRES_PORT/$t12_restore_database"
+export APP_DATA_ROOT="$t12_restore_root"
+"$t12_python" scripts/provision_postgres.py --runtime-role "$t12_runtime_role"
+"$t12_python" scripts/verify_offline.py verify --data-root "$t12_restore_root" \
+  --manifest "$t12_backup_root/manifest.json"
+"$t12_python" scripts/acceptance_business.py verify \
+  --expected "$t12_baseline" --output "$t12_evidence_root/business-after-restore.json"
+"$t12_python" scripts/acceptance_business.py verify-journey \
+  --expected "$t12_browser_result" --output "$t12_evidence_root/journey-after-restore.json"
+
+validate_t12_database "$t12_restore_database"
+pg_ctl -D "$T02_ISOLATED_POSTGRES_ROOT/data" -m fast restart
+validate_t12_database "$t12_restore_database"
+"$t12_python" scripts/verify_offline.py verify --data-root "$t12_restore_root" \
+  --manifest "$t12_backup_root/manifest.json"
+t12_app_log="$t12_evidence_root/waitress-after-restore.log"
+t12_readiness="$t12_evidence_root/readiness-after-restore.json"
+start_t12_waitress
+printf '%s\n' "$t12_password" | env -i \
+  PATH="$PATH" HOME="${HOME:-}" TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-C.UTF-8}" \
+  ACCEPTANCE_BASE_URL="$t12_base_url" ACCEPTANCE_BASELINE="$t12_baseline" \
+  ACCEPTANCE_OUTBOUND="$t12_evidence_root/outbound-after-restore.json" \
+  ACCEPTANCE_RESULT="$t12_evidence_root/browser-after-restore.json" \
+  ACCEPTANCE_USERNAME="$ACCEPTANCE_USERNAME" ACCEPTANCE_PHASE=after-restore \
+  ACCEPTANCE_PREVIOUS_RESULT="$t12_browser_result" \
+  node scripts/acceptance_browser.mjs
+t12_password=""
+stop_t12_waitress
 
 echo "POSIX production-chain acceptance passed: PostgreSQL + Waitress + Chromium"
 echo "Evidence retained at: $t12_evidence_root"
