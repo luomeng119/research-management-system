@@ -169,7 +169,7 @@ try {
         }
     }
     $FailedMarker = Join-Path $DataRoot "restore.failed.json"
-    if (Test-Path -LiteralPath $FailedMarker -PathType Leaf) {
+    if (Test-Path -LiteralPath $FailedMarker) {
         throw "This staging target is marked failed and cannot be reused. Discard it and create a new empty staging target."
     }
     $PidFile = Join-Path (Join-Path $DataRoot "run") "research-management.pid.json"
@@ -233,7 +233,24 @@ SELECT
     if (-not (Test-PathWithin -Candidate $ExtractRoot -Root $DataRoot)) { throw "Restore extraction root must remain inside APP_DATA_ROOT." }
     Assert-NoReparsePath -Path $ArchivePath
     Assert-NoReparsePath -Path $ExtractRoot
+    & $PythonExe @($Verifier, "begin-restore", "--data-root", $DataRoot)
+    if ($LASTEXITCODE -ne 0) { throw "Could not create the exclusive restore marker; refusing to write." }
     $StagingMutationStarted = $true
+    # Recheck while holding the exclusive marker: pre-lock checks may be stale.
+    foreach ($Target in $TargetRoots) {
+        Assert-NoReparseTree -Path $Target
+        if (-not (Test-DirectoryEmpty -Path $Target)) { throw "Restore business-file target must be empty: $Target" }
+    }
+    foreach ($TargetFile in $TargetFiles) {
+        Assert-NoReparsePath -Path $TargetFile
+        if (Test-Path -LiteralPath $TargetFile) { throw "Restore business-file target must be empty: $TargetFile" }
+    }
+    $TableCountOutput = & $PsqlExe @("--no-password", "--tuples-only", "--no-align", "--command=$SchemaObjectQuery")
+    if ($LASTEXITCODE -ne 0) { throw "Could not recheck the staging database." }
+    $TableCount = 0
+    if (-not [int]::TryParse(([string]$TableCountOutput).Trim(), [ref]$TableCount) -or $TableCount -ne 0) {
+        throw "Restore database must still be empty after acquiring its marker."
+    }
     & $PythonExe @($Verifier, "extract", "--archive", $ArchivePath, "--destination", $ExtractRoot)
     if ($LASTEXITCODE -ne 0) { throw "Backup archive extraction failed." }
     Assert-NoReparseTree -Path $ExtractRoot
@@ -262,7 +279,7 @@ SELECT
     Copy-SingleFileIfPresent -Source (Join-Path (Join-Path $ExtractRoot "payload") "data\research.db-wal") -Destination $TargetFiles[1]
     Copy-SingleFileIfPresent -Source (Join-Path (Join-Path $ExtractRoot "payload") "data\research.db-shm") -Destination $TargetFiles[2]
     Copy-SingleFileIfPresent -Source (Join-Path (Join-Path $ExtractRoot "payload") "data\research.db-journal") -Destination $TargetFiles[3]
-    & $PythonExe @($Verifier, "verify", "--data-root", $DataRoot, "--manifest", $Manifest)
+    & $PythonExe @($Verifier, "verify", "--data-root", $DataRoot, "--manifest", $Manifest, "--complete-restore")
     if ($LASTEXITCODE -ne 0) { throw "Restored staging data failed verification; do not cut over." }
 
     Write-Host "Restore verified in the empty staging target. It is now eligible for a separate cutover decision."

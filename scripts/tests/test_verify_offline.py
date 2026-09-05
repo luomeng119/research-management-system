@@ -16,6 +16,56 @@ import sqlalchemy as sa
 SCRIPT = Path(__file__).resolve().parents[1] / "verify_offline.py"
 
 
+def test_restore_marker_survives_killed_process_and_rejects_reuse(tmp_path):
+    code = (
+        "import runpy, sys, time; m = runpy.run_path(sys.argv[1]); "
+        "result = m['main'](['begin-restore', '--data-root', sys.argv[2]]); "
+        "print('READY' if result == 0 else 'FAILED', flush=True); time.sleep(60)"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", code, str(SCRIPT), str(tmp_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "Offline backup verification passed."
+        assert process.stdout.readline().strip() == "READY"
+    finally:
+        process.kill()
+        process.communicate(timeout=5)
+    marker = tmp_path / "restore.failed.json"
+    before = marker.read_bytes()
+    assert json.loads(before)["status"] == "IN_PROGRESS"
+    retry = subprocess.run(
+        [sys.executable, str(SCRIPT), "begin-restore", "--data-root", str(tmp_path)],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert retry.returncode == 1
+    assert marker.read_bytes() == before
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_restore_marker_removed_only_after_live_verification(tmp_path, tamper):
+    root = tmp_path / "runtime"
+    (root / "documents").mkdir(parents=True)
+    business_file = root / "documents" / "result.txt"
+    business_file.write_text("original")
+    database_url = _create_contract_database(tmp_path / "contract.sqlite")
+    manifest = tmp_path / "manifest.json"
+    common = ["--database-url", database_url, "--data-root", str(root)]
+    subprocess.run([sys.executable, str(SCRIPT), "snapshot", *common,
+                    "--output", str(manifest)], check=True, capture_output=True)
+    started = subprocess.run([sys.executable, str(SCRIPT), "begin-restore",
+                              "--data-root", str(root)], capture_output=True)
+    assert started.returncode == 0, started.stderr
+    if tamper:
+        business_file.write_text("changed")
+    verified = subprocess.run([sys.executable, str(SCRIPT), "verify", *common,
+                               "--manifest", str(manifest), "--complete-restore"],
+                              capture_output=True)
+    assert verified.returncode == (1 if tamper else 0), verified.stderr
+    assert (root / "restore.failed.json").exists() is tamper
+
+
 @pytest.mark.skipif(not os.environ.get("ACCEPTANCE_BACKUP_ROOT"), reason="requires a real acceptance backup")
 def test_real_backup_rejects_corrupted_dump_without_modifying_original(tmp_path):
     module = _load_module()

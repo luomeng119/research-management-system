@@ -239,7 +239,7 @@ if ! t12_restore_tables=$(env -i PATH="$PATH" PGHOST=127.0.0.1 \
   return 2
 fi
 if ! t12_restore_files=$(ls -A "$2"); then return 2; fi
-if [[ "$t12_restore_tables" != "0" || -n "$t12_restore_files" ]]; then
+if [[ "$t12_restore_tables" != "0" || "$t12_restore_files" != "${3:-}" ]]; then
   echo "restore target is not empty; refusing to restore" >&2
   return 1
 fi
@@ -260,6 +260,9 @@ fi
 "$t12_python" scripts/verify_offline.py verify --data-root "$t12_runtime_root" \
   --manifest "$t12_backup_root/manifest.json"
 assert_t12_restore_empty "$t12_restore_database" "$t12_restore_root"
+"$t12_python" scripts/verify_offline.py begin-restore --data-root "$t12_restore_root"
+# Recheck under the exclusive marker; a pre-lock empty check may be stale.
+assert_t12_restore_empty "$t12_restore_database" "$t12_restore_root" restore.failed.json
 env -i PATH="$PATH" PGHOST=127.0.0.1 PGPORT="$T02_ISOLATED_POSTGRES_PORT" \
   PGUSER="$(id -un)" psql --no-password --dbname="$t12_restore_database" \
   -v ON_ERROR_STOP=1 -c "ALTER SCHEMA public OWNER TO $t12_migration_role" >/dev/null
@@ -273,7 +276,19 @@ export DATABASE_URL="postgresql+psycopg://$t12_runtime_role@127.0.0.1:$T02_ISOLA
 export APP_DATA_ROOT="$t12_restore_root"
 "$t12_python" scripts/provision_postgres.py --runtime-role "$t12_runtime_role"
 "$t12_python" scripts/verify_offline.py verify --data-root "$t12_restore_root" \
-  --manifest "$t12_backup_root/manifest.json"
+  --manifest "$t12_backup_root/manifest.json" --complete-restore
+# Deterministic late-arrival case: the earlier restore completed and released
+# its marker after another caller's precheck. Recheck must reject this target.
+"$t12_python" scripts/verify_offline.py begin-restore --data-root "$t12_restore_root"
+if assert_t12_restore_empty "$t12_restore_database" "$t12_restore_root" restore.failed.json \
+    2>"$t12_evidence_root/late-restore-rejected.log"; then
+  echo "completed restore target was accepted by a late caller" >&2; exit 70
+else
+  [[ $? -eq 1 ]] || exit 70
+fi
+# Clear the test-owned marker only after proving business data is unchanged.
+"$t12_python" scripts/verify_offline.py verify --data-root "$t12_restore_root" \
+  --manifest "$t12_backup_root/manifest.json" --complete-restore
 "$t12_python" scripts/acceptance_business.py verify \
   --expected "$t12_baseline" --output "$t12_evidence_root/business-after-restore.json"
 "$t12_python" scripts/acceptance_business.py verify-journey \

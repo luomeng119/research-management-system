@@ -621,6 +621,24 @@ def extract_package(archive: Path, destination: Path) -> None:
                     )
 
 
+def begin_restore(data_root: Path) -> None:
+    """Persist an exclusive marker before any restore writes; never reuse it."""
+    _assert_no_reparse_ancestors(data_root)
+    if not data_root.is_dir():
+        raise VerificationError("restore target must be an existing directory")
+    marker = data_root / "restore.failed.json"
+    with marker.open("x", encoding="utf-8") as stream:
+        json.dump({"status": "IN_PROGRESS"}, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    if os.name != "nt":
+        descriptor = os.open(data_root, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
 def _load_manifest(path: Path) -> dict[str, object]:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -638,6 +656,8 @@ def _database_url(value: str | None) -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    begin = commands.add_parser("begin-restore")
+    begin.add_argument("--data-root", required=True, type=Path)
     snapshot = commands.add_parser("snapshot")
     snapshot.add_argument("--database-url")
     snapshot.add_argument("--data-root", required=True, type=Path)
@@ -649,6 +669,7 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--database-url")
     verify.add_argument("--data-root", required=True, type=Path)
     verify.add_argument("--manifest", required=True, type=Path)
+    verify.add_argument("--complete-restore", action="store_true")
     package = commands.add_parser("verify-package")
     package.add_argument("--package-root", required=True, type=Path)
     package.add_argument("--manifest", required=True, type=Path)
@@ -661,7 +682,9 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        if args.command == "extract":
+        if args.command == "begin-restore":
+            begin_restore(args.data_root)
+        elif args.command == "extract":
             extract_package(args.archive, args.destination)
         elif args.command == "verify-package":
             verify_package(args.package_root, _load_manifest(args.manifest))
@@ -702,7 +725,14 @@ def main(argv: list[str] | None = None) -> int:
                             encoding="utf-8",
                         )
                 else:
+                    marker = args.data_root / "restore.failed.json"
+                    if args.complete_restore:
+                        _assert_no_reparse_ancestors(marker)
+                        if _load_manifest(marker).get("status") != "IN_PROGRESS":
+                            raise VerificationError("restore target has no active restore marker")
                     verify_snapshot(engine, args.data_root, _load_manifest(args.manifest))
+                    if args.complete_restore:
+                        marker.unlink()
             finally:
                 engine.dispose()
         print("Offline backup verification passed.")
