@@ -230,6 +230,32 @@ class FilesRepository:
             )
         )
 
+    def has_multiple_links(self, connection: Connection, *, file_id: str) -> bool:
+        rows = connection.execute(sa.select(self.links.c.id).where(
+            self.links.c.file_id == self._id(connection, file_id),
+        ).limit(2)).all()
+        return len(rows) > 1
+
+    def rename_project_path(self, connection: Connection, *, project_id: str,
+                            file_id: str, purpose: str, new_purpose: str,
+                            original_name: str, actor_user_id: int):
+        file_values = {"original_name": original_name, "updated_by": actor_user_id}
+        link_values = {"purpose": new_purpose, "updated_by": actor_user_id,
+                       "version": self.links.c.version + 1}
+        if "updated_at" in self.files.c:
+            file_values["updated_at"] = sa.func.now()
+        if "updated_at" in self.links.c:
+            link_values["updated_at"] = sa.func.now()
+        connection.execute(self.files.update().where(
+            self.files.c.id == self._id(connection, file_id),
+        ).values(**file_values))
+        changed = connection.execute(self.links.update().where(
+            self.links.c.object_type == "PROJECT", self.links.c.object_id == str(project_id),
+            self.links.c.file_id == self._id(connection, file_id), self.links.c.purpose == purpose,
+        ).values(**link_values))
+        if changed.rowcount != 1:
+            raise RuntimeError("project file link changed during rename")
+
     def list_project_paths(self, connection: Connection, *, project_id: str):
         statement = sa.select(
             self.files, self.links.c.purpose, self.versions.c.size_bytes,

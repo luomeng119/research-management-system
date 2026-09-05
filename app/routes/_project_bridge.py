@@ -7,7 +7,7 @@ from flask import current_app, jsonify, redirect, request, url_for
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.security.auth import BUSINESS_USER, current_identity
-from app.services.files import FileServiceError
+from app.services.files import FileServiceError, validate_file_name
 from app.services.projects import ProjectServiceError
 from app.routes._shared import RESEARCH_FOLDER_TYPES
 
@@ -53,6 +53,54 @@ def controlled_project_download(project_id, category, filepath):
             return redirect(url_for("files.download_file", file_id=item["fileId"],
                                     version_no=item["versionNo"], objectType="PROJECT", objectId=project_id))
         return None
+    except (FileServiceError, ProjectServiceError) as error:
+        return jsonify(success=False, message=error.message, code=error.code), error.status_code
+
+
+def rename_controlled_project_file(project_id, category):
+    service = current_app.extensions.get("file_service")
+    if service is None:
+        return None
+    identity = current_identity()
+    if identity is None or identity.role != BUSINESS_USER:
+        return jsonify(success=False, message="无权访问业务附件"), 403
+    try:
+        current_app.extensions["project_service"].get_legacy(category=category, business_id=project_id)
+        filepath = request.form.get("file_path", "")
+        requested_name = request.form.get("new_name", "").strip()
+        # Compare canonical logical paths before falling back to physical files.
+        # Renaming is a leaf-name operation, never a move between directories.
+        if (filepath != filepath.strip() or "\\" in filepath
+                or any(part in {"", ".", ".."} for part in filepath.split("/"))
+                or requested_name in {"", ".", ".."}
+                or "/" in requested_name or "\\" in requested_name):
+            raise ValueError("noncanonical rename path")
+        paths = service.list_project_paths(project_id)
+        folder, _, _old_name = filepath.rpartition("/")
+        requested_target = (folder + "/" if folder else "") + requested_name
+        if requested_target != filepath and any(item["path"] == requested_target for item in paths):
+            return jsonify(success=False, message="文件名已存在"), 409
+        # Unknown legacy paths remain with the existing adapter until adopted.
+        if not any(item["path"] == filepath for item in paths):
+            if request.form.get("expectedFileId"):
+                return jsonify(success=False, message="文件已变化，请刷新后重试"), 409
+            return None
+        expected_file_id = request.form.get("expectedFileId", "").strip()
+        if not expected_file_id:
+            return jsonify(success=False, message="请刷新页面后重试"), 409
+        name, _extension = validate_file_name(request.form.get("new_name", ""))
+        folder, _, _old_name = filepath.rpartition("/")
+        target = (folder + "/" if folder else "") + name
+        if target != filepath and os.path.lexists(safe_project_path(current_app.config["UPLOAD_DIR"], project_id, target)):
+            return jsonify(success=False, message="文件名已存在"), 409
+        result = service.rename_project_path(project_id, filepath, name, actor_user_id=identity.user_id,
+                                             expected_file_id=expected_file_id,
+                                             request_id=getattr(request, "request_id", "unknown"))
+        if result is None:
+            return jsonify(success=False, message="文件路径已变化"), 409
+        return jsonify(success=True, message="重命名成功", **result)
+    except ValueError:
+        return jsonify(success=False, message="非法路径"), 400
     except (FileServiceError, ProjectServiceError) as error:
         return jsonify(success=False, message=error.message, code=error.code), error.status_code
 

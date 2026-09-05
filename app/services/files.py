@@ -578,6 +578,47 @@ class FileService:
             actor_user_id=actor_user_id, request_id=request_id,
         )
 
+    def rename_project_path(self, project_id: str, filepath: str, new_name: str,
+                            *, expected_file_id: str, actor_user_id: int, request_id: str) -> dict | None:
+        name, extension = self._validate_name(new_name)
+        purpose = "PROJECT_TREE:" + filepath
+        folder, _, _old_name = filepath.rpartition("/")
+        new_path = (folder + "/" if folder else "") + name
+        started = time.monotonic()
+        try:
+            with self.repository.engine.begin() as connection:
+                self._lock_object_write(connection, "PROJECT", str(project_id))
+                row = self.repository.get_project_path_file(connection, project_id=project_id, purpose=purpose)
+                if row is None:
+                    return None
+                if str(row["id"]) != expected_file_id:
+                    raise FileServiceError("FILE_IDENTITY_CONFLICT", "文件已变化，请刷新后重试", 409)
+                row = self.repository.get_linked_file(connection, file_id=str(row["id"]),
+                                                      object_type="PROJECT", object_id=project_id, lock=True)
+                if row["status"] != "ACTIVE":
+                    raise FileServiceError("FILE_ARCHIVED", "文件已归档", 409)
+                if extension != Path(row["original_name"]).suffix.lower():
+                    raise FileServiceError("FILE_TYPE_MISMATCH", "不能通过改名改变文件类型", 415)
+                if new_path != filepath:
+                    if self.repository.has_multiple_links(connection, file_id=str(row["id"])):
+                        raise FileServiceError("FILE_SHARED", "文件被多处引用，不能在单个项目内改名", 409)
+                    if self.repository.get_project_path_file(
+                        connection, project_id=project_id, purpose="PROJECT_TREE:" + new_path,
+                    ) is not None:
+                        raise FileServiceError("FILE_NAME_CONFLICT", "文件名已存在", 409)
+                    self.repository.rename_project_path(
+                        connection, project_id=project_id, file_id=str(row["id"]),
+                        purpose=purpose, new_purpose="PROJECT_TREE:" + new_path,
+                        original_name=name, actor_user_id=actor_user_id,
+                    )
+                self._audit(connection, operation="RENAME", staged=None, file_id=str(row["id"]),
+                            actor_user_id=actor_user_id, request_id=request_id, started=started)
+                return {"fileId": str(row["id"]), "path": new_path, "versionNo": int(row["version"])}
+        except FileServiceError:
+            raise
+        except Exception as exc:
+            raise FileServiceError("FILE_OPERATION_FAILED", "文件改名失败", 500) from exc
+
     def list_project_paths(self, project_id: str) -> list[dict]:
         self._validate_object("PROJECT", str(project_id))
         with self.repository.engine.connect() as connection:

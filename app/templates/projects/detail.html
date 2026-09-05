@@ -246,6 +246,7 @@
             <form id="renameForm">
                 <div class="modal-body">
                     <input type="hidden" name="file_path" id="renameFilePath">
+                    <input type="hidden" name="expectedFileId" id="renameFileId">
                     <div class="mb-3">
                         <label class="form-label">新文件名</label>
                         <input type="text" name="new_name" id="newFileName" class="form-control" required>
@@ -662,7 +663,7 @@ function buildNode(node) {
             // 下载项目文件
             html += '<a href="' + escapeEq(downloadUrl) + '" class="btn btn-outline-info btn-sm" title="下载"><i class="bi bi-download"></i></a>';
             // 重命名和删除对所有用户开放
-            html += '<button class="btn btn-outline-primary btn-sm btn-rename" data-path="' + f.path + '" data-name="' + f.name + '"><i class="bi bi-pencil"></i></button>';
+            html += '<button class="btn btn-outline-primary btn-sm btn-rename" data-path="' + f.path + '" data-name="' + f.name + '" data-file-id="' + escapeEq(f.fileId || '') + '"><i class="bi bi-pencil"></i></button>';
             html += '<button class="btn btn-outline-danger btn-sm btn-del" data-path="' + f.path + '"><i class="bi bi-trash"></i></button>';
             html += '</div>';
         });
@@ -875,6 +876,7 @@ function bindEvents() {
         btn.addEventListener('click', function(e) {
             e.stopPropagation();
             document.getElementById('renameFilePath').value = this.dataset.path;
+            document.getElementById('renameFileId').value = this.dataset.fileId || '';
             document.getElementById('newFileName').value = this.dataset.name;
             new bootstrap.Modal(document.getElementById('renameModal')).show();
         });
@@ -885,8 +887,9 @@ function bindEvents() {
         e.preventDefault();
         var fd = new FormData();
         fd.append('file_path', document.getElementById('renameFilePath').value);
+        fd.append('expectedFileId', document.getElementById('renameFileId').value);
         fd.append('new_name', document.getElementById('newFileName').value);
-        fetch('/projects/rename_file/{{ project['project_id'] }}', {method:'POST', body:fd})
+        fetch(projectUpdateUrl + '/rename_file/{{ project['project_id'] }}', {method:'POST', body:fd})
         .then(r=>r.json())
         .then(d=>{ 
             if(d.success) {

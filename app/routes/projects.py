@@ -4,6 +4,7 @@ from app.models import ProjectModel
 from app.routes._project_bridge import (
     legacy_page, safe_project_documents_path, safe_project_path, upload_project_file,
     merge_project_files, controlled_project_download, upload_project_folder,
+    rename_controlled_project_file,
 )
 from app.security.auth import current_identity
 from app.services.projects import ProjectServiceError
@@ -355,6 +356,9 @@ def delete_file(project_id):
 @bp.route('/rename_file/<project_id>', methods=['POST'])
 def rename_file(project_id):
     """文件名重命名"""
+    controlled = rename_controlled_project_file(project_id, "GENERAL_RESEARCH")
+    if controlled is not None:
+        return controlled
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     filepath = request.form.get('file_path', '').strip()
