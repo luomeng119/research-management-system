@@ -1,7 +1,9 @@
 """Retained argumentation: real login, routes and migrated PostgreSQL tables."""
 
 import json
+import io
 import os
+from pathlib import Path
 import re
 import sqlite3
 import uuid
@@ -13,6 +15,157 @@ import sqlalchemy as sa
 
 from app import create_app
 from app.security.auth import hash_password
+
+
+def test_template_upload_rejects_symlink_directory(argumentation_runtime, tmp_path):
+    from docx import Document
+
+    app, client, headers, engine, _ = argumentation_runtime
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    templates = Path(app.config["DATA_DIR"]) / "templates"
+    templates.symlink_to(outside, target_is_directory=True)
+    with engine.connect() as connection:
+        before = connection.execute(sa.text(
+            "SELECT template_id, version, file_path FROM doc_templates ORDER BY template_id"
+        )).all()
+    content = io.BytesIO()
+    Document().save(content)
+    content.seek(0)
+    response = client.post(
+        "/argumentation/template/upload",
+        data={"category": "research", "file": (content, "template.docx")},
+        headers=headers,
+    )
+    assert response.status_code == 500
+    assert response.json["success"] is False
+    assert list(outside.iterdir()) == []
+    assert templates.is_symlink()
+    with engine.connect() as connection:
+        assert connection.execute(sa.text(
+            "SELECT template_id, version, file_path FROM doc_templates ORDER BY template_id"
+        )).all() == before
+
+
+def test_template_upload_rejects_forged_docx_without_persistence(argumentation_runtime):
+    app, client, headers, engine, _ = argumentation_runtime
+    with engine.connect() as connection:
+        before = connection.execute(sa.text(
+            "SELECT template_id, version, file_path FROM doc_templates ORDER BY template_id"
+        )).all()
+    response = client.post(
+        "/argumentation/template/upload",
+        data={"category": "research", "file": (io.BytesIO(b"not a Word document"), "fake.docx")},
+        headers=headers,
+    )
+    assert response.status_code == 415
+    assert response.json["success"] is False
+    assert not list((Path(app.config["DATA_DIR"]) / "templates").glob("*"))
+    assert not list((Path(app.config["FILE_STORAGE_ROOT"]) / ".staging").glob("*"))
+    with engine.connect() as connection:
+        assert connection.execute(sa.text(
+            "SELECT template_id, version, file_path FROM doc_templates ORDER BY template_id"
+        )).all() == before
+
+
+def test_template_database_failure_removes_only_new_upload(argumentation_runtime):
+    from docx import Document
+
+    app, client, headers, engine, _ = argumentation_runtime
+    root = Path(app.config["DATA_DIR"]) / "templates"
+    root.mkdir(parents=True, exist_ok=True)
+    existing = root / "retained.docx"
+    existing.write_bytes(b"retained original bytes")
+    content = io.BytesIO()
+    Document().save(content)
+    content.seek(0)
+
+    def fail_insert(conn, cursor, statement, parameters, context, many):
+        if statement.lstrip().upper().startswith("INSERT INTO DOC_TEMPLATES"):
+            raise RuntimeError("injected template persistence failure")
+
+    sa.event.listen(engine, "before_cursor_execute", fail_insert)
+    try:
+        response = client.post(
+            "/argumentation/template/upload",
+            data={"category": "research", "file": (content, "template.docx")},
+            headers=headers,
+        )
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", fail_insert)
+    assert response.status_code >= 500
+    assert {p.name: p.read_bytes() for p in root.iterdir()} == {
+        "retained.docx": b"retained original bytes"
+    }
+
+
+def test_template_upload_preserves_existing_chapters(argumentation_runtime):
+    from docx import Document
+
+    _, client, headers, _, _ = argumentation_runtime
+    tree = {"name": "已有模板", "chapters": [{"id": "existing", "title": "已有研究内容"}]}
+    assert client.post("/template/api/save", headers=headers, json={
+        "category": "research", "template_data": tree,
+    }).json["success"] is True
+    content = io.BytesIO()
+    Document().save(content)
+    content.seek(0)
+    response = client.post(
+        "/argumentation/template/upload",
+        data={"category": "research", "file": (content, "template.docx")},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert client.get("/template/api/get/research").json["template"] == tree
+
+
+@pytest.mark.parametrize("category", ["../escaped", "unknown", "", "科研项目"])
+def test_template_upload_rejects_category_before_file_write(argumentation_runtime, category):
+    app, client, headers, engine, _ = argumentation_runtime
+    root = Path(app.config["DATA_DIR"])
+    log = Path(app.config["LOG_FILE"])
+    before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file() and p != log}
+    with engine.connect() as connection:
+        templates_before = connection.execute(sa.text(
+            "SELECT template_id, version, file_path FROM doc_templates ORDER BY template_id"
+        )).all()
+    response = client.post(
+        "/argumentation/template/upload",
+        data={"category": category, "file": (io.BytesIO(b"test"), "template.docx")},
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert response.json["success"] is False
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file() and p != log} == before
+    with engine.connect() as connection:
+        assert connection.execute(sa.text(
+            "SELECT template_id, version, file_path FROM doc_templates ORDER BY template_id"
+        )).all() == templates_before
+
+
+@pytest.mark.parametrize("category", ["research", "crypto", "security"])
+def test_template_upload_accepts_existing_category_values(argumentation_runtime, category):
+    from docx import Document
+
+    _, client, headers, engine, _ = argumentation_runtime
+    document = Document()
+    document.add_heading("演练模板", level=1)
+    content = io.BytesIO()
+    document.save(content)
+    expected = content.getvalue()
+    content.seek(0)
+    response = client.post(
+        "/argumentation/template/upload",
+        data={"category": category, "file": (content, "template.docx")},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json["success"] is True
+    with engine.connect() as connection:
+        path = connection.execute(sa.text(
+            "SELECT file_path FROM doc_templates WHERE template_id = :template_id"
+        ), {"template_id": f"{category}_v1"}).scalar_one()
+    assert Path(path).read_bytes() == expected
 
 
 @pytest.fixture

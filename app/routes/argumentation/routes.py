@@ -8,8 +8,7 @@ from flask import Blueprint, render_template, request, jsonify, session, redirec
 from flask import current_app
 import json
 import uuid
-from datetime import datetime
-from werkzeug.utils import secure_filename
+import shutil
 
 # 导入模型
 from app.models_argumentation import (
@@ -24,6 +23,7 @@ from app.models_argumentation import (
 )
 from app.models_argumentation import get_projects, get_equipment
 from app.repositories.argumentation import ArgumentationConflict
+from app.services.files import FileServiceError
 
 argumentation_bp = Blueprint('argumentation', __name__)
 
@@ -307,37 +307,54 @@ def upload_template():
     file = request.files['file']
     category = request.form.get('category')
     name = request.form.get('name', '未命名模板')
+
+    if category not in CATEGORIES.values():
+        return jsonify({'success': False, 'message': '请选择有效板块'}), 400
     
     if file.filename == '':
         return jsonify({'success': False, 'message': '请选择文件'})
     
     if not allowed_file(file.filename):
         return jsonify({'success': False, 'message': '只支持docx格式'})
+
+    data_root = Path(current_app.config.get('DATA_DIR', 'data'))
+    upload_dir = data_root / 'templates'
+    try:
+        if data_root.is_symlink() or upload_dir.is_symlink():
+            raise OSError('Template directory is a symbolic link')
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        if upload_dir.resolve().parent != data_root.resolve():
+            raise OSError('Template directory escapes data root')
+    except OSError:
+        return jsonify({'success': False, 'message': '模板存储目录不可用'}), 500
+
+    file_service = current_app.extensions.get('file_service')
+    if file_service is None:
+        return jsonify({'success': False, 'message': '文件服务不可用，请稍后重试'}), 503
+    try:
+        with file_service.inspect_upload(file.stream, file.filename):
+            file.stream.seek(0)
+    except FileServiceError as exc:
+        return jsonify({'success': False, 'message': exc.message}), exc.status_code
     
-    if not category:
-        return jsonify({'success': False, 'message': '请选择板块'})
+    file_path = upload_dir / f"{uuid.uuid4().hex}.docx"
     
-    # 保存文件
-    upload_dir = os.path.join(current_app.config.get('DATA_DIR', 'data'), 'templates')
-    os.makedirs(upload_dir, exist_ok=True)
-    
-    filename = f"{category}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{secure_filename(file.filename)}"
-    file_path = os.path.join(upload_dir, filename)
-    file.save(file_path)
-    
-    # TODO: 解析Word模板生成章节树
-    # 这里先用空模板
-    chapter_tree = json.dumps({
-        "template_id": f"{category}_v1",
-        "name": name,
-        "category": category,
-        "version": 1,
-        "chapters": []
-    }, ensure_ascii=False)
+    # 上传替换源文件，不清空已编辑章节，也不冒充自动解析 Word。
+    chapter_tree = json.dumps(_template_data(category), ensure_ascii=False)
     
     # 保存模板
     template_id = f"{category}_v1"
-    save_template(template_id, name, category, file_path, chapter_tree)
+    created = False
+    try:
+        with file_path.open('xb') as destination:
+            created = True
+            shutil.copyfileobj(file.stream, destination)
+        save_template(template_id, name, category, str(file_path), chapter_tree)
+    except Exception:
+        if created:
+            file_path.unlink(missing_ok=True)
+        current_app.logger.exception('Template upload persistence failed')
+        return jsonify({'success': False, 'message': '模板保存失败，请稍后重试'}), 500
     
     return jsonify({'success': True, 'message': '模板上传成功'})
 
