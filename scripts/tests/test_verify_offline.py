@@ -16,6 +16,25 @@ import sqlalchemy as sa
 SCRIPT = Path(__file__).resolve().parents[1] / "verify_offline.py"
 
 
+@pytest.mark.skipif(not os.environ.get("ACCEPTANCE_BACKUP_ROOT"), reason="requires a real acceptance backup")
+def test_real_backup_rejects_corrupted_dump_without_modifying_original(tmp_path):
+    module = _load_module()
+    original = Path(os.environ["ACCEPTANCE_BACKUP_ROOT"])
+    original_dump_hash = module.sha256_file(original / "database.dump")
+    package = tmp_path / "damaged-package"
+    shutil.copytree(original, package)
+    with (package / "database.dump").open("r+b") as stream:
+        stream.write(b"BAD")
+    result = subprocess.run([
+        sys.executable, str(SCRIPT), "verify-package", "--package-root", str(package),
+        "--manifest", str(package / "manifest.json"),
+    ], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "package manifest does not match" in result.stderr
+    assert module.sha256_file(original / "database.dump") == original_dump_hash
+    module.verify_package(original, json.loads((original / "manifest.json").read_text()))
+
+
 @pytest.mark.skipif(not os.environ.get("T02_ISOLATED_POSTGRES_ROOT"), reason="requires owned PostgreSQL harness")
 def test_real_dump_uses_snapshot_database_despite_conflicting_pg_environment(tmp_path, monkeypatch):
     """Catches pg_dump connecting via stale shell PG* instead of the snapshot engine."""

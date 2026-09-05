@@ -217,6 +217,8 @@ env -i PATH="$PATH" PYTHONPATH="$PYTHONPATH" \
 "$t12_python" scripts/verify_offline.py verify-package \
   --package-root "$t12_backup_root" --manifest "$t12_backup_root/manifest.json"
 pg_restore --list --no-password "$t12_backup_root/database.dump" >/dev/null
+ACCEPTANCE_BACKUP_ROOT="$t12_backup_root" "$t12_python" -m pytest \
+  scripts/tests/test_verify_offline.py -k real_backup_rejects_corrupted -q
 
 # A distinct database and an exclusively-created directory: never clean the source.
 t12_restore_database="rm_v1_t12_restore_$T02_ISOLATED_POSTGRES_PORT"
@@ -227,14 +229,37 @@ mkdir -m 700 "$t12_restore_root"
 env -i PATH="$PATH" PGHOST=127.0.0.1 PGPORT="$T02_ISOLATED_POSTGRES_PORT" \
   PGUSER="$(id -un)" createdb --no-password --template=template0 \
   --owner="$t12_migration_role" "$t12_restore_database"
-t12_restore_tables=$(env -i PATH="$PATH" PGHOST=127.0.0.1 \
+assert_t12_restore_empty() {
+local t12_restore_tables t12_restore_files
+[[ -d "$2" && ! -L "$2" ]] || return 2
+if ! t12_restore_tables=$(env -i PATH="$PATH" PGHOST=127.0.0.1 \
   PGPORT="$T02_ISOLATED_POSTGRES_PORT" PGUSER="$t12_migration_role" \
-  psql --no-password --dbname="$t12_restore_database" -At -v ON_ERROR_STOP=1 \
-  -c "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')")
-if [[ "$t12_restore_tables" != "0" || -n "$(ls -A "$t12_restore_root")" ]]; then
-  echo "restore target is not empty; refusing to restore" >&2
-  exit 70
+  psql --no-password --dbname="$1" -At -v ON_ERROR_STOP=1 \
+  -c "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')"); then
+  return 2
 fi
+if ! t12_restore_files=$(ls -A "$2"); then return 2; fi
+if [[ "$t12_restore_tables" != "0" || -n "$t12_restore_files" ]]; then
+  echo "restore target is not empty; refusing to restore" >&2
+  return 1
+fi
+}
+# Read-only negative probes: do not create, erase or restore anything in these targets.
+if assert_t12_restore_empty "$T02_ISOLATED_POSTGRES_DATABASE" "$t12_restore_root" \
+    2>"$t12_evidence_root/nonempty-database-rejected.log"; then
+  echo "nonempty database was accepted" >&2; exit 70
+else
+  [[ $? -eq 1 ]] || exit 70
+fi
+if assert_t12_restore_empty "$t12_restore_database" "$t12_backup_root/payload" \
+    2>"$t12_evidence_root/nonempty-files-rejected.log"; then
+  echo "nonempty file directory was accepted" >&2; exit 70
+else
+  [[ $? -eq 1 ]] || exit 70
+fi
+"$t12_python" scripts/verify_offline.py verify --data-root "$t12_runtime_root" \
+  --manifest "$t12_backup_root/manifest.json"
+assert_t12_restore_empty "$t12_restore_database" "$t12_restore_root"
 env -i PATH="$PATH" PGHOST=127.0.0.1 PGPORT="$T02_ISOLATED_POSTGRES_PORT" \
   PGUSER="$(id -un)" psql --no-password --dbname="$t12_restore_database" \
   -v ON_ERROR_STOP=1 -c "ALTER SCHEMA public OWNER TO $t12_migration_role" >/dev/null
