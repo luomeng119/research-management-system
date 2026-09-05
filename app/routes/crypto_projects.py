@@ -179,7 +179,7 @@ def detail(project_id):
     project_groups = resources['groups']
     project_equipment = resources['items']
     all_equipment = resources['available']
-    return render_template('projects/detail.html', project=project, category='crypto', folder_tree=folder_tree, folder_types=FOLDER_TYPES, project_equipment=project_equipment, available_equipment=all_equipment, available_equipment_total=resources['available_total'], project_groups=project_groups)
+    return render_template('projects/detail.html', project=project, category='crypto', folder_tree=folder_tree, folder_types=RESEARCH_FOLDER_TYPES, project_equipment=project_equipment, available_equipment=all_equipment, available_equipment_total=resources['available_total'], project_groups=project_groups)
 
 @bp.route('/upload/<project_id>', methods=['POST'])
 def upload(project_id):

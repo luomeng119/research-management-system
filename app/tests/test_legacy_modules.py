@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from io import BytesIO
+import json
 import os
 import re
 from pathlib import Path
@@ -1006,6 +1007,15 @@ def test_special_project_equipment_routes_use_resource_service(
         lambda value: {"project_id": value, "name": "专项课题"},
     )
     equipment = equipment_service.create_equipment({"name": f"{prefix}设备"})
+    detail = equipment_routes.get(f"/{prefix}/detail/{project_id}")
+    assert detail.status_code == 200
+    detail_html = detail.get_data(as_text=True)
+    assert "专项课题" in detail_html
+    folder_data = json.loads(re.search(r"var folderData = (.*);", detail_html)[1])
+    assert [folder["name"] for folder in folder_data] == [
+        "任务输入文件", "研究成果文件", "院内审查文件", "机关审查文件", "成果上报文件",
+    ]
+    assert f'value="{equipment["equipment_id"]}"' in detail_html
     linked = equipment_routes.post(f"/{prefix}/link_equipment/{project_id}", data={
         "equipment_id": equipment["equipment_id"], "quantity": "2",
         "location": "专项实验室",
