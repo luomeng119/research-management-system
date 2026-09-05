@@ -164,6 +164,20 @@ try {
   // Retained editor: exercise real controls, persistence and a fresh history view.
   page.on('dialog', dialog => dialog.accept());
   await page.goto('/template/edit/research');
+  const staleTemplate = await context.newPage();
+  const expectedTemplateConflicts = [];
+  staleTemplate.on('pageerror', error => browserErrors.push({ type: 'pageerror', message: error.message }));
+  staleTemplate.on('console', message => {
+    if (message.type() !== 'error') return;
+    const entry = { type: 'console', message: message.text(), url: message.location().url };
+    if (entry.url === new URL('/template/api/save', baseURL).href
+        && /^Failed to load resource: the server responded with a status of 409\b/.test(entry.message)) {
+      expectedTemplateConflicts.push(entry);
+    } else browserErrors.push(entry);
+  });
+  await staleTemplate.goto('/template/edit/research');
+  const staleStructure = await staleTemplate.locator('#template-structure').inputValue();
+  await staleTemplate.locator('#template-name').fill('演练：未保存的过期修改');
   await page.locator('#template-name').fill('演练：设备论证模板');
   await page.locator('#template-structure').fill(JSON.stringify({ chapters: [
     { id: 'note', title: '研究说明', type: 'text' },
@@ -177,6 +191,23 @@ try {
     page.locator('#template-editor button[type="submit"]').click(),
   ]);
   expect(templateResponse.status()).toBe(200);
+  await expect(page.locator('#template-result')).toContainText('成功');
+  const winningStructure = await page.locator('#template-structure').inputValue();
+  const [conflictResponse] = await Promise.all([
+    staleTemplate.waitForResponse(response => response.url().endsWith('/template/api/save') && response.request().method() === 'POST'),
+    staleTemplate.locator('#template-editor button[type="submit"]').click(),
+  ]);
+  expect(conflictResponse.status()).toBe(409);
+  await expect(staleTemplate.locator('#template-result')).toContainText('尚未保存');
+  await expect(staleTemplate.locator('#template-name')).toHaveValue('演练：未保存的过期修改');
+  await expect(staleTemplate.locator('#template-structure')).toHaveValue(staleStructure);
+  await staleTemplate.reload();
+  await expect(staleTemplate.locator('#template-name')).toHaveValue('演练：设备论证模板');
+  const reloadedStructure = JSON.parse(await staleTemplate.locator('#template-structure').inputValue());
+  expect(reloadedStructure.chapters).toEqual(JSON.parse(winningStructure).chapters);
+  expect(expectedTemplateConflicts).toHaveLength(1);
+  journey.templateConflict = { status: 409, inputPreserved: true, winnerReloaded: true, expectedConsoleErrors: expectedTemplateConflicts };
+  await staleTemplate.close();
   await page.goto(`/argumentation/research/${encodeURIComponent(ids.projectBusinessId)}`);
   await page.locator('.ql-editor').fill('演练：原有论证设备核对');
   await page.locator('[data-chapter-id="list"]').getByRole('button', { name: /添加设备到清单/ }).click();
@@ -231,7 +262,7 @@ try {
   await expect(page.locator('#device_ref_ref')).toHaveValue(deviceId);
   await page.locator('.dropdown-toggle').filter({ hasText: '版本 v' }).click();
   await page.locator('a.dropdown-item').filter({ hasText: 'v1 -' }).click();
-  await expect(page.getByRole('status')).toContainText('仅供查看');
+  await expect(page.locator('p[role="status"].alert-info')).toContainText('仅供查看');
   await expect(page.locator('.ql-editor')).toHaveAttribute('contenteditable', 'false');
   await expect(page.locator('.ql-toolbar')).toHaveCount(0);
   await expect(page.getByRole('button', { name: /编辑章节/ })).toHaveCount(0);
