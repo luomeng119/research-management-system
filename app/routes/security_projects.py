@@ -4,7 +4,8 @@ from datetime import datetime
 from app.models import SecurityProjectModel
 from app.routes._shared import build_folder_tree, RESEARCH_FOLDER_TYPES
 from app.routes._project_bridge import (
-    legacy_page, safe_project_documents_path, safe_project_path,
+    legacy_page, safe_project_documents_path, safe_project_path, upload_project_file,
+    merge_project_files, controlled_project_download,
 )
 from app.security.auth import current_identity
 from app.services.projects import ProjectServiceError
@@ -185,7 +186,7 @@ def detail(project_id):
         project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
     except ValueError:
         return jsonify({'success': False, 'message': '非法路径'}), 400
-    folder_tree = build_folder_tree(project_dir)
+    folder_tree = merge_project_files(build_folder_tree(project_dir), project_id)
     resources = _equipment_service().project_equipment(project_id)
     project_groups = resources['groups']
     project_equipment = resources['items']
@@ -194,70 +195,7 @@ def detail(project_id):
 
 @bp.route('/upload/<project_id>', methods=['POST'])
 def upload(project_id):
-    if 'user' not in session:
-        return jsonify({'success': False, 'message': '未登录'})
-    folder = request.form.get('folder', '')
-    try:
-        project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
-    except ValueError:
-        flash('非法项目路径', 'error')
-        return redirect(url_for('security_projects.index'))
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'message': '请选择文件'})
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'success': False, 'message': '请选择文件'})
-    os.makedirs(folder_path, exist_ok=True)
-    
-    # 版本管理：重复上传保存到历史版本
-    filename = _safe_filename(file.filename)
-    name, ext = os.path.splitext(filename)
-    file_path = os.path.join(folder_path, filename)
-    history_dir = os.path.join(folder_path, '.history')
-    
-    if os.path.exists(file_path):
-        # 已有同名文件，创建历史版本
-        os.makedirs(history_dir, exist_ok=True)
-        
-        # 查找当前最高版本号
-        existing_versions = []
-        if os.path.exists(history_dir):
-            for f in os.listdir(history_dir):
-                if f.startswith(name + '_v'):
-                    try:
-                        v = int(f.split('_v')[1].split('.')[0])
-                        existing_versions.append(v)
-                    except:
-                        pass
-        
-        new_version = max(existing_versions) + 1 if existing_versions else 1
-        
-        # 将旧文件移动到历史目录
-        history_filename = f"{name}_v{new_version}{ext}"
-        history_path = os.path.join(history_dir, history_filename)
-        os.rename(file_path, history_path)
-        
-        # 记录版本信息
-        version_info = {
-            'version': new_version,
-            'upload_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'uploader': session.get('user'),
-            'original_name': filename
-        }
-        # 保存版本信息到JSON
-        import json
-        version_file = os.path.join(history_dir, f"{name}_versions.json")
-        versions_data = {}
-        if os.path.exists(version_file):
-            with open(version_file, 'r', encoding='utf-8') as f:
-                versions_data = json.load(f)
-        versions_data[filename] = versions_data.get(filename, [])
-        versions_data[filename].append(version_info)
-        with open(version_file, 'w', encoding='utf-8') as f:
-            json.dump(versions_data, f, ensure_ascii=False, indent=2)
-    
-    file.save(file_path)
-    return jsonify({'success': True, 'message': '上传成功'})
+    return upload_project_file(project_id, "SECURITY_CONFIDENTIALITY")
 
 @bp.route('/upload_folder/<project_id>', methods=['POST'])
 def upload_folder(project_id):
@@ -320,6 +258,9 @@ def create_folder(project_id):
 
 @bp.route('/download/<project_id>/<path:filepath>')
 def download_file(project_id, filepath):
+    controlled = controlled_project_download(project_id, "SECURITY_CONFIDENTIALITY", filepath)
+    if controlled is not None:
+        return controlled
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     try:

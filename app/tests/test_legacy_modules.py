@@ -40,6 +40,11 @@ class EquipmentFileServiceRecorder:
         self.items = []
         self.events = []
 
+    def list_project_paths(self, project_id):
+        # These equipment-only route fixtures contain no project attachments.
+        assert project_id in {"KY-001", "BM-001", "MM-001"}
+        return []
+
     def upload(
         self, stream, *, original_name, object_type, object_id,
         actor_user_id, request_id,

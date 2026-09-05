@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import os
-from pathlib import Path
 from queue import Queue
 import time
 import uuid
@@ -21,12 +20,13 @@ from app.services.files import FileService, FileServiceError
 
 def _schema(engine):
     metadata = sa.MetaData()
-    common = lambda: (
-        sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("created_by", sa.Integer),
-        sa.Column("updated_by", sa.Integer),
-        sa.Column("version", sa.Integer, nullable=False, server_default="1"),
-    )
+    def common():
+        return (
+            sa.Column("id", sa.String(36), primary_key=True),
+            sa.Column("created_by", sa.Integer),
+            sa.Column("updated_by", sa.Integer),
+            sa.Column("version", sa.Integer, nullable=False, server_default="1"),
+        )
     sa.Table(
         "stored_files", metadata, *common(),
         sa.Column("business_id", sa.Text, nullable=False, unique=True),
@@ -112,6 +112,63 @@ def _rows(engine, table_name):
     table = sa.Table(table_name, sa.MetaData(), autoload_with=engine)
     with engine.connect() as connection:
         return [dict(row) for row in connection.execute(sa.select(table)).mappings()]
+
+
+def test_project_path_upload_keeps_versions_and_distinguishes_folders(service, engine):
+    metadata = sa.MetaData()
+    projects = sa.Table("project_registry", metadata,
+                        sa.Column("business_id", sa.Text, primary_key=True))
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(projects.insert().values(business_id="PRJ-001"))
+    def upload(folder, payload):
+        return service.upload_project_path(
+            _pdf(payload), original_name="report.pdf", folder=folder,
+            project_id="PRJ-001", actor_user_id=1, request_id="req-path",
+        )
+    first = upload("任务输入文件", b"first")
+    second = upload("任务输入文件", b"second")
+    other = upload("研究成果文件", b"output")
+    assert first["fileId"] == second["fileId"] != other["fileId"]
+    assert [first["versionNo"], second["versionNo"], other["versionNo"]] == [1, 2, 1]
+    assert (service.storage_root / first["storagePath"]).read_bytes() == b"%PDF-1.7\nfirst"
+    assert (service.storage_root / second["storagePath"]).read_bytes() == b"%PDF-1.7\nsecond"
+    assert len(_rows(engine, "stored_files")) == 2
+    assert len(_rows(engine, "stored_file_versions")) == 3
+    assert {row["purpose"] for row in _rows(engine, "object_files")} == {
+        "PROJECT_TREE:任务输入文件/report.pdf", "PROJECT_TREE:研究成果文件/report.pdf",
+    }
+    before = {path: path.read_bytes() for path in service.storage_root.rglob("*") if path.is_file()}
+    service.audit_service.fail = True
+    with pytest.raises(FileServiceError) as error:
+        upload("任务输入文件", b"must roll back")
+    assert error.value.code == "FILE_OPERATION_FAILED"
+    assert len(_rows(engine, "stored_file_versions")) == 3
+    assert {path: path.read_bytes() for path in service.storage_root.rglob("*") if path.is_file()} == before
+    assert next(row for row in _rows(engine, "stored_files") if row["id"] == first["fileId"])["version"] == 2
+
+
+@pytest.mark.parametrize("folder,name", [
+    ("../outside", "report.pdf"), ("/absolute", "report.pdf"),
+    ("a//b", "report.pdf"), ("a/./b", "report.pdf"),
+    ("a/.history", "report.pdf"), ("a\\b", "report.pdf"),
+    ("a\x00b", "report.pdf"), ("a", "../report.pdf"),
+])
+def test_project_path_rejects_ambiguous_names_before_storage(service, engine, folder, name):
+    metadata = sa.MetaData()
+    projects = sa.Table("project_registry", metadata,
+                        sa.Column("business_id", sa.Text, primary_key=True))
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(projects.insert().values(business_id="PRJ-001"))
+    with pytest.raises(FileServiceError) as error:
+        service.upload_project_path(
+            _pdf(), original_name=name, folder=folder, project_id="PRJ-001",
+            actor_user_id=1, request_id="invalid-path",
+        )
+    assert error.value.code == "INVALID_PROJECT_PATH"
+    assert _rows(engine, "stored_files") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
 
 
 def test_upload_creates_uuid_path_hash_version_link_and_low_sensitivity_audit(service, engine):

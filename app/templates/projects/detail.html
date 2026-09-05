@@ -604,6 +604,7 @@ function renderTree(nodes, container) {
 }
 
 function buildNode(node) {
+    node = Object.assign({}, node, {path: escapeEq(node.path), name: escapeEq(node.name)});
     var hasChildren = node.children && node.children.length > 0;
     var lvl = node.level || 0;
     var indent = lvl * 20;
@@ -640,18 +641,26 @@ function buildNode(node) {
     if (node.files && node.files.length > 0) {
         html += '<div class="ms-4" style="padding-left:' + (indent + 20) + 'px;">';
         node.files.forEach(function(f) {
+            var downloadUrl = projectUpdateUrl + '/download/{{ project.project_id }}/' + encodeURIComponent(f.path);
+            var previewArgs = f.fileId
+                ? [f.fileId, f.versionNo, 'PROJECT', '{{ project.project_id }}', f.name, downloadUrl]
+                : ['/uploads/{{ project.project_id }}/' + f.path, f.name, 'project', downloadUrl];
+            var previewCall = (f.fileId ? 'openControlledPreview(' : 'openPreview(') + previewArgs.map(function(value) {
+                return JSON.stringify(value);
+            }).join(',') + ')';
+            f = Object.assign({}, f, {path: escapeEq(f.path), name: escapeEq(f.name)});
             html += '<div class="d-flex align-items-center mb-1">';
             // 文件勾选框
             html += '<input type="checkbox" class="form-check-input me-2 file-cb" value="' + f.path + '" data-type="file" onchange="toggleFolder(this)">';
             {% set proj_id = project.project_id %}
             // 文件名点击预览
-            html += '<a href="javascript:void(0)" onclick="openPreview(\'/uploads/{{ proj_id }}/' + f.path + '\', \'' + f.name.replace(/'/g, "\\'") + '\', \'project\', \'/projects/download/{{ proj_id }}/' + encodeURIComponent(f.path) + '\')" class="text-decoration-none text-dark">';
+            html += '<a href="javascript:void(0)" onclick="' + escapeEq(previewCall) + '" class="text-decoration-none text-dark">';
             html += '<i class="bi bi-file-text me-2"></i>';
             html += '<span class="me-2">' + f.name + '</span>';
             html += '</a>';
             html += '<span class="text-muted me-2" style="font-size:0.8em">(' + (f.size/1024).toFixed(1) + ' KB)</span>';
             // 下载项目文件
-            html += '<a href="/projects/download/{{ proj_id }}/' + encodeURIComponent(f.path) + '" class="btn btn-outline-info btn-sm" title="下载"><i class="bi bi-download"></i></a>';
+            html += '<a href="' + escapeEq(downloadUrl) + '" class="btn btn-outline-info btn-sm" title="下载"><i class="bi bi-download"></i></a>';
             // 重命名和删除对所有用户开放
             html += '<button class="btn btn-outline-primary btn-sm btn-rename" data-path="' + f.path + '" data-name="' + f.name + '"><i class="bi bi-pencil"></i></button>';
             html += '<button class="btn btn-outline-danger btn-sm btn-del" data-path="' + f.path + '"><i class="bi bi-trash"></i></button>';
@@ -778,7 +787,7 @@ function bindEvents() {
             fd.append('file', file);
             fd.append('folder', folder);
             
-            fetch('/projects/upload/' + projectId, {method:'POST', body:fd})
+            fetch(projectUpdateUrl + '/upload/' + projectId, {method:'POST', body:fd})
             .then(r=>r.json())
             .then(d=>{
                 uploaded++;
@@ -977,7 +986,7 @@ document.getElementById('uploadForm').onsubmit = function(e) {
         Array.from(folderInput.files).forEach(function(file) {
             fd.append('files', file);
         });
-        fetch('/projects/upload_folder/' + projectId, {method:'POST', body:fd})
+    fetch(projectUpdateUrl + '/upload_folder/' + projectId, {method:'POST', body:fd})
         .then(r=>r.json())
         .then(d=>{ 
             if(d.success) {
@@ -992,7 +1001,7 @@ document.getElementById('uploadForm').onsubmit = function(e) {
         });
     } else {
         // 单个文件上传
-        fetch('/projects/upload/' + projectId, {method:'POST', body:fd})
+        fetch(projectUpdateUrl + '/upload/' + projectId, {method:'POST', body:fd})
         .then(r=>r.json())
         .then(d=>{ 
             if(d.success) {

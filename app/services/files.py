@@ -488,56 +488,76 @@ class FileService:
 
     def _upload_staged(
         self, staged: _StagedFile, *, object_type: str, object_id: str,
-        actor_user_id: int, request_id: str, create_metadata=None,
+        actor_user_id: int, request_id: str, create_metadata=None, project_path=None,
     ) -> dict:
         relative_path, final_path = self._destination(staged.extension)
         file_id = uuid.uuid4()
         started = time.monotonic()
         moved = False
+        version_no = 1
         try:
             with self.repository.engine.begin() as connection:
                 if create_metadata is not None:
                     create_metadata(_MetadataWriter(connection))
                 self._lock_object_write(connection, object_type, str(object_id))
-                self.repository.create_file(
-                    connection,
-                    file_id=file_id,
-                    business_id=f"FILE-{uuid.uuid4().hex.upper()}",
-                    original_name=staged.original_name,
-                    media_type=staged.media_type,
-                    actor_user_id=actor_user_id,
-                )
+                existing = self.repository.get_project_path_file(
+                    connection, project_id=str(object_id), purpose=project_path,
+                ) if project_path is not None else None
+                if existing is not None:
+                    if existing["status"] != "ACTIVE":
+                        raise FileServiceError("FILE_ARCHIVED", "文件已归档", 409)
+                    if staged.extension != Path(existing["original_name"]).suffix.lower() or staged.media_type != existing["media_type"]:
+                        raise FileServiceError("FILE_TYPE_MISMATCH", "新版本必须与原文件类型一致", 415)
+                    file_id = existing["id"]
+                    version_no = int(existing["version"]) + 1
+                    if not self.repository.bump_file(
+                        connection, file_id=file_id, expected_version=version_no - 1,
+                        actor_user_id=actor_user_id, original_name=staged.original_name,
+                        media_type=staged.media_type,
+                    ):
+                        raise FileServiceError("VERSION_CONFLICT", "文件版本已变化", 409)
+                else:
+                    self.repository.create_file(
+                        connection,
+                        file_id=file_id,
+                        business_id=f"FILE-{uuid.uuid4().hex.upper()}",
+                        original_name=staged.original_name,
+                        media_type=staged.media_type,
+                        actor_user_id=actor_user_id,
+                    )
                 self.repository.create_version(
                     connection,
                     version_id=uuid.uuid4(),
                     file_id=file_id,
-                    version_no=1,
+                    version_no=version_no,
                     storage_path=relative_path,
                     sha256=staged.sha256,
                     size_bytes=staged.size_bytes,
                     media_type=staged.media_type,
                     actor_user_id=actor_user_id,
                 )
-                self.repository.link_object(
-                    connection,
-                    link_id=uuid.uuid4(),
-                    object_type=object_type,
-                    object_id=str(object_id),
-                    file_id=file_id,
-                    actor_user_id=actor_user_id,
-                )
+                if existing is None:
+                    self.repository.link_object(
+                        connection,
+                        link_id=uuid.uuid4(),
+                        object_type=object_type,
+                        object_id=str(object_id),
+                        file_id=file_id,
+                        actor_user_id=actor_user_id,
+                        purpose=project_path,
+                    )
                 os.replace(staged.path, final_path)
                 moved = True
                 self._audit(
                     connection,
-                    operation="UPLOAD",
+                    operation="ADD_VERSION" if existing is not None else "UPLOAD",
                     staged=staged,
                     file_id=str(file_id),
                     actor_user_id=actor_user_id,
                     request_id=request_id,
                     started=started,
                 )
-            return self._result(str(file_id), staged, relative_path, 1)
+            return self._result(str(file_id), staged, relative_path, version_no)
         except FileServiceError:
             if moved:
                 final_path.unlink(missing_ok=True)
@@ -556,6 +576,38 @@ class FileService:
         return self._upload_staged(
             staged, object_type=object_type, object_id=str(object_id),
             actor_user_id=actor_user_id, request_id=request_id,
+        )
+
+    def list_project_paths(self, project_id: str) -> list[dict]:
+        self._validate_object("PROJECT", str(project_id))
+        with self.repository.engine.connect() as connection:
+            rows = self.repository.list_project_paths(connection, project_id=str(project_id))
+        return [{
+            "fileId": str(row["id"]), "versionNo": int(row["version"]),
+            "path": row["purpose"][len("PROJECT_TREE:"):],
+            "name": row["original_name"], "size": row["size_bytes"],
+            "modified": "", "has_history": "true" if row["version"] > 1 else "false",
+            "current_version": f"v{row['version']}",
+        } for row in rows]
+
+    def upload_project_path(
+        self, stream, *, original_name: str, folder: str, project_id: str,
+        actor_user_id: int, request_id: str,
+    ) -> dict:
+        """Append to a logical project file while retaining every controlled version."""
+        parts = folder.split("/") if isinstance(folder, str) and folder else []
+        if (not isinstance(folder, str) or not isinstance(original_name, str)
+                or not original_name or "/" in original_name or "\\" in original_name
+                or "\\" in folder
+                or any(part in {"", ".", ".."} or part.casefold() == ".history" for part in parts)
+                or any(ord(char) < 32 or ord(char) == 127 for char in folder + original_name)):
+            raise FileServiceError("INVALID_PROJECT_PATH", "非法项目文件路径", 400)
+        self._validate_object_write("PROJECT", str(project_id))
+        staged = self._stage(stream, original_name)
+        return self._upload_staged(
+            staged, object_type="PROJECT", object_id=str(project_id),
+            actor_user_id=actor_user_id, request_id=request_id,
+            project_path="PROJECT_TREE:" + "/".join([*parts, staged.original_name]),
         )
 
     def upload_new_object(

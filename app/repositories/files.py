@@ -212,6 +212,7 @@ class FilesRepository:
         object_id: str,
         file_id: uuid.UUID | str,
         actor_user_id: int,
+        purpose: str | None = None,
     ) -> None:
         connection.execute(
             self.links.insert().values(
@@ -221,12 +222,36 @@ class FilesRepository:
                     object_type=object_type,
                     object_id=str(object_id),
                     file_id=self._id(connection, file_id),
+                    purpose=purpose,
                     created_by=actor_user_id,
                     updated_by=actor_user_id,
                     version=1,
                 )
             )
         )
+
+    def list_project_paths(self, connection: Connection, *, project_id: str):
+        statement = sa.select(
+            self.files, self.links.c.purpose, self.versions.c.size_bytes,
+        ).join(self.links, self.links.c.file_id == self.files.c.id).join(
+            self.versions, sa.and_(self.versions.c.file_id == self.files.c.id,
+                                  self.versions.c.version_no == self.files.c.version),
+        ).where(
+            self.links.c.object_type == "PROJECT", self.links.c.object_id == str(project_id),
+            self.links.c.purpose.startswith("PROJECT_TREE:"), self.files.c.status == "ACTIVE",
+        ).order_by(self.links.c.purpose)
+        return list(connection.execute(statement).mappings())
+
+    def get_project_path_file(self, connection: Connection, *, project_id: str, purpose: str):
+        # The caller holds the project write lock, including before the first link exists.
+        statement = sa.select(self.files).join(
+            self.links, self.links.c.file_id == self.files.c.id,
+        ).where(
+            self.links.c.object_type == "PROJECT",
+            self.links.c.object_id == str(project_id),
+            self.links.c.purpose == purpose,
+        )
+        return connection.execute(statement).mappings().one_or_none()
 
     def get_linked_file(
         self,
