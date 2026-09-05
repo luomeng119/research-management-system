@@ -809,12 +809,11 @@ class FileService:
                         request_id=request_id, started=started,
                     )
                     return {"fileId": file_id, "status": "ARCHIVED"}
-                if not self.repository.bump_file(
+                if not self.repository.archive_file(
                     connection,
                     file_id=file_id,
                     expected_version=int(row["version"]),
                     actor_user_id=actor_user_id,
-                    status="ARCHIVED",
                 ):
                     raise FileServiceError("VERSION_CONFLICT", "文件版本已变化", 409)
                 self._audit(

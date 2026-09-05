@@ -656,6 +656,9 @@ def test_new_version_preserves_v1_detects_conflict_and_archive_preserves_history
         actor_user_id=1, request_id="req-archive",
     )
     assert len(_rows(engine, "stored_file_versions")) == 2
+    archived_file = _rows(engine, "stored_files")[0]
+    assert archived_file["status"] == "ARCHIVED"
+    assert archived_file["version"] == 2
     assert all((service.storage_root / row["storage_path"]).exists() for row in _rows(engine, "stored_file_versions"))
     with pytest.raises(FileServiceError) as archived:
         service.open_version(first["fileId"], 2, object_type="EXPENSE", object_id="7")

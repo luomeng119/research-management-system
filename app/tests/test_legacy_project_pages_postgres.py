@@ -25,7 +25,7 @@ from app.services.files import FileServiceError
     ("SECURITY_CONFIDENTIALITY", "security_projects"),
     ("CRYPTO_APPLICATION", "crypto_projects"),
 ])
-@pytest.mark.parametrize("operation", ["detail", "upload", "path_versions", "folder_upload", "file_rename"])
+@pytest.mark.parametrize("operation", ["detail", "upload", "path_versions", "folder_upload", "file_rename", "file_archive"])
 def test_retained_project_reads_and_uploads(tmp_path, category, prefix, operation, monkeypatch):
     if not os.environ.get("T02_ISOLATED_POSTGRES_ROOT"):
         pytest.skip("requires owned PostgreSQL harness")
@@ -182,7 +182,7 @@ setImmediate(()=>process.stdout.write(JSON.stringify({sent,state})));
             assert len(service.list_for_object(
                 object_type="PROJECT", object_id=project["businessId"],
             )) == 1
-        if operation in {"upload", "file_rename"}:
+        if operation in {"upload", "file_rename", "file_archive"}:
             csrf_page = client.get("/users/change-password")
             csrf = re.search(r'name="_csrf_token" value="([^"]+)"', csrf_page.text)[1]
             uploaded = client.post(f"/{prefix}/upload/{project['businessId']}",
@@ -278,6 +278,36 @@ vm.runInNewContext(fs.readFileSync(0, 'utf8'), {openControlledPreview: callback}
             assert app.extensions["file_service"].list_for_object(
                 object_type="PROJECT", object_id=project["businessId"],
             )[0]["versionNo"] == 2
+            if operation == "file_archive":
+                service = app.extensions["file_service"]
+                def reject_archive_audit(*args, **kwargs):
+                    raise RuntimeError("injected archive audit failure")
+                with monkeypatch.context() as failure:
+                    failure.setattr(service.audit_service, "record", reject_archive_audit)
+                    with pytest.raises(FileServiceError) as failed:
+                        service.archive(files[0]["fileId"], object_type="PROJECT", object_id=project["businessId"],
+                                        actor_user_id=user_id, request_id="archive-audit-failure")
+                    assert failed.value.code == "FILE_OPERATION_FAILED"
+                active = service.list_project_paths(project["businessId"])
+                assert [(row["fileId"], row["versionNo"]) for row in active] == [(files[0]["fileId"], 2)]
+                for attempt in range(2):
+                    service.archive(files[0]["fileId"], object_type="PROJECT", object_id=project["businessId"],
+                                    actor_user_id=user_id, request_id=f"archive-version-{attempt}")
+                    with engine.connect() as connection:
+                        row = service.repository.get_linked_file(
+                            connection, file_id=files[0]["fileId"], object_type="PROJECT",
+                            object_id=project["businessId"],
+                        )
+                        assert row["status"] == "ARCHIVED" and row["version"] == 2
+                        for number, expected_bytes in [(1, b"research input"), (2, b"second revision")]:
+                            version = service.repository.get_version(
+                                connection, file_id=files[0]["fileId"], version_no=number,
+                            )
+                            assert (service.storage_root / version["storage_path"]).read_bytes() == expected_bytes
+                        assert service.repository.get_version(
+                            connection, file_id=files[0]["fileId"], version_no=3,
+                        ) is None
+                assert service.list_project_paths(project["businessId"]) == []
             if operation == "file_rename":
                 assert links.rename_buttons[0]["data-file-id"] == files[0]["fileId"]
                 submit_code = re.search(

@@ -314,6 +314,19 @@ class FilesRepository:
         )
         return int(connection.scalar(statement) or 0)
 
+    def archive_file(self, connection: Connection, *, file_id: str,
+                     expected_version: int, actor_user_id: int) -> bool:
+        """Change lifecycle status without inventing a new content version."""
+        values = {"status": "ARCHIVED", "updated_by": actor_user_id}
+        if "updated_at" in self.files.c:
+            values["updated_at"] = sa.func.now()
+        result = connection.execute(self.files.update().where(
+            self.files.c.id == self._id(connection, file_id),
+            self.files.c.version == expected_version,
+            self.files.c.status == "ACTIVE",
+        ).values(**values))
+        return result.rowcount == 1
+
     def bump_file(
         self,
         connection: Connection,
