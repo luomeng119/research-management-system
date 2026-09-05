@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from io import BytesIO
 import os
+import re
 from pathlib import Path
 import uuid
 
@@ -307,6 +308,24 @@ def equipment_routes(expert_engine, equipment_service, tmp_path):
             role="BUSINESS_USER", account_version=1,
         )
     return client
+
+
+@pytest.mark.parametrize("query", ["", "?fragment=1"])
+@pytest.mark.parametrize("price, expected", [(None, "-"), ("0", "0.00")])
+def test_equipment_page_renders_missing_values_without_hiding_zero(
+    equipment_routes, equipment_service, query, price, expected,
+):
+    equipment_service.create_equipment({"name": "空值演练设备", "price": price})
+    response = equipment_routes.get("/equipment/" + query)
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    rows = re.findall(r"<tr\b[^>]*>.*?</tr>", html, flags=re.S)
+    row = next(row for row in rows if "空值演练设备" in row)
+    cells = re.findall(r"<td\b[^>]*>(.*?)</td>", row, flags=re.S)
+    assert [cells[index].strip() for index in (1, 3, 5, 6)] == [
+        "-", "-", "-", expected,
+    ]
+    assert f"单价: {expected} 万元" in row
 
 
 def test_equipment_service_uses_bounded_filters_and_preserves_fields(equipment_service):

@@ -111,7 +111,7 @@
 分类: {{ e['category'] or '-' }}
 设备子类: {{ e['subclass'] or '-' }}
 形态: {{ e['form'] or '-' }}
-单价: {{ e['price'] }} 万元
+单价: {{ e['price'] if e['price'] is not none else '-' }} 万元
 技术状态: {{ e['tech_status'] or '-' }}
 研制单位: {{ e['manufacturer'] or '-' }}
 主要用途: {{ e['main_purpose'] or '-' }}
@@ -119,12 +119,12 @@
 加装要求: {{ e['installation_requirements'] or '-' }}
 资源保障: {{ e['resource_guarantee'] or '-' }}">
                     <td>{% if e['name'] %}{{ e['name'][:20] }}{% if e['name']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
-                    <td>{{ e['model'] }}</td>
+                    <td>{{ e['model'] or '-' }}</td>
                     <td>{% if e['former_name'] %}{{ e['former_name'][:20] }}{% if e['former_name']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
-                    <td>{{ e['category'] }}</td>
+                    <td>{{ e['category'] or '-' }}</td>
                     <td>{{ e['subclass'] or '-' }}</td>
-                    <td>{{ e['form'] }}</td>
-                    <td>{{ e['price'] }}</td>
+                    <td>{{ e['form'] or '-' }}</td>
+                    <td>{{ e['price'] if e['price'] is not none else '-' }}</td>
                     <td>{{ e['tech_status'] or '-' }}</td>
                     <td>{% if e['manufacturer'] %}{{ e['manufacturer'][:20] }}{% if e['manufacturer']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
                     <td>{% if e['main_purpose'] %}{{ e['main_purpose'][:20] }}{% if e['main_purpose']|length > 20 %}...{% endif %}{% else %}-{% endif %}</td>
