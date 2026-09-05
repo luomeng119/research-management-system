@@ -262,7 +262,7 @@ SELECT
     $DumpPath = Join-Path $ExtractRoot "database.dump"
     $null = & $PgRestoreExe @("--list", "--no-password", $DumpPath)
     if ($LASTEXITCODE -ne 0) { throw "database.dump is not a readable PostgreSQL custom-format archive." }
-    & $PgRestoreExe @("--exit-on-error", "--single-transaction", "--no-owner", "--no-privileges", "--no-password", $DumpPath)
+    & $PgRestoreExe @("--dbname=$($MigrationConnection.Database)", "--exit-on-error", "--single-transaction", "--no-owner", "--no-privileges", "--no-password", $DumpPath)
     if ($LASTEXITCODE -ne 0) { throw "pg_restore failed with exit code $LASTEXITCODE. Discard this staging target." }
 
     $Provisioner = Join-Path $PSScriptRoot "provision_postgres.py"

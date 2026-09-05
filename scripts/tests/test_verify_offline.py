@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import getpass
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +17,46 @@ import sqlalchemy as sa
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "verify_offline.py"
+
+
+@pytest.mark.skipif(not os.environ.get("T02_ISOLATED_POSTGRES_ROOT"), reason="requires owned PostgreSQL harness")
+def test_restore_adapter_native_arguments_write_the_selected_database(tmp_path):
+    """Execute the adapter's native argv, not PowerShell itself, on owned PG."""
+    url = sa.engine.make_url(os.environ["MIGRATION_DATABASE_URL"])
+    assert url.port == int(os.environ["T02_ISOLATED_POSTGRES_PORT"])
+    assert url.database == os.environ["T02_ISOLATED_POSTGRES_DATABASE"]
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.upper().startswith("PG")}
+    environment.update(PGHOST="127.0.0.1", PGPORT=str(url.port),
+                       PGUSER=url.username, PGPASSWORD=url.password or "",
+                       PGDATABASE=url.database)
+    dump = tmp_path / "database.dump"
+    subprocess.run(["pg_dump", "--format=custom", "--file", str(dump)],
+                   env=environment, check=True, capture_output=True, timeout=30)
+    target = "restore_argv_" + uuid.uuid4().hex[:12]
+    subprocess.run(["createdb", "--template=template0", "--owner", url.username, target],
+                   env={**environment, "PGUSER": getpass.getuser(), "PGPASSWORD": ""},
+                   check=True, capture_output=True, timeout=10)
+    script = SCRIPT.with_name("restore.ps1").read_text()
+    invocation = re.findall(r'^\s*& \$PgRestoreExe @\((.*)\)$', script, re.M)
+    assert len(invocation) == 1
+    arguments = []
+    for token in invocation[0].split(", "):
+        if token == "$DumpPath":
+            arguments.append(str(dump))
+        else:
+            assert token.startswith('"--') and token.endswith('"'), token
+            arguments.append(token[1:-1].replace("$($MigrationConnection.Database)", target))
+    restored = subprocess.run(["pg_restore", *arguments], env={**environment, "PGDATABASE": target},
+                              capture_output=True, text=True, timeout=30)
+    assert restored.returncode == 0, restored.stderr
+    engine = sa.create_engine(url.set(database=target))
+    try:
+        with engine.connect() as connection:
+            assert connection.execute(sa.text("SELECT to_regclass('public.proposals')")).scalar() == "proposals"
+            assert connection.execute(sa.text("SELECT count(*) FROM alembic_version")).scalar() == 1
+    finally:
+        engine.dispose()
 
 
 def test_restore_marker_survives_killed_process_and_rejects_reuse(tmp_path):
