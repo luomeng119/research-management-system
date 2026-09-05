@@ -516,10 +516,14 @@ class GenericTablesService:
         rows_b = {row["row_key"]: row for row in self.get_rows(version_id_b)}
         col_diff = {}
         for key in cols_a.keys() | cols_b.keys():
-            if key not in cols_a: status = "added"
-            elif key not in cols_b: status = "deleted"
-            elif any(cols_a[key].get(field) != cols_b[key].get(field) for field in ("col_name", "col_type", "col_summary")): status = "modified"
-            else: status = "unchanged"
+            if key not in cols_a:
+                status = "added"
+            elif key not in cols_b:
+                status = "deleted"
+            elif any(cols_a[key].get(field) != cols_b[key].get(field) for field in ("col_name", "col_type", "col_summary")):
+                status = "modified"
+            else:
+                status = "unchanged"
             col_diff[key] = status
         row_diff = []
         for key in sorted(rows_a.keys() | rows_b.keys()):

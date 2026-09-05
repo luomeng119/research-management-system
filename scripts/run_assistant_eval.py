@@ -14,11 +14,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.ai.deepseek import DeepSeekProposalAssistant
-from app.ai.contract import PROMPT_VERSION, finalize_assistant_content
-from app.tests.ai_eval.dataset import DATASET_SHA256, DATASET_VERSION, load_samples
-from app.tests.ai_eval.scorer import evaluate
-
 
 def _build_evaluation_record(
     *, sample_id: str, provider_raw: str, finalized: str, model: str,
@@ -45,6 +40,11 @@ def _build_evaluation_record(
 
 
 def main() -> int:
+    from app.ai.deepseek import DeepSeekProposalAssistant
+    from app.ai.contract import PROMPT_VERSION, finalize_assistant_content
+    from app.tests.ai_eval.dataset import DATASET_SHA256, DATASET_VERSION, load_samples
+    from app.tests.ai_eval.scorer import evaluate
+
     parser = argparse.ArgumentParser(description="Run the frozen proposal assistant evaluation")
     parser.add_argument("--output", required=True, help="JSON result path")
     parser.add_argument("--model", default=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"))

@@ -499,9 +499,12 @@ class ExpenseService:
             raise ExpenseValidationError("INVALID_FIELD", "支付字段无效")
         values = {}
         for key, value in fields.items():
-            if key == "amount": values[key] = self.amount(value)
-            elif key == "pay_date": values[key] = self._date(value, field="支付日期")
-            else: values[key] = self._text(value, maximum=200)
+            if key == "amount":
+                values[key] = self.amount(value)
+            elif key == "pay_date":
+                values[key] = self._date(value, field="支付日期")
+            else:
+                values[key] = self._text(value, maximum=200)
         with self.repository.engine.begin() as connection:
             current, reimbursement = self._lock_payment_parent_first(connection, pid)
             if reimbursement is not None:

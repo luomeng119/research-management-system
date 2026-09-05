@@ -8,7 +8,6 @@ import codecs
 import mimetypes
 import os
 from pathlib import Path
-import re
 import stat
 import struct
 import time
