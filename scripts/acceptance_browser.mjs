@@ -103,6 +103,7 @@ try {
   await page.locator('button[type="submit"]').click();
   if (/\/auth\/login/.test(page.url())) throw new Error('Acceptance login failed.');
 
+  const visitedViews = [];
   async function open(path, marker) {
     const response = await page.goto(path);
     if (!response) throw new Error(`Route returned no response: ${path}`);
@@ -112,8 +113,10 @@ try {
     }
     if (/\/auth\/login/.test(page.url())) throw new Error(`Route redirected to login: ${path}`);
     await page.getByText(marker, { exact: false }).filter({ visible: true }).first().waitFor({ state: 'visible', timeout: 10000 });
+    if (!visitedViews.some(view => view.path === path)) visitedViews.push({ path, marker });
   }
 
+  await open('/', '工作台');
   await open(`/proposals/${encodeURIComponent(ids.proposalBusinessId)}`, '提案内容');
   await page.getByRole('heading', { name: 'V1验收-智能保障设备适配研究-20260904', exact: true }).waitFor({ state: 'visible' });
   await page.getByText('v1-proposal-source.txt', { exact: true }).waitFor({ state: 'visible' });
@@ -179,6 +182,20 @@ try {
     await expect(page.getByText(previous.journey.outputTitle, { exact: true })).toBeVisible();
     journey.restored = { proposalBusinessId: previous.journey.proposalBusinessId, projectId: previous.journey.projectId, readOnly: true };
     await page.screenshot({ path: `${resultPath}.png`, fullPage: true });
+    journey.desktopLayouts = [];
+    for (const [width, height] of [[1280, 720], [1366, 768], [1440, 900]]) {
+      await page.setViewportSize({ width, height });
+      for (const [index, view] of [...visitedViews].entries()) {
+        await open(view.path, view.marker);
+        await page.evaluate(() => document.fonts.ready);
+        await expect.poll(() => page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)), {
+          message: `${view.path} must not overflow the ${width}px desktop viewport`,
+        }).toBeLessThanOrEqual(width);
+        const screenshot = `${resultPath}.layout-${width}-${index}.png`;
+        await page.screenshot({ path: screenshot, fullPage: true });
+        journey.desktopLayouts.push({ path: view.path, width, height, noPageOverflow: true, screenshot });
+      }
+    }
   } else {
   await runJourney(page, journey);
   // Retained editor: exercise real controls, persistence and a fresh history view.
