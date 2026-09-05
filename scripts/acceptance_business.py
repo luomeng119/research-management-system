@@ -606,6 +606,59 @@ def _load_json(path: Path) -> dict:
     return payload
 
 
+def verify_ui_journey(services, evidence: dict) -> dict:
+    """Read the records and physical attachment created only through the browser UI."""
+    journey = evidence.get("journey") or {}
+    required = ("proposalBusinessId", "projectId", "title", "attachmentName",
+                "attachmentSha256", "progressSummary", "outputTitle", "closureSummary")
+    research_fields = ("sourceType", "sourceSummary", "researchProblem", "objectives",
+                       "researchContent", "expectedOutcomes")
+    submitted = journey.get("proposalFields") or {}
+    if evidence.get("status") != "PASSED" or journey.get("status") != "PASSED" or any(
+        not journey.get(key) for key in required
+    ) or any(not submitted.get(key) for key in research_fields):
+        raise AcceptanceContractError("browser journey evidence is incomplete")
+    proposals = services["proposal_service"]
+    projects = services["project_service"]
+    proposal = proposals.get(journey["proposalBusinessId"])
+    project = projects.get(journey["projectId"])
+    arguments = proposals.list_argumentations(proposal["businessId"])["items"]
+    decisions = proposals.list_decisions(proposal["businessId"])["items"]
+    progress = projects.list_progress(project["id"])
+    outputs = projects.list_outputs(project["id"])
+    closure = projects.get_closure(project["id"])
+    files = services["file_service"].list_for_object(
+        object_type="PROPOSAL", object_id=proposal["businessId"]
+    )
+    checks = {
+        "proposal": proposal["title"] == journey["title"] and proposal["status"] == "ESTABLISHED",
+        "researchInputs": all(proposal.get(key) == submitted[key] for key in research_fields),
+        "project": project["name"] == journey["title"] and project["status"] == "CLOSED",
+        "relation": project["sourceProposalId"] == proposal["id"],
+        "argumentation": len(arguments) == 1 and arguments[0]["conclusion"] == "建议立项",
+        "decision": len(decisions) == 1 and decisions[0]["decision"] == "ESTABLISH",
+        "progress": len(progress) == 1 and progress[0]["summary"] == journey["progressSummary"],
+        "output": len(outputs) == 1 and outputs[0]["title"] == journey["outputTitle"],
+        "closure": bool(closure) and closure["conclusion"] == "PASS"
+        and closure["summary"] == journey["closureSummary"],
+        "file": len(files) == 1 and files[0]["originalName"] == journey["attachmentName"],
+    }
+    if not all(checks.values()):
+        raise AcceptanceContractError(f"browser journey persistence mismatch: {checks}")
+    opened = services["file_service"].open_version_stream(
+        files[0]["fileId"], files[0]["versionNo"],
+        object_type="PROPOSAL", object_id=proposal["businessId"],
+    )
+    try:
+        digest = hashlib.sha256(opened["stream"].read()).hexdigest()
+    finally:
+        opened["stream"].close()
+    if digest != journey["attachmentSha256"] or digest != opened["sha256"]:
+        raise AcceptanceContractError("browser journey attachment hash mismatch")
+    return {"status": "PASSED", "checks": checks, "attachmentSha256": digest,
+            "proposalBusinessId": proposal["businessId"], "projectId": project["id"]}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -618,6 +671,9 @@ def main(argv: list[str] | None = None) -> int:
     operator_parser = subparsers.add_parser("ensure-user")
     operator_parser.add_argument("--username", required=True)
     operator_parser.add_argument("--name", required=True)
+    journey_parser = subparsers.add_parser("verify-journey")
+    journey_parser.add_argument("--expected", type=Path, required=True)
+    journey_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
 
     os.environ["AI_PROVIDER"] = "DISABLED"
@@ -632,6 +688,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise AcceptanceContractError("acceptance operator password was not supplied on stdin")
             ensure_operator(services, args.username, args.name, password)
             password = ""
+        elif args.command == "verify-journey":
+            snapshot = verify_ui_journey(services, _load_json(args.expected))
+            _write_json(args.output, snapshot)
         elif args.command == "seed":
             snapshot = seed(services, args.username)
             _write_json(args.output, snapshot)

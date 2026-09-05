@@ -190,6 +190,8 @@ t12_password=""
 
 "$t12_python" scripts/acceptance_business.py verify \
   --expected "$t12_baseline" --output "$t12_after"
+"$t12_python" scripts/acceptance_business.py verify-journey \
+  --expected "$t12_browser_result" --output "$t12_evidence_root/journey-persistence.json"
 
 stop_t12_waitress
 

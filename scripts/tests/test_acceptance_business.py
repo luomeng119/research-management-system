@@ -21,6 +21,53 @@ def _load_helper():
     return module
 
 
+@pytest.mark.parametrize('payload', [{}, {'status': 'FAILED'}, {'status': 'PASSED', 'journey': {}}])
+def test_ui_journey_verification_rejects_incomplete_browser_evidence(payload):
+    helper = _load_helper()
+    with pytest.raises(helper.AcceptanceContractError, match='incomplete'):
+        helper.verify_ui_journey({}, payload)
+
+
+@pytest.mark.parametrize("drift", [None, "sourceType", "sourceSummary", "researchProblem", "objectives", "researchContent", "expectedOutcomes", "relation", "attachment"])
+def test_ui_journey_verifier_checks_research_inputs_relations_and_actual_bytes(drift):
+    import hashlib
+
+    helper = _load_helper()
+    services = _fake_services(helper)
+    fields = {"sourceType": "IDEA", "sourceSummary": "已有实验材料", "researchProblem": "接口适配问题",
+              "objectives": "完成验证", "researchContent": "进行适配实验", "expectedOutcomes": "实验报告"}
+    proposal = services["proposal_service"].get.return_value
+    proposal.update(fields)
+    proposal["title"] = "独立页面演练"
+    project = services["project_service"].get.return_value
+    project["name"] = "独立页面演练"
+    services["project_service"].get_closure.return_value["summary"] = "研究完成"
+    services["file_service"].list_for_object.side_effect = None
+    services["file_service"].list_for_object.return_value = [{
+        "fileId": "PFILE", "versionNo": 1, "originalName": "source.txt",
+    }]
+    digest = hashlib.sha256(b"original research source").hexdigest()
+    services["file_service"].open_version_stream.side_effect = lambda *a, **k: {
+        "stream": io.BytesIO(b"tampered" if drift == "attachment" else b"original research source"),
+        "sha256": digest,
+    }
+    evidence = {"status": "PASSED", "journey": {
+        "status": "PASSED", "proposalBusinessId": "TP-ACTUAL", "projectId": "REG-ACTUAL",
+        "title": "独立页面演练", "proposalFields": dict(fields), "attachmentName": "source.txt",
+        "attachmentSha256": digest, "progressSummary": "V1验收-阶段进展记录-20260904",
+        "outputTitle": "V1验收-适配研究报告-20260904", "closureSummary": "研究完成",
+    }}
+    if drift in fields:
+        proposal[drift] = ""
+    elif drift == "relation":
+        project["sourceProposalId"] = "wrong-proposal"
+    if drift is None:
+        assert helper.verify_ui_journey(services, evidence)["status"] == "PASSED"
+    else:
+        with pytest.raises(helper.AcceptanceContractError, match="mismatch"):
+            helper.verify_ui_journey(services, evidence)
+
+
 def test_business_helper_uses_formal_services_for_complete_v1_chain():
     source = HELPER.read_text(encoding="utf-8")
     required_calls = (

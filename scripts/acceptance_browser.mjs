@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { chromium } from '@playwright/test';
+import { runJourney } from './acceptance_journey.mjs';
 
 
 function required(name) {
@@ -20,8 +21,12 @@ const outboundPath = required('ACCEPTANCE_OUTBOUND');
 const resultPath = required('ACCEPTANCE_RESULT');
 const username = required('ACCEPTANCE_USERNAME');
 const outbound = [];
+const browserErrors = [];
+const expectedValidationErrors = [];
 let status = 'FAILED';
 let browser;
+let page;
+const journey = {};
 
 try {
   const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
@@ -51,7 +56,25 @@ try {
     }
     websocket.connectToServer();
   });
-  const page = await context.newPage();
+  page = await context.newPage();
+  page.on('pageerror', error => browserErrors.push({ type: 'pageerror', message: error.message }));
+  page.on('console', message => {
+    if (message.type() !== 'error') return;
+    const entry = { type: 'console', message: message.text(), url: message.location().url };
+    // The journey deliberately submits one invalid draft to test server validation.
+    if (entry.url === new URL('/proposals/new', baseURL).href
+        && /^Failed to load resource: the server responded with a status of 422\b/.test(entry.message)) {
+      expectedValidationErrors.push(entry);
+    } else {
+      browserErrors.push(entry);
+    }
+  });
+  context.on('requestfailed', request => {
+    const url = new URL(request.url());
+    if (['127.0.0.1', 'localhost'].includes(url.hostname)) {
+      browserErrors.push({ type: 'requestfailed', url: request.url(), message: request.failure()?.errorText });
+    }
+  });
 
   context.on('request', request => {
     const url = new URL(request.url());
@@ -137,11 +160,29 @@ try {
   await open('/utils/', '文档校对');
   await page.locator('.container').getByRole('button', { name: '当前未启用', exact: true }).waitFor({ state: 'visible' });
 
+  await runJourney(page, journey);
   if (outbound.length !== 0) throw new Error('Non-local browser requests were observed.');
+  if (browserErrors.length !== 0) throw new Error(`Browser errors observed: ${JSON.stringify(browserErrors)}`);
+  if (expectedValidationErrors.length > 1) throw new Error('Unexpected repeated validation response.');
   status = 'PASSED';
 } finally {
   password = '';
-  fs.writeFileSync(outboundPath, JSON.stringify(outbound, null, 2));
-  fs.writeFileSync(resultPath, JSON.stringify({ status }, null, 2));
-  if (browser) await browser.close();
+  try {
+    if (page && status !== 'PASSED') {
+      try {
+        fs.writeFileSync(`${resultPath}.failure.html`, await page.content());
+        await page.screenshot({ path: `${resultPath}.failure.png`, fullPage: true });
+      } catch (error) {
+        // Supplemental capture must not hide the original failure or prevent cleanup.
+        console.error(`Failure capture unavailable: ${error.message}`);
+      }
+    }
+  } finally {
+    try {
+      if (browser) await browser.close();
+    } finally {
+      fs.writeFileSync(outboundPath, JSON.stringify(outbound, null, 2));
+      fs.writeFileSync(resultPath, JSON.stringify({ status, journey, browserErrors, expectedValidationErrors }, null, 2));
+    }
+  }
 }
