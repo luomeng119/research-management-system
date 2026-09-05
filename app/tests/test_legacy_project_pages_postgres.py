@@ -23,8 +23,8 @@ from app.security.auth import hash_password
     ("SECURITY_CONFIDENTIALITY", "security_projects"),
     ("CRYPTO_APPLICATION", "crypto_projects"),
 ])
-@pytest.mark.parametrize("operation", ["detail", "upload", "path_versions"])
-def test_retained_project_reads_and_uploads(tmp_path, category, prefix, operation):
+@pytest.mark.parametrize("operation", ["detail", "upload", "path_versions", "folder_upload"])
+def test_retained_project_reads_and_uploads(tmp_path, category, prefix, operation, monkeypatch):
     if not os.environ.get("T02_ISOLATED_POSTGRES_ROOT"):
         pytest.skip("requires owned PostgreSQL harness")
     expected_data = Path(os.environ["T02_ISOLATED_POSTGRES_ROOT"]).resolve() / "data"
@@ -83,6 +83,84 @@ def test_retained_project_reads_and_uploads(tmp_path, category, prefix, operatio
         stored = app.extensions["project_service"].get(project["id"])
         assert stored["category"] == category
         assert stored["businessId"] == project["businessId"]
+        if operation == "folder_upload":
+            csrf_page = client.get("/users/change-password")
+            csrf = re.search(r'name="_csrf_token" value="([^"]+)"', csrf_page.text)[1]
+            response = client.post(f"/{prefix}/upload_folder/{project['businessId']}", data={
+                "files": [(io.BytesIO(b"direction a"), "资料包/方向甲/input.txt"),
+                          (io.BytesIO(b"direction b"), "资料包/方向乙/input.txt")],
+            }, headers={"X-CSRF-Token": csrf})
+            assert response.status_code == 200 and response.json["success"] is True
+            service = app.extensions["file_service"]
+            paths = service.list_project_paths(project["businessId"])
+            assert {item["path"] for item in paths} == {
+                "任务输入文件/资料包/方向甲/input.txt", "任务输入文件/资料包/方向乙/input.txt",
+            }
+            for path, content in [("任务输入文件/资料包/方向甲/input.txt", b"direction a"),
+                                  ("任务输入文件/资料包/方向乙/input.txt", b"direction b")]:
+                downloaded = client.get(f"/{prefix}/download/{project['businessId']}/{path}", follow_redirects=True)
+                assert downloaded.status_code == 200 and downloaded.data == content
+            refreshed = client.get(f"/{prefix}/detail/{project['businessId']}")
+            tree = json.loads(re.search(r"var folderData = (.*);", refreshed.text)[1])
+            package = next(node for node in tree[0]["children"] if node["name"] == "资料包")
+            assert {node["name"] for node in package["children"]} == {"方向甲", "方向乙"}
+            mixed = client.post(f"/{prefix}/upload_folder/{project['businessId']}", data={
+                "files": [(io.BytesIO(b"updated"), "资料包/方向甲/input.txt"),
+                          (io.BytesIO(b"invalid"), "../outside.txt"),
+                          (io.BytesIO(b"new valid"), "资料包/方向丙/input.txt")],
+            }, headers={"X-CSRF-Token": csrf})
+            assert mixed.status_code == 207 and mixed.json["success"] is False
+            assert mixed.json["uploadedCount"] == 2 and mixed.json["failedCount"] == 1
+            assert mixed.json["errors"][0]["path"] == "../outside.txt"
+            paths = service.list_project_paths(project["businessId"])
+            assert len(paths) == 3
+            assert next(item for item in paths if item["path"] == "任务输入文件/资料包/方向甲/input.txt")["versionNo"] == 2
+            assert not (tmp_path / "outside.txt").exists()
+            submit_code = re.search(
+                r"document.getElementById\('uploadForm'\).onsubmit = function\(e\).*?\n};",
+                refreshed.text, re.S,
+            )[0]
+            submitted = subprocess.run(["node", "-e", """
+const fs = require('fs'); const vm = require('vm');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const form = {}; const sent = {}; const state = {reload: false};
+const elements = {uploadForm: form, folderInput: {files: [
+  {name:'input.txt', webkitRelativePath:'资料包/方向甲/input.txt'},
+  {name:'input.txt', webkitRelativePath:'资料包/方向乙/input.txt'}]}, uploadFolder: {value:'任务输入文件'}};
+const context = {document:{getElementById:id=>elements[id]}, projectUpdateUrl:input.prefix,
+  FormData:class {constructor(){this.entries=[];} append(...args){this.entries.push(args);}},
+  fetch:(url, options)=>{sent.url=url; sent.entries=options.body.entries;
+    return Promise.resolve({json:()=>Promise.resolve({success:false,uploadedCount:1,message:'一项成功、一项失败'})});},
+  alert:message=>{state.message=message;}, location:{reload:()=>{state.reload=true;}}};
+vm.createContext(context); vm.runInContext(input.code, context);
+form.onsubmit.call(form,{preventDefault(){}});
+setImmediate(()=>process.stdout.write(JSON.stringify({sent,state})));
+"""], input=json.dumps({"code": submit_code, "prefix": "/" + prefix}), text=True,
+                                      capture_output=True, check=True)
+            browser_contract = json.loads(submitted.stdout)
+            assert browser_contract["sent"]["url"] == f"/{prefix}/upload_folder/{project['businessId']}"
+            assert [entry[2] for entry in browser_contract["sent"]["entries"] if entry[0] == "files"] == [
+                "资料包/方向甲/input.txt", "资料包/方向乙/input.txt",
+            ]
+            assert browser_contract["state"] == {"reload": True, "message": "一项成功、一项失败"}
+            real_upload = service.upload_project_path
+            for failure_type in (OSError, sa.exc.SQLAlchemyError):
+                def faulty_upload(stream, *, original_name, **kwargs):
+                    if original_name == "fault.txt":
+                        raise failure_type("private diagnostic sentinel")
+                    return real_upload(stream, original_name=original_name, **kwargs)
+                # Inject a lower-level failure; successful neighbors still use real PG and storage.
+                with monkeypatch.context() as fault:
+                    fault.setattr(service, "upload_project_path", faulty_upload)
+                    result = client.post(f"/{prefix}/upload_folder/{project['businessId']}", data={
+                        "files": [(io.BytesIO(b"before"), "failure-test/before.txt"),
+                                  (io.BytesIO(b"fault"), "failure-test/fault.txt"),
+                                  (io.BytesIO(b"after"), "failure-test/after.txt")],
+                    }, headers={"X-CSRF-Token": csrf})
+                assert result.status_code == 207
+                assert result.json["uploadedCount"] == 2 and result.json["failedCount"] == 1
+                assert result.json["errors"][0]["code"] == "FILE_OPERATION_FAILED"
+                assert "private diagnostic sentinel" not in result.text
         if operation == "path_versions":
             service = app.extensions["file_service"]
             barrier = Barrier(2)

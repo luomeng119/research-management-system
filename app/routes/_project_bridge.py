@@ -4,10 +4,12 @@ import os
 import re
 
 from flask import current_app, jsonify, redirect, request, url_for
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.security.auth import BUSINESS_USER, current_identity
 from app.services.files import FileServiceError
 from app.services.projects import ProjectServiceError
+from app.routes._shared import RESEARCH_FOLDER_TYPES
 
 
 PROJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
@@ -75,6 +77,51 @@ def upload_project_file(project_id, category):
             actor_user_id=identity.user_id, request_id=getattr(request, "request_id", "unknown"),
         )
         return jsonify(success=True, message="上传成功", fileId=result["fileId"], versionNo=result["versionNo"])
+    except (FileServiceError, ProjectServiceError) as error:
+        return jsonify(success=False, message=error.message, code=error.code), error.status_code
+
+
+def upload_project_folder(project_id, category):
+    """Keep folder-upload names and use the same controlled writer as single files."""
+    identity = current_identity()
+    if identity is None:
+        return jsonify(success=False, message="未登录"), 401
+    if identity.role != BUSINESS_USER:
+        return jsonify(success=False, message="无权访问业务附件"), 403
+    try:
+        current_app.extensions["project_service"].get_legacy(category=category, business_id=project_id)
+        uploads = request.files.getlist("files")
+        if not uploads:
+            return jsonify(success=False, message="请选择文件夹"), 400
+        target = request.form.get("folder", "") or RESEARCH_FOLDER_TYPES[0]
+        completed = []
+        failures = []
+        for uploaded in uploads:
+            relative = uploaded.filename or ""
+            try:
+                if relative.startswith("/") or "\\" in relative:
+                    raise FileServiceError("INVALID_PROJECT_PATH", "非法项目文件路径", 400)
+                subfolder, _, name = relative.rpartition("/")
+                result = current_app.extensions["file_service"].upload_project_path(
+                    uploaded.stream, original_name=name, folder=target + ("/" + subfolder if subfolder else ""),
+                    project_id=project_id, actor_user_id=identity.user_id,
+                    request_id=getattr(request, "request_id", "unknown"),
+                )
+                completed.append({"path": relative, "fileId": result["fileId"], "versionNo": result["versionNo"]})
+            except FileServiceError as error:
+                failures.append({"path": relative, "code": error.code,
+                                 "message": error.message, "status": error.status_code})
+            except (OSError, SQLAlchemyError):
+                failures.append({"path": relative, "code": "FILE_OPERATION_FAILED",
+                                 "message": "文件操作失败", "status": 500})
+        message = f"上传成功 {len(completed)} 个文件"
+        if failures:
+            message += f"，失败 {len(failures)} 个：" + "；".join(
+                f"{item['path']}（{item['message']}）" for item in failures
+            )
+        status = 200 if not failures else (207 if completed else failures[0]["status"])
+        return jsonify(success=not failures, message=message, uploadedCount=len(completed),
+                       failedCount=len(failures), files=completed, errors=failures), status
     except (FileServiceError, ProjectServiceError) as error:
         return jsonify(success=False, message=error.message, code=error.code), error.status_code
 

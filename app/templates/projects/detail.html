@@ -984,9 +984,9 @@ document.getElementById('uploadForm').onsubmit = function(e) {
         fd = new FormData();
         fd.append('folder', document.getElementById('uploadFolder').value);
         Array.from(folderInput.files).forEach(function(file) {
-            fd.append('files', file);
+            fd.append('files', file, file.webkitRelativePath || file.name);
         });
-    fetch(projectUpdateUrl + '/upload_folder/' + projectId, {method:'POST', body:fd})
+        fetch(projectUpdateUrl + '/upload_folder/' + projectId, {method:'POST', body:fd})
         .then(r=>r.json())
         .then(d=>{ 
             if(d.success) {
@@ -994,6 +994,7 @@ document.getElementById('uploadForm').onsubmit = function(e) {
                 location.reload(); 
             } else {
                 alert(d.message || '上传失败');
+                if (d.uploadedCount > 0) location.reload();
             }
         })
         .catch(e=>{

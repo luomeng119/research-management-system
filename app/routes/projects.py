@@ -3,7 +3,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, sessio
 from app.models import ProjectModel
 from app.routes._project_bridge import (
     legacy_page, safe_project_documents_path, safe_project_path, upload_project_file,
-    merge_project_files, controlled_project_download,
+    merge_project_files, controlled_project_download, upload_project_folder,
 )
 from app.security.auth import current_identity
 from app.services.projects import ProjectServiceError
@@ -272,48 +272,7 @@ def upload(project_id):
 
 @bp.route('/upload_folder/<project_id>', methods=['POST'])
 def upload_folder(project_id):
-    """文件夹上传 - 保持原目录结构"""
-    if 'user' not in session:
-        return jsonify({'success': False, 'message': '未登录'})
-    
-    target_folder = request.form.get('folder', '')
-    try:
-        project_dir = safe_project_path(current_app.config['UPLOAD_DIR'], project_id)
-        base_target = safe_project_path(
-            current_app.config['UPLOAD_DIR'], project_id, target_folder or FOLDER_TYPES[0]
-        )
-    except ValueError:
-        return jsonify({'success': False, 'message': '非法路径'}), 400
-    
-    if 'files' not in request.files:
-        return jsonify({'success': False, 'message': '请选择文件夹'})
-    
-    files = request.files.getlist('files')
-    if not files or len(files) == 0:
-        return jsonify({'success': False, 'message': '文件夹为空'})
-    
-    uploaded_count = 0
-    for file in files:
-        if file.filename:
-            # webkitdirectory 会传递完整路径，如 "子文件夹/文件名.docx"
-            relative_path = file.filename.replace('\\', '/')
-            # 提取文件名（去掉子目录结构防止穿越）
-            safe_name = os.path.basename(relative_path)
-            safe_name = re.sub(r'[^\w\s.-]', '_', safe_name).strip('. ')
-            if not safe_name:
-                safe_name = 'unnamed'
-            # 目标路径
-            target_path = os.path.join(base_target, safe_name)
-            target_dir = os.path.dirname(target_path)
-            
-            # 创建目标目录
-            os.makedirs(target_dir, exist_ok=True)
-            
-            # 保存文件
-            file.save(target_path)
-            uploaded_count += 1
-    
-    return jsonify({'success': True, 'message': f'上传成功 {uploaded_count} 个文件'})
+    return upload_project_folder(project_id, "GENERAL_RESEARCH")
 
 @bp.route('/create_folder/<project_id>', methods=['POST'])
 def create_folder(project_id):
