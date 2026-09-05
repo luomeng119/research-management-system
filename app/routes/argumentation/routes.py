@@ -15,15 +15,15 @@ from werkzeug.utils import secure_filename
 from app.models_argumentation import (
     init_argumentation_db,
     get_template_by_category,
-    get_all_templates,
     save_template,
     get_document_by_project,
     get_document_by_id,
-    save_document,
+    save_revision,
     get_document_versions,
-    save_document_version,
     get_version_by_num
 )
+from app.models_argumentation import get_projects, get_equipment
+from app.repositories.argumentation import ArgumentationConflict
 
 argumentation_bp = Blueprint('argumentation', __name__)
 
@@ -87,179 +87,73 @@ def init_template_data():
         }
         
         save_template(sample_template['template_id'], sample_template['name'], cat, '', json.dumps(sample_template, ensure_ascii=False))
+def _template_data(category):
+    stored = get_template_by_category(category)
+    if stored and stored.get('chapter_tree'):
+        return json.loads(stored['chapter_tree'])
+    return {'chapters': [
+        {'id': 'ch1', 'title': '一、项目概述', 'type': 'text',
+         'children': [{'id': 'ch1_1', 'title': '1.1 项目背景', 'type': 'text'}]},
+        {'id': 'ch2', 'title': '二、需求分析', 'type': 'text',
+         'children': [{'id': 'ch2_1', 'title': '2.1 功能需求', 'type': 'text'}]},
+        {'id': 'ch3', 'title': '三、方案设计', 'type': 'text',
+         'children': [{'id': 'ch3_1', 'title': '3.1 总体设计', 'type': 'text'}]},
+        {'id': 'ch4', 'title': '四、经费预算', 'type': 'text'},
+        {'id': 'ch5', 'title': '五、进度安排', 'type': 'text'},
+        {'id': 'ch6', 'title': '六、风险分析', 'type': 'text'},
+        {'id': 'ch7', 'title': '七、结论', 'type': 'text'},
+    ]}
+
+
+def _editor_context(category, project, document, *, version=None):
+    template_data = _template_data(category)
+    content = json.loads(document['content']) if document and document.get('content') else {}
+    template_content = {}
+    for chapter in template_data.get('chapters', []):
+        for item in [chapter, *chapter.get('children', [])]:
+            if 'content' in item:
+                template_content[item['id']] = item['content']
+    equipment = get_equipment() if version is None else []
+    return dict(
+        category=category,
+        category_name={'research': '科研项目', 'security': '安全保密项目', 'crypto': '密码应用项目'}[category],
+        project=project, template=template_data, template_data=template_data,
+        template_content=template_content, document=document, saved_content=content,
+        equipment_list=equipment,
+        categories=sorted({item['category'] for item in equipment if item.get('category')}),
+        project_equipment=[],
+        versions=get_document_versions(document['doc_id']) if document and version is None else [],
+        back_url=url_for('argumentation.edit', category=category, project_id=project['project_id']) if version else url_for('argumentation.index', category=category),
+        is_version_view=version is not None, current_version=version,
+    )
+
+
 @argumentation_bp.route('/<category>')
 def index(category):
-    """方案论证首页 - 显示项目列表"""
-    if 'user' not in session:
-        return redirect(url_for('auth.login'))
-    
-    # 获取该板块的所有项目
-    from models import get_db
-    with get_db() as conn:
-        c = conn.cursor()
-    
-        table_map = {
-            'research': 'projects',
-            'crypto': 'crypto_projects', 
-            'security': 'security_projects'
-        }
-    
-        table_name = table_map.get(category, 'projects')
-    
-        try:
-            c.execute(f"SELECT * FROM {table_name}")
-            projects = c.fetchall()
-        except:
-            projects = []
-    
-    
-        category_name = {'research': '科研项目', 'crypto': '密码项目', 'security': '安全项目'}.get(category, '科研项目')
-    
-        # 获取板块模板
-        template = get_template_by_category(category)
-        if not template:
-            # 默认模板
-            template = {
-                "chapters": [
-                    {"id": "ch1", "title": "一、项目概述", "type": "text",
-                     "children": [{"id": "ch1_1", "title": "1.1 项目背景", "type": "text"}]},
-                    {"id": "ch2", "title": "二、需求分析", "type": "text",
-                     "children": [{"id": "ch2_1", "title": "2.1 功能需求", "type": "text"}]},
-                    {"id": "ch3", "title": "三、方案设计", "type": "text",
-                     "children": [{"id": "ch3_1", "title": "3.1 总体设计", "type": "text"}]},
-                    {"id": "ch4", "title": "四、经费预算", "type": "text"},
-                    {"id": "ch5", "title": "五、进度安排", "type": "text"},
-                    {"id": "ch6", "title": "六、风险分析", "type": "text"},
-                    {"id": "ch7", "title": "七、结论", "type": "text"}
-                ]
-            }
-    
-        return render_template(f'argumentation/index.html',
-                               category=category,
-                               category_name=category_name,
-                               projects=projects,
-                               template=template)
+    """Retain the category entry point, reading only the runtime database."""
+    try:
+        projects = get_projects(category)
+    except ValueError:
+        return "项目类别不存在", 404
+    template = get_template_by_category(category)
+    return render_template(
+        'argumentation/index.html', category=category,
+        category_name={'research': '科研项目', 'crypto': '密码应用项目', 'security': '安全保密项目'}[category],
+        projects=projects, template=template, template_data=_template_data(category),
+    )
 
 
 @argumentation_bp.route('/<category>/<project_id>')
 def edit(category, project_id):
-    """方案论证编辑页面"""
-    if 'user' not in session:
-        return redirect(url_for('auth.login'))
-    
-    # 获取项目信息
-    from models import get_db
-    with get_db() as conn:
-        c = conn.cursor()
-    
-        table_map = {
-            'research': 'projects',
-            'crypto': 'crypto_projects',
-            'security': 'security_projects'
-        }
-    
-        table_name = table_map.get(category, 'projects')
-    
-        try:
-            c.execute(f"SELECT * FROM {table_name} WHERE project_id = ?", (project_id,))
-            project_row = c.fetchone()
-        except:
-            project_row = None
-    
-    
-        if not project_row:
-            return "项目不存在", 404
-    
-        # 转换为字典
-        project = dict(project_row)
-    
-        # 获取模板
-        template = get_template_by_category(category)
-        if template:
-            template_data = json.loads(template['chapter_tree'])
-        else:
-            # 默认模板
-            template_data = {
-                "chapters": [
-                    {"id": "ch1", "title": "一、项目概述", "type": "text",
-                     "children": [{"id": "ch1_1", "title": "1.1 项目背景", "type": "text"}]},
-                    {"id": "ch2", "title": "二、需求分析", "type": "text",
-                     "children": [{"id": "ch2_1", "title": "2.1 功能需求", "type": "text"}]},
-                    {"id": "ch3", "title": "三、方案设计", "type": "text",
-                     "children": [{"id": "ch3_1", "title": "3.1 总体设计", "type": "text"}]},
-                    {"id": "ch4", "title": "四、经费预算", "type": "text"},
-                    {"id": "ch5", "title": "五、进度安排", "type": "text"},
-                    {"id": "ch6", "title": "六、风险分析", "type": "text"},
-                    {"id": "ch7", "title": "七、结论", "type": "text"}
-                ]
-            }
-    
-        # 确保 template 有 chapters 属性供模板使用
-        if not template:
-            template = template_data
-        elif isinstance(template, dict) and 'chapters' not in template:
-            template['chapters'] = template_data.get('chapters', [])
-    
-        # 获取已有文档
-        doc_row = get_document_by_project(project_id, category)
-        document = dict(doc_row) if doc_row else None
-    
-        # 获取设备列表（用于设备选择）
-        from models import get_db as get_equipment_db
-        conn = get_equipment_db()
-        c = conn.cursor()
-        c.execute("SELECT id, equipment_id, name, model, category, form, price, tech_index, tech_status, manufacturer FROM equipment")
-        rows = c.fetchall()
-        cols = [d[0] for d in c.description]
-        equipment_list = [dict(zip(cols, r)) for r in rows]
-        # 获取分类列表
-        all_categories = sorted(set([e['category'] for e in equipment_list if e['category']]))
-    
-        # 获取项目的设备选型（project_equipment表暂未建立，设为空）
-        project_equipment = []
-    
-        # 获取版本历史
-        versions = []
-        if document:
-            versions = get_document_versions(document['doc_id'])
-    
-        category_name = {'research': '科研项目', 'crypto': '密码项目', 'security': '安全项目'}.get(category, '科研项目')
-    
-        # 项目类型对应的URL前缀
-        category_url = {
-            'research': '/projects',
-            'security': '/security_projects',
-            'crypto': '/crypto_projects'
-        }.get(category, '/projects')
-    
-        detail_url = f'{category_url}/detail/{project_id}'
-    
-        # 提取模板中的内容用于初始化
-        template_content = {}
-        if template_data and 'chapters' in template_data:
-            for ch in template_data.get('chapters', []):
-                if 'content' in ch:
-                    template_content[ch['id']] = ch['content']
-                if 'children' in ch:
-                    for sub in ch.get('children', []):
-                        if 'content' in sub:
-                            template_content[sub['id']] = sub['content']
-    
-        return render_template(f'argumentation/edit.html',
-                               category=category,
-                               category_name=category_name,
-                               project=dict(project) if project else {},
-                               template=template,
-                               template_data=template_data,
-                               template_content=template_content,
-                               document=document,
-                               saved_content_str=json.dumps(document.get('content', {})) if document and document.get('content') else '{}',
-                               equipment_list=equipment_list,
-                               categories=all_categories,
-
-                               project_equipment=[dict(pe) for pe in project_equipment] if project_equipment else [],
-                               versions=versions,
-                               back_url=detail_url)
+    try:
+        projects = get_projects(category, project_id)
+    except ValueError:
+        return "项目类别不存在", 404
+    if not projects:
+        return "项目不存在", 404
+    document = get_document_by_project(project_id, category)
+    return render_template('argumentation/edit.html',
+                           **_editor_context(category, projects[0], document))
 
 
 @argumentation_bp.route('/save', methods=['POST'])
@@ -268,49 +162,27 @@ def save():
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     
-    data = request.json
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'success': False, 'message': '参数格式不正确'}), 400
     project_id = data.get('project_id')
     category = data.get('category')
-    content = json.dumps(data.get('content', {}), ensure_ascii=False)
+    raw_content = data.get('content', {})
+    if not isinstance(raw_content, dict):
+        return jsonify({'success': False, 'message': '正文必须为章节对象'}), 400
+    content = json.dumps(raw_content, ensure_ascii=False)
     change_note = data.get('change_note', '')
     
-    if not project_id or not category:
-        return jsonify({'success': False, 'message': '参数不完整'})
-    
-    # 获取模板
-    template = get_template_by_category(category)
-    
-    # 生成文档ID
-    doc_id = f"{category}_{project_id}"
-    
-    # 检查是否已有文档，获取当前版本号
-    existing = get_document_by_project(project_id, category)
-    version_num = 1
-    if existing:
-        # 获取最新版本号
-        versions = get_document_versions(doc_id)
-        if versions:
-            version_num = versions[0]['version_num'] + 1
-    
-    # 保存当前版本（先保存内容，不生成Word）
-    # 保存到项目文件夹
-    project_folder = os.path.join(current_app.config.get('UPLOAD_DIR', 'uploads'), project_id, '论证文档')
-    os.makedirs(project_folder, exist_ok=True)
-    
-    # 同时保存内容JSON到项目文件夹
-    content_file = os.path.join(project_folder, f'{doc_id}_content.json')
-    with open(content_file, 'w', encoding='utf-8') as f:
-        f.write(content)
-    
-    # 保存文档到数据库
-    save_document(doc_id, project_id, category, 
-                  template['template_id'] if template else '', 
-                  content, content_file)
-    
-    # 保存版本历史
-    version_id = f"{doc_id}_v{version_num}"
-    save_document_version(version_id, doc_id, version_num, content, '', 
-                         session.get('user'), change_note)
+    if not isinstance(project_id, str) or not project_id or not isinstance(category, str):
+        return jsonify({'success': False, 'message': '参数不完整'}), 400
+    try:
+        doc_id, version_num = save_revision(project_id, category, content, change_note, data.get('expected_version'))
+    except ArgumentationConflict as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 409
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    except LookupError:
+        return jsonify({'success': False, 'message': '项目不存在'}), 404
     
     return jsonify({
         'success': True, 
@@ -342,7 +214,6 @@ def generate_word():
         # 生成Word
         try:
             from docx import Document
-            from docx.shared import Pt
             from docx.enum.text import WD_ALIGN_PARAGRAPH
         except ImportError:
             return jsonify({'success': False, 'message': '缺少python-docx库'})
@@ -383,7 +254,6 @@ def generate_word():
             'word_path': relative_path
         })
     except Exception as e:
-        import traceback
         return jsonify({'success': False, 'message': str(e)})
             
 
@@ -395,6 +265,8 @@ def versions(doc_id):
     
     versions = get_document_versions(doc_id)
     document = get_document_by_id(doc_id)
+    if not document:
+        return "文档不存在", 404
     
     return render_template('argumentation/versions.html',
                            versions=versions,
@@ -412,24 +284,15 @@ def view_version(doc_id, version_num):
         return "版本不存在", 404
     
     document = get_document_by_id(doc_id)
-    template = get_template_by_category(document['category']) if document else None
-    
-    if template:
-        template_data = json.loads(template['chapter_tree'])
-    else:
-        template_data = {'chapters': []}
-    
-    return render_template('argumentation/edit.html',
-                           category=document['category'],
-                           project={'project_id': document['project_id'], 'name': '版本查看'},
-                           template=template_data,
-                           document={'content': version['content']},
-                           saved_content_str=version['content'],
-                           equipment_list=[],
-                           project_equipment=[],
-                           versions=[],
-                           is_version_view=True,
-                           current_version=version_num)
+    if not document:
+        return "文档不存在", 404
+    projects = get_projects(document['category'], document['project_id'])
+    if not projects:
+        return "项目不存在", 404
+    historical_document = {**document, 'content': version['content']}
+    return render_template('argumentation/edit.html', **_editor_context(
+        document['category'], projects[0], historical_document, version=version_num,
+    ))
 
 
 @argumentation_bp.route('/template/upload', methods=['POST'])

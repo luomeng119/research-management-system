@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<a href="{{ url_for('template.manage') }}">返回模板列表</a>
+<h1 class="h4 my-3">{{ category_name }}论证模板</h1>
+<form id="template-editor">
+  <label class="form-label" for="template-name">模板名称</label>
+  <input class="form-control mb-3" id="template-name" value="{{ template_data.get('name', '') }}" required>
+  <label class="form-label" for="template-structure">章节结构（JSON）</label>
+  <p class="text-muted">保留章节 id、title、type、children 等既有字段。修改前请保留原结构。</p>
+  <textarea class="form-control mb-3" id="template-structure" rows="16" required>{{ template_data | tojson(indent=2) }}</textarea>
+  <button class="btn btn-primary" type="submit">保存模板</button>
+  <p id="template-result" role="status" class="mt-3"></p>
+</form>
+<script>
+document.getElementById('template-editor').addEventListener('submit', async function (event) {
+  event.preventDefault();
+  var result = document.getElementById('template-result');
+  try {
+    var tree = JSON.parse(document.getElementById('template-structure').value);
+    tree.name = document.getElementById('template-name').value;
+    var response = await fetch({{ url_for('template.api_save') | tojson }}, {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': {{ csrf_token() | tojson }}},
+      body: JSON.stringify({category: {{ category | tojson }}, template_data: tree})
+    });
+    var data = await response.json();
+    result.textContent = data.message || '保存失败，请重试';
+  } catch (error) { result.textContent = '未保存：请检查章节 JSON 格式，或稍后重试。'; }
+});
+</script>
+{% endblock %}

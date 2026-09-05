@@ -122,7 +122,7 @@
 </div>
 
 <script>
-var templateData = {{ template.chapter_tree | safe if template else '{}' }};
+var templateData = {{ template_data | tojson }};
 
 function showTemplateModal() {
     var modal = new bootstrap.Modal(document.getElementById('templateModal'));

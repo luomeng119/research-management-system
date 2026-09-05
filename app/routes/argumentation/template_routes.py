@@ -3,23 +3,21 @@
 方案论证模块 - 模板管理路由
 """
 from flask import Blueprint, render_template, request, jsonify, session, redirect, url_for
-from flask import current_app
 import json
-import uuid
-from datetime import datetime
 
 # 导入模型
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from models_argumentation import (
+from app.models_argumentation import (
     get_template_by_category,
     get_all_templates,
     save_template,
-    init_argumentation_db
 )
 
 template_bp = Blueprint('template', __name__, url_prefix='/template')
+
+
+@template_bp.errorhandler(ValueError)
+def invalid_template(error):
+    return jsonify({'success': False, 'message': str(error)}), 400
 
 
 @template_bp.route('/manage')
@@ -35,7 +33,7 @@ def manage():
         if t.get('chapter_tree'):
             try:
                 t['chapters_json'] = json.loads(t['chapter_tree'])
-            except:
+            except (ValueError, TypeError):
                 t['chapters_json'] = {'chapters': []}
         else:
             t['chapters_json'] = {'chapters': []}
@@ -63,7 +61,7 @@ def edit(category):
     if template and template.get('chapter_tree'):
         try:
             template_data = json.loads(template['chapter_tree'])
-        except:
+        except (ValueError, TypeError):
             template_data = {'chapters': []}
     else:
         template_data = {
@@ -92,7 +90,9 @@ def api_save():
     if 'user' not in session:
         return jsonify({'success': False, 'message': '请先登录'}), 401
     
-    data = request.json
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('template_data'), dict):
+        raise ValueError('模板参数格式不正确')
     category = data.get('category')
     template_data = data.get('template_data')
     
@@ -118,7 +118,7 @@ def api_get(category):
     if template and template.get('chapter_tree'):
         try:
             template_data = json.loads(template['chapter_tree'])
-        except:
+        except (ValueError, TypeError):
             template_data = {'chapters': []}
     else:
         template_data = {'chapters': []}

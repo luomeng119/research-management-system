@@ -106,17 +106,20 @@
             <button class="btn btn-success btn-sm" onclick="generateWord()">
                 <i class="bi bi-file-earmark-word"></i> 生成Word
             </button>
+            {% if not is_version_view %}
             <button class="btn btn-primary btn-sm" onclick="saveDocument()">
                 <i class="bi bi-save"></i> 保存
+            </button>
             <button class="btn btn-warning btn-sm" onclick="saveAsTemplate()">
                 <i class="bi bi-save"></i> 保存为模板
             </button>
             <button class="btn btn-info btn-sm" onclick="addNewChapter()">
                 <i class="bi bi-plus-circle"></i> 新增章节
             </button>
-            </button>
+            {% endif %}
         </div>
     </div>
+    {% if is_version_view %}<p role="status" class="alert alert-info">历史版本 v{{ current_version }}，仅供查看。</p>{% endif %}
     
     {% if template.chapters or template.get('chapters') %}
     <div class="row">
@@ -355,6 +358,8 @@
 // 全局变量
 var editors = {};
 var templateContent = {{ (template_content | tojson | safe) }};
+var savedContent = {{ saved_content | tojson }};
+var isVersionView = {{ is_version_view | tojson }};
 var currentDeviceRef = null;
 var currentDeviceList = null;
 
@@ -607,9 +612,9 @@ function confirmSave() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-            project_name: '{{ project.name }}',
+            project_id: {{ project.project_id | tojson }},
+            expected_version: {{ versions[0].version_num if versions else 0 }},
             category: '{{ category }}',
-        template: template,
             content: content,
             change_note: changeNote
         })
@@ -709,16 +714,13 @@ function generateWord() {
 var currentEditChapterId = null;
 
 function initEditors() {
-    var savedContent = null;
-    try {
-        savedContent = {{ (saved_content_str | tojson | safe) }};
-    } catch(e) {}
     
     document.querySelectorAll('.editor').forEach(function(el) {
         var field = el.dataset.field;
         if (!field || editors[field]) return;
         
         var quill = new Quill(el, {
+            readOnly: isVersionView,
             theme: 'snow',
             placeholder: '请输入内容...',
             modules: {
@@ -733,8 +735,8 @@ function initEditors() {
         editors[field] = quill;
         
         // 加载模板内容 - 使用 Quill API
-        if (templateContent && templateContent[field]) {
-            var content = templateContent[field];
+        if (Object.prototype.hasOwnProperty.call(savedContent, field) || templateContent[field]) {
+            var content = Object.prototype.hasOwnProperty.call(savedContent, field) ? savedContent[field] : templateContent[field];
             if (content && content !== '<p><br></p>') {
                 quill.clipboard.dangerouslyPasteHTML(0, content);
             }

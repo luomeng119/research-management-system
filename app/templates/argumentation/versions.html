@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<a href="{{ url_for('argumentation.edit', category=document.category, project_id=document.project_id) }}">返回当前文档</a>
+<h1 class="h4 my-3">论证文档版本历史</h1>
+<table class="table"><thead><tr><th>版本</th><th>编辑人</th><th>时间</th><th>修改说明</th></tr></thead><tbody>
+{% for version in versions %}
+<tr><td><a href="{{ url_for('argumentation.view_version', doc_id=document.doc_id, version_num=version.version_num) }}">v{{ version.version_num }}</a></td><td>{{ version.editor or version.changer or '' }}</td><td>{{ version.created_at or version.changed_at or '' }}</td><td>{{ version.change_note or '' }}</td></tr>
+{% else %}<tr><td colspan="4">暂无历史版本</td></tr>{% endfor %}
+</tbody></table>
+{% endblock %}

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="h4">方案论证模板</h1>
+<p class="text-muted">维护三类项目的论证章节，不影响科研资源中的文件模板库。</p>
+<div class="list-group mb-3">
+{% for category in categories %}
+  <a class="list-group-item list-group-item-action" href="{{ url_for('template.edit', category=category.id) }}">{{ category.name }}：编辑论证模板</a>
+{% endfor %}
+</div>
+<table class="table"><thead><tr><th>名称</th><th>类别</th><th>版本</th></tr></thead><tbody>
+{% for item in templates %}
+<tr><td>{{ item.name }}</td><td>{{ item.category }}</td><td>{{ item.version }}</td></tr>
+{% else %}<tr><td colspan="3">尚未保存模板，请选择上方类别。</td></tr>{% endfor %}
+</tbody></table>
+{% endblock %}
