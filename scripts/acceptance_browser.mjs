@@ -169,6 +169,8 @@ try {
     { id: 'note', title: '研究说明', type: 'text' },
     { id: 'ref', title: '设备引用', type: 'device_ref' },
     { id: 'list', title: '设备清单', type: 'device_list' },
+    { id: 'ref2', title: '第二设备引用', type: 'device_ref' },
+    { id: 'list2', title: '第二设备清单', type: 'device_list' },
   ] }));
   const [templateResponse] = await Promise.all([
     page.waitForResponse(response => response.url().endsWith('/template/api/save') && response.request().method() === 'POST'),
@@ -177,15 +179,23 @@ try {
   expect(templateResponse.status()).toBe(200);
   await page.goto(`/argumentation/research/${encodeURIComponent(ids.projectBusinessId)}`);
   await page.locator('.ql-editor').fill('演练：原有论证设备核对');
-  await page.getByRole('button', { name: /添加设备到清单/ }).click();
+  await page.locator('[data-chapter-id="list"]').getByRole('button', { name: /添加设备到清单/ }).click();
   const listCheckbox = page.locator('#deviceListModal .device-list-check').first();
   const deviceId = await listCheckbox.getAttribute('value');
   const deviceName = await listCheckbox.getAttribute('data-name');
   await listCheckbox.check();
   await page.getByRole('button', { name: '确认添加', exact: true }).click();
-  await page.getByRole('button', { name: '选择设备', exact: true }).click();
+  await page.locator('[data-chapter-id="ref"]').getByRole('button', { name: '选择设备', exact: true }).click();
   await page.locator(`#deviceModal .device-checkbox[value="${deviceId}"]`).check();
   await page.locator('#deviceModal').getByRole('button', { name: '确定', exact: true }).click();
+  for (const [chapter, modal, checkbox, button] of [
+    ['ref2', 'deviceModal', '.device-checkbox', '选择设备'],
+    ['list2', 'deviceListModal', '.device-list-check', '添加设备到清单'],
+  ]) {
+    await page.locator(`[data-chapter-id="${chapter}"]`).getByRole('button', { name: new RegExp(button) }).click();
+    await expect(page.locator(`#${modal} ${checkbox}:checked`)).toHaveCount(0);
+    await page.locator(`#${modal}`).getByRole('button', { name: '取消', exact: true }).click();
+  }
   await page.locator('button[onclick="saveDocument()"]').click();
   const [savedResponse] = await Promise.all([
     page.waitForResponse(response => response.url().endsWith('/argumentation/save') && response.request().method() === 'POST'),
@@ -200,8 +210,11 @@ try {
   await expect(page.locator('#device_list_list')).toHaveValue(deviceId);
   await expect(page.locator('#device_info_ref')).toContainText(deviceName);
   await expect(page.locator('#device_list_content_list')).toContainText(deviceName);
+  await page.locator('[data-chapter-id="ref"]').getByRole('button', { name: '选择设备', exact: true }).click();
+  await expect(page.locator(`#deviceModal .device-checkbox[value="${deviceId}"]`)).toBeChecked();
+  await page.locator('#deviceModal').getByRole('button', { name: '取消', exact: true }).click();
   await page.screenshot({ path: `${resultPath}.argumentation-current.png`, fullPage: true });
-  await page.getByRole('button', { name: /添加设备到清单/ }).click();
+  await page.locator('[data-chapter-id="list"]').getByRole('button', { name: /添加设备到清单/ }).click();
   await expect(page.locator(`#deviceListModal .device-list-check[value="${deviceId}"]`)).toBeChecked();
   await page.locator(`#deviceListModal .device-list-check[value="${deviceId}"]`).uncheck();
   await page.getByRole('button', { name: '确认添加', exact: true }).click();
@@ -228,6 +241,20 @@ try {
   await expect(page.locator('#device_info_ref')).toContainText(deviceName);
   journey.retainedArgumentation = { savedDocument, deviceId, deviceName, clearedVersion: clearedDocument, historyUrl: page.url() };
   await page.screenshot({ path: `${resultPath}.argumentation-history.png`, fullPage: true });
+  await page.goto(`/argumentation/research/${encodeURIComponent(ids.projectBusinessId)}`);
+  const probeName = '<b data-device-probe>演练设备标签</b>';
+  await page.locator('[data-chapter-id="ref2"]').getByRole('button', { name: '选择设备', exact: true }).click();
+  await page.locator('#deviceModal .device-checkbox[data-model="V1-HTML-PROBE"]').check();
+  await expect(page.locator('#selectedDevicesBody')).toContainText(probeName);
+  await expect(page.locator('[data-device-probe]')).toHaveCount(0);
+  await page.locator('#deviceModal').getByRole('button', { name: '确定', exact: true }).click();
+  await expect(page.locator('#device_info_ref2')).toContainText(probeName);
+  await page.locator('[data-chapter-id="list2"]').getByRole('button', { name: /添加设备到清单/ }).click();
+  await page.locator('#deviceListModal .device-list-check[data-model="V1-HTML-PROBE"]').check();
+  await page.getByRole('button', { name: '确认添加', exact: true }).click();
+  await expect(page.locator('#device_list_content_list2')).toContainText(probeName);
+  await expect(page.locator('[data-device-probe]')).toHaveCount(0);
+  journey.retainedArgumentation.plainTextDeviceLabels = true;
   if (outbound.length !== 0) throw new Error('Non-local browser requests were observed.');
   if (browserErrors.length !== 0) throw new Error(`Browser errors observed: ${JSON.stringify(browserErrors)}`);
   if (expectedValidationErrors.length > 1) throw new Error('Unexpected repeated validation response.');

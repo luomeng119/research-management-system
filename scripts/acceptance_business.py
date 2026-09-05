@@ -508,6 +508,11 @@ def seed(services, username: str) -> dict:
         {"name": EQUIPMENT_MARKER, "category": "通用设备", "model": "V1-ACCEPT-01", "mainPurpose": "科研试验保障"},
         actor_user_id=actor_id, request_id="acceptance-equipment-create",
     )
+    equipment.create_equipment(
+        {"name": "<b data-device-probe>演练设备标签</b>", "category": "通用设备",
+         "model": "V1-HTML-PROBE", "mainPurpose": "隔离验收中的纯文本显示验证"},
+        actor_user_id=actor_id, request_id="acceptance-equipment-html-probe",
+    )
     equipment_link = equipment.link_project_equipment(
         project["businessId"], project["name"], "张老师", device["equipment_id"],
         quantity=2, location=EQUIPMENT_LOCATION,

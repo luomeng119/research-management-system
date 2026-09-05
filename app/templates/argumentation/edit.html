@@ -494,20 +494,38 @@ function updateSelectedDevicesDisplay() {
     var table = document.getElementById('selectedDevicesTable');
     var countSpan = document.getElementById('selectedDevicesCount');
     if (!tbody) return;
-    tbody.innerHTML = '';
+    tbody.replaceChildren();
     var count = 0;
     document.querySelectorAll('#deviceModalContent .device-checkbox:checked').forEach(function(cb) {
         count++;
         var row = document.createElement('tr');
         var input = cb;
-        row.innerHTML = '<td><input type="checkbox" checked disabled></td>' +
-            '<td>' + (input.dataset.name || '') + '</td>' +
-            '<td>' + (input.dataset.model || '-') + '</td>' +
-            '<td><span class="badge bg-secondary">' + (input.dataset.category || '-') + '</span></td>' +
-            '<td>' + (input.dataset.form || '-') + '</td>' +
-            '<td>' + (input.dataset.price || '-') + '</td>' +
-            '<td>' + (input.dataset.manufacturer || '-') + '</td>' +
-            '<td><button type="button" class="btn btn-sm btn-outline-danger" onclick="removeDevice(\'' + input.value + '\')">移除</button></td>';
+        var selectedBox = document.createElement('input');
+        selectedBox.type = 'checkbox';
+        selectedBox.checked = true;
+        selectedBox.disabled = true;
+        row.insertCell().appendChild(selectedBox);
+        ['name', 'model', 'category', 'form', 'price', 'manufacturer'].forEach(function(key) {
+            var cell = row.insertCell();
+            var label = input.dataset[key] || '-';
+            if (key === 'category') {
+                var badge = document.createElement('span');
+                badge.className = 'badge bg-secondary';
+                badge.textContent = label;
+                cell.appendChild(badge);
+            } else {
+                cell.textContent = label;
+            }
+        });
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn btn-sm btn-outline-danger';
+        remove.textContent = '移除';
+        remove.addEventListener('click', function() {
+            input.checked = false;
+            updateSelectedDevicesDisplay();
+        });
+        row.insertCell().appendChild(remove);
         tbody.appendChild(row);
     });
     countSpan.textContent = count;
@@ -545,8 +563,12 @@ function initDeviceFilter() {
 function selectDevice(refId) {
     document.getElementById('currentDeviceRef').value = refId;
     document.getElementById('deviceModal').dataset.currentRef = refId;
-    setTimeout(initDeviceFilter, 100);
-    var modal = new bootstrap.Modal(document.getElementById('deviceModal'));
+    var selected = document.getElementById('device_ref_' + refId).value.split(',').filter(Boolean);
+    document.querySelectorAll('#deviceModalContent .device-checkbox').forEach(function(input) {
+        input.checked = selected.includes(input.value);
+    });
+    filterDevice();
+    var modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('deviceModal'));
     modal.show();
 }
 
@@ -564,10 +586,8 @@ function selectDeviceConfirm2() {
     }
     console.log('refId:', refId, 'el:', document.getElementById('device_ref_' + refId));
     var deviceIds = [];
-    var deviceInfos = [];
     checkedList.forEach(function(checked) {
         deviceIds.push(checked.value);
-        deviceInfos.push('<strong>' + checked.dataset.name + '</strong> <small class="text-muted">(' + checked.dataset.model + ')</small>');
     });
     
     // 隐藏弹窗 - 先移除焦点
@@ -576,9 +596,10 @@ function selectDeviceConfirm2() {
     
     // 保存设备ID（多ID用逗号分隔）
     var refInput = document.getElementById('device_ref_' + refId);
-    var infoDiv = document.getElementById('device_info_' + refId);
-    if (refInput) refInput.value = deviceIds.join(',');
-    if (infoDiv) infoDiv.innerHTML = deviceInfos.join('<br>');
+    if (refInput) {
+        refInput.value = deviceIds.join(',');
+        renderSavedDevices(refInput);
+    }
 }
 
 function quickSelectDevice(id, name, model, techIndex, techStatus, manufacturer) {
@@ -590,38 +611,24 @@ function selectDevicesForList(chapterId) {
     
     // 回显已选设备
     var existing = document.getElementById('device_list_' + chapterId).value;
-    if (existing) {
-        var ids = existing.split(',');
-        document.querySelectorAll('.device-list-check').forEach(function(cb) {
-            cb.checked = ids.includes(cb.value);
-        });
-    }
+    var ids = existing.split(',').filter(Boolean);
+    document.querySelectorAll('.device-list-check').forEach(function(cb) {
+        cb.checked = ids.includes(cb.value);
+    });
     
-    var modal = new bootstrap.Modal(document.getElementById('deviceListModal'));
+    var modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('deviceListModal'));
     modal.show();
 }
 
 function confirmDeviceList() {
     var chapterId = currentDeviceList;
     var selected = [];
-    var displayHtml = '<table class="table table-sm">';
-    displayHtml += '<thead><tr><th>设备名称</th><th>型号</th><th>技术指标</th><th>技术状态</th><th>研制单位</th></tr></thead>';
-    displayHtml += '<tbody>';
-    
     document.querySelectorAll('.device-list-check:checked').forEach(function(cb) {
         selected.push(cb.value);
-        displayHtml += '<tr>';
-        displayHtml += '<td>' + cb.dataset.name + '</td>';
-        displayHtml += '<td>' + cb.dataset.model + '</td>';
-        displayHtml += '<td>' + (cb.dataset.tech_index || '-') + '</td>';
-        displayHtml += '<td>' + (cb.dataset.tech_status || '-') + '</td>';
-        displayHtml += '<td>' + (cb.dataset.manufacturer || '-') + '</td>';
-        displayHtml += '</tr>';
     });
-    displayHtml += '</tbody></table>';
-    
-    document.getElementById('device_list_' + chapterId).value = selected.join(',');
-    document.getElementById('device_list_content_' + chapterId).innerHTML = displayHtml;
+    var input = document.getElementById('device_list_' + chapterId);
+    input.value = selected.join(',');
+    renderSavedDevices(input);
     
     bootstrap.Modal.getInstance(document.getElementById('deviceListModal')).hide();
 }
