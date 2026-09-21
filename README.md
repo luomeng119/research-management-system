@@ -4,6 +4,8 @@
 
 > **2026-09-21 当前交付状态：**项目本地生成模型及下载残片不进入本次交付，AI 功能默认关闭并从界面隐藏。系统默认启动只依赖 Python、PostgreSQL 和本地文件存储，不需要启动、下载或配置本地模型。2026-09-11 文档中的 Qwen/llama.cpp/AI 演示内容是历史交付证据，已由[当前交付说明](docs/delivery/20260921/README.md)取代。
 
+公开源码仓库：[luomeng119/research-management-system](https://github.com/luomeng119/research-management-system)。任何同事可无需邀请直接克隆；推送仍需个人 GitHub 身份和仓库写权限。
+
 ## 项目简介
 
 科研管理系统是一套本地部署的 Flask Web 应用，断网时核心业务仍可运行：
