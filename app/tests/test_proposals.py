@@ -32,14 +32,15 @@ SOURCE = {
 
 def _schema(engine):
     metadata = sa.MetaData()
-    common = lambda: (
-        sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("created_by", sa.Integer),
-        sa.Column("updated_by", sa.Integer),
-        sa.Column("version", sa.Integer, nullable=False, server_default="1"),
-    )
+    def common():
+        return (
+            sa.Column("id", sa.String(36), primary_key=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.Column("created_by", sa.Integer),
+            sa.Column("updated_by", sa.Integer),
+            sa.Column("version", sa.Integer, nullable=False, server_default="1"),
+        )
     sa.Table(
         "proposals", metadata, *common(),
         sa.Column("business_id", sa.Text, nullable=False, unique=True),

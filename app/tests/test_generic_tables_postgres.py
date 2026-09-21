@@ -139,7 +139,10 @@ def test_new_version_import_failure_rolls_back_current_and_version(service, tmp_
     table_id = service.create("甲表", "", "张老师")
     source = service.get_by_id(table_id)["current_version_id"]
     path = tmp_path / "valid.xlsx"
-    workbook = openpyxl.Workbook(); workbook.active.append(["名称"]); workbook.active.append(["甲"]); workbook.save(path)
+    workbook = openpyxl.Workbook()
+    workbook.active.append(["名称"])
+    workbook.active.append(["甲"])
+    workbook.save(path)
     before = service.get_versions(table_id)
     monkeypatch.setattr(service, "_import_parsed", lambda *_args: (_ for _ in ()).throw(RuntimeError("injected")))
     with pytest.raises(RuntimeError, match="injected"):
@@ -220,7 +223,9 @@ def test_header_only_import_still_rejects_noncurrent_unlocked_version(service, t
     old_current = service.get_by_id(table_id)["current_version_id"]
     service.save_snapshot(table_id, old_current, "快照", "", "张老师")
     source = tmp_path / "header.xlsx"
-    workbook = openpyxl.Workbook(); workbook.active.append(["名称"]); workbook.save(source)
+    workbook = openpyxl.Workbook()
+    workbook.active.append(["名称"])
+    workbook.save(source)
     with pytest.raises(GenericTablesError, match="当前编辑版本"):
         service.import_rows_from_excel(old_current, source, "张老师")
 

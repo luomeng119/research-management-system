@@ -13,6 +13,7 @@
   let tree = null;
   let selectedId = null;
   let mounted = false;
+  let componentReload = null;
   let motionEnabled = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function container() { return document.querySelector('#researchPathCanvas'); }
@@ -39,10 +40,43 @@
     retry.className = 'btn btn-sm btn-outline-secondary';
     retry.type = 'button';
     retry.textContent = '重新加载研究路径';
-    retry.addEventListener('click', () => { mounted = false; mount(); });
+    retry.addEventListener('click', async () => {
+      retry.disabled = true;
+      try {
+        if (!window.G6) await reloadComponent();
+        // A timed-out local script may still finish before this retry.
+        window.__G6_LOAD_FAILED__ = false;
+        mounted = false;
+        await mount();
+      } catch (error) {
+        showError(error.message || '本地图形组件加载失败');
+      }
+    });
     inner.append(text, retry);
     wrap.append(inner);
     target.append(wrap);
+  }
+
+  function reloadComponent() {
+    if (componentReload) return componentReload;
+    componentReload = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      // Retry the bundled asset only; no CDN fallback or page reload.
+      script.src = '/static/vendor/g6.min.js';
+      const finish = success => {
+        clearTimeout(timeout);
+        script.onload = script.onerror = null;
+        script.remove();
+        window.__G6_LOAD_FAILED__ = !success;
+        if (success) resolve();
+        else reject(new Error('本地图形组件加载失败'));
+      };
+      const timeout = setTimeout(() => finish(false), 10000);
+      script.onload = () => finish(!!window.G6);
+      script.onerror = () => finish(false);
+      document.head.append(script);
+    }).finally(() => { componentReload = null; });
+    return componentReload;
   }
 
   function buildData() {
@@ -75,11 +109,18 @@
     badge.className = `path-inspector-status ${record.status || 'pending'}`;
     badge.textContent = palette.label;
     inspector.querySelector('h3').textContent = escapeText(record.title);
-    inspector.querySelector(':scope > p').textContent = escapeText(record.summary);
+    inspector.querySelector(':scope > p').textContent = escapeText(record.summaryDisplay || record.summary);
+    inspector.querySelector(':scope > p').title = record.summary || '';
     const values = inspector.querySelectorAll('dd');
-    values[0].textContent = escapeText(record.owner);
-    values[1].textContent = escapeText(record.period);
-    values[2].textContent = escapeText(record.source);
+    const labels = inspector.querySelectorAll('dt');
+    labels[0].textContent = record.ownerLabel || '负责人';
+    labels[1].textContent = record.periodLabel || '时间说明';
+    values[0].textContent = escapeText(record.ownerDisplay || record.owner);
+    values[0].title = record.owner || '';
+    values[1].textContent = escapeText(record.periodDisplay || record.period);
+    values[1].title = record.period || '';
+    values[2].textContent = escapeText(record.sourceDisplay || record.source);
+    values[2].title = record.source || '';
     values[3].textContent = escapeText(record.issues, '无');
     inspector.querySelector('footer p').textContent = escapeText(record.next);
   }
@@ -113,7 +154,9 @@
       container: target,
       width: target.clientWidth,
       height: target.clientHeight,
-      autoFit: {type: 'view', options: {padding: [34, 42, 54, 42]}},
+      // G6 reads viewport padding from Graph options, not fitView options.
+      padding: [34, 24, 54, 24],
+      autoFit: 'view',
       data: buildData(),
       node: {
         type: 'rect',
@@ -143,7 +186,7 @@
         },
         animation: false,
       },
-      layout: {type: 'mindmap', direction: 'LR', getHeight: () => 46, getWidth: model => model.id === tree.id ? 210 : 164, getVGap: () => 10, getHGap: () => 46},
+      layout: {type: 'mindmap', direction: 'LR', getHeight: () => 46, getWidth: model => model.id === tree.id ? 210 : 164, getVGap: () => 10, getHGap: () => 18},
       behaviors: ['drag-canvas', 'zoom-canvas'],
     });
     await graph.render();
@@ -167,7 +210,7 @@
   async function mount() {
     try {
       if (!tree) await loadData();
-      if (mounted && graph) { graph.resize(); await graph.fitView({padding: [34, 42, 54, 42]}); return true; }
+      if (mounted && graph) { graph.resize(); await graph.fitView(); return true; }
       mounted = await render();
       return mounted;
     } catch (error) {
@@ -178,7 +221,7 @@
   }
 
   async function toggleMotion() { motionEnabled = !motionEnabled; mounted = false; await mount(); }
-  async function fit() { if (graph) await graph.fitView({padding: [34, 42, 54, 42]}); }
+  async function fit() { if (graph) await graph.fitView(); }
 
   document.addEventListener('DOMContentLoaded', () => {
     const motion = document.querySelector('#togglePathMotion');

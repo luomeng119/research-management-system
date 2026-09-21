@@ -9,7 +9,7 @@ import threading
 import time
 
 from app.utils import import_progress as ip
-from app.security.auth import BUSINESS_USER, current_identity
+from app.security.auth import FORMAL_ROLES, current_identity
 from app.services.files import FileServiceError
 from app.services.resources import ResourceServiceError
 
@@ -34,14 +34,14 @@ def _business_identity():
     identity = current_identity()
     if identity is None:
         raise FileServiceError('UNAUTHORIZED', '未登录', 401)
-    if identity.role != BUSINESS_USER:
+    if identity.role not in FORMAL_ROLES:
         raise FileServiceError('FORBIDDEN', '无权访问业务附件', 403)
     return identity
 
 
 def _can_access_equipment_files():
     identity = current_identity()
-    return bool(identity and identity.role == BUSINESS_USER)
+    return bool(identity and identity.role in FORMAL_ROLES)
 
 
 def _equipment_files(equipment_id):
@@ -455,7 +455,7 @@ def export():
             e.get('equipment_id'), e.get('name'), e.get('former_name'), e.get('model'),
             e.get('category'), e.get('subclass'), e.get('form'), e.get('price'), e.get('main_purpose'),
             e.get('resource_guarantee'), e.get('tech_index'), e.get('tech_status'),
-            e.get('manufacturer'), e.get('created_at'),
+            e.get('manufacturer'), str(e.get('created_at') or ''),
             host_ids, host_names
         ])
 

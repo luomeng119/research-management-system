@@ -15,7 +15,7 @@ from sqlalchemy.pool import StaticPool
 from app import create_app
 
 
-HEAD_REVISION = "0009_equipment_import_batches"
+HEAD_REVISION = "0013_report_redaction_snapshot"
 
 
 def _runtime_paths_from_fresh_process(*, data_root: Path | None) -> dict[str, str]:
@@ -194,7 +194,7 @@ def test_readiness_does_not_call_failing_ai_service(tmp_path):
     client = _app(
         tmp_path,
         engine=_engine(),
-        AI_PROVIDER="DEEPSEEK",
+        AI_PROVIDER="LOCAL",
         ASSISTANT_SERVICE=_ExplodingAssistant(),
     ).test_client()
 

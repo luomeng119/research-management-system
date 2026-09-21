@@ -158,22 +158,22 @@
 
 <div class="preview-overlay" id="previewOverlay" onclick="closePreview()"></div>
 
-<div class="preview-panel" id="previewPanel">
+<div class="preview-panel" id="previewPanel" role="dialog" aria-label="附件预览" aria-hidden="true" tabindex="-1">
     <div class="preview-panel-header">
         <span class="filename" id="previewFileName">文档预览</span>
         <div>
             <a href="#" class="btn btn-sm btn-outline-primary me-1" id="previewDownloadBtn" target="_blank" title="下载">
                 <i class="bi bi-download"></i>
             </a>
-            <button class="btn btn-sm btn-outline-info" id="aiCorrectBtn" onclick="doAICorrect()" title="AI 文本纠错" style="display:none;">
+            {% if config is defined and config.get('AUXILIARY_AI_ENABLED', False) %}<button class="btn btn-sm btn-outline-info" id="aiCorrectBtn" onclick="doAICorrect()" title="AI 文本纠错" style="display:none;">
                 <i class="bi bi-spellcheck"></i> AI纠错
-            </button>
-            <button class="btn btn-sm btn-outline-secondary" onclick="closePreview()" title="关闭">
+            </button>{% endif %}
+            <button id="previewCloseBtn" type="button" class="btn btn-sm btn-outline-secondary" onclick="closePreview()" title="关闭" aria-label="关闭附件预览">
                 <i class="bi bi-x-lg"></i>
             </button>
         </div>
     </div>
-    <!-- AI 纠错结果区域 -->
+    {% if config is defined and config.get('AUXILIARY_AI_ENABLED', False) %}<!-- AI 纠错结果区域 -->
     <div id="aiCorrectPanel" style="display:none; background:#fffbe6; border-bottom:1px solid #ffe58f; padding:0.5rem 1rem; flex-shrink:0;">
         <div class="d-flex align-items-center mb-1">
             <strong class="text-warning me-auto"><i class="bi bi-spellcheck"></i> AI 纠错结果</strong>
@@ -190,7 +190,7 @@
                 <button class="btn btn-sm btn-outline-warning" onclick="hideAICorrect()">收起</button>
             </div>
         </div>
-    </div>
+    </div>{% endif %}
     <div class="preview-panel-body" id="previewPanelBody">
         <div class="preview-loading">
             <div class="spinner-border text-primary" role="status"></div>
@@ -205,7 +205,28 @@ var _previewCurrentName = '';
 var _previewCurrentType = '';
 var _previewCurrentDownloadUrl = '';
 
-function openControlledPreview(fileId, versionNo, objectType, objectId, fileName, downloadUrl) {
+var _previewRequestId = 0;
+var _previewIsOpen = false;
+var _previewReturnFocus = null;
+function beginPreviewRequest() {
+    if (!_previewIsOpen) _previewReturnFocus = document.activeElement;
+    _previewIsOpen = true;
+    document.getElementById('previewPanel').setAttribute('aria-hidden', 'false');
+    document.getElementById('previewCloseBtn').focus();
+    return ++_previewRequestId;
+}
+function isCurrentPreview(requestId) { return _previewIsOpen && requestId === _previewRequestId; }
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape' && _previewIsOpen) { event.preventDefault(); closePreview(); }
+});
+
+function openProjectPreview(projectId, category, filepath, fileName, downloadUrl) {
+    var params = new URLSearchParams({projectId: projectId, category: category, filepath: filepath});
+    openControlledPreview('', 1, 'PROJECT', projectId, fileName, downloadUrl, '/preview/project?' + params.toString());
+}
+
+function openControlledPreview(fileId, versionNo, objectType, objectId, fileName, downloadUrl, previewUrl) {
+    var requestId = beginPreviewRequest();
     _previewCurrentPath = '';
     _previewCurrentName = fileName;
     _previewCurrentType = objectType;
@@ -218,7 +239,7 @@ function openControlledPreview(fileId, versionNo, objectType, objectId, fileName
     document.getElementById('previewOverlay').classList.add('show');
     document.getElementById('previewPanel').classList.add('open');
     var params = new URLSearchParams({fileId: fileId, versionNo: String(versionNo), objectType: objectType, objectId: objectId});
-    fetch('/preview/file?' + params.toString(), {credentials: 'same-origin'})
+    fetch(previewUrl || '/preview/file?' + params.toString(), {credentials: 'same-origin'})
         .then(function(response) {
             var contentType = response.headers.get('content-type') || '';
             if (contentType.indexOf('application/json') !== -1) return response.json();
@@ -226,11 +247,12 @@ function openControlledPreview(fileId, versionNo, objectType, objectId, fileName
             if (contentType.indexOf('image/') !== -1) return {success: response.ok, type: 'image', url: response.url};
             return {success: false, message: '该文件类型暂不支持预览'};
         })
-        .then(function(data) { if (data.success) renderPreviewContent(data); else { var body = document.getElementById('previewPanelBody'); body.textContent = data.message || '预览加载失败'; } })
-        .catch(function() { document.getElementById('previewPanelBody').textContent = '预览加载失败'; });
+        .then(function(data) { if (!isCurrentPreview(requestId)) return; if (data.success) renderPreviewContent(data); else { var body = document.getElementById('previewPanelBody'); body.textContent = data.message || '预览加载失败'; } })
+        .catch(function() { if (!isCurrentPreview(requestId)) return; document.getElementById('previewPanelBody').textContent = '预览加载失败'; });
 }
 
 function openPreview(filePath, fileName, fileType, downloadUrl) {
+    var requestId = beginPreviewRequest();
     _previewCurrentPath = filePath;
     _previewCurrentName = fileName;
     _previewCurrentType = fileType;
@@ -250,22 +272,48 @@ function openPreview(filePath, fileName, fileType, downloadUrl) {
     document.getElementById('previewPanel').classList.add('open');
     
     // 请求预览内容
-    var url = '/preview/file?path=' + encodeURIComponent(filePath) + '&type=' + fileType + '&name=' + encodeURIComponent(fileName);
+    var url;
+    try {
+        var controlled = new URL(filePath, window.location.origin);
+        if (controlled.origin !== window.location.origin || controlled.pathname !== '/preview/file' ||
+            controlled.searchParams.has('path') ||
+            !['fileId', 'versionNo', 'objectType', 'objectId'].every(function(key) { return controlled.searchParams.get(key); })) {
+            throw new Error('需要受控附件链接，请从附件列表重新打开');
+        }
+        url = controlled.pathname + controlled.search;
+    } catch (err) {
+        dlBtn.style.display = 'none';
+        document.getElementById('previewPanelBody').textContent = '需要受控附件链接，请从附件列表重新打开';
+        return;
+    }
     fetch(url, {credentials: 'same-origin'})
-        .then(function(r) { return r.json(); })
+        .then(function(response) {
+            var contentType = response.headers.get('content-type') || '';
+            if (contentType.indexOf('application/json') !== -1) return response.json();
+            if (contentType.indexOf('application/pdf') !== -1) return {success: response.ok, type: 'pdf', url: response.url};
+            if (contentType.indexOf('image/') !== -1) return {success: response.ok, type: 'image', url: response.url};
+            return {success: false, message: '该文件类型暂不支持预览'};
+        })
         .then(function(data) {
+            if (!isCurrentPreview(requestId)) return;
             if (data.success) {
                 renderPreviewContent(data);
             } else {
-                document.getElementById('previewPanelBody').innerHTML = '<div class="alert alert-warning m-3"><i class="bi bi-exclamation-triangle"></i> ' + data.message + '</div>';
+                document.getElementById('previewPanelBody').textContent = (data.error && (data.error.message || (typeof data.error === 'string' ? data.error : ''))) || data.message || '附件预览不可用';
             }
         })
         .catch(function(err) {
-            document.getElementById('previewPanelBody').innerHTML = '<div class="alert alert-danger m-3"><i class="bi bi-x-circle"></i> 预览加载失败: ' + err + '</div>';
+            if (!isCurrentPreview(requestId)) return;
+            document.getElementById('previewPanelBody').textContent = '预览加载失败，请稍后重试';
         });
 }
 
 function closePreview() {
+    ++_previewRequestId;
+    _previewIsOpen = false;
+    document.getElementById('previewPanel').setAttribute('aria-hidden', 'true');
+    if (_previewReturnFocus && _previewReturnFocus.isConnected) _previewReturnFocus.focus();
+    _previewReturnFocus = null;
     document.getElementById('previewOverlay').classList.remove('show');
     document.getElementById('previewPanel').classList.remove('open');
 }
@@ -393,11 +441,14 @@ function hideAICorrect() {
     if (panel) panel.style.display = 'none';
 }
 
+var _aiCorrectRequestId = 0;
 function doAICorrect() {
     if (!_previewCorrectText) {
         alert('无文本内容可纠错');
         return;
     }
+    var original = _previewCorrectText;
+    var requestId = ++_aiCorrectRequestId;
     var panel = document.getElementById('aiCorrectPanel');
     var loading = document.getElementById('aiCorrectLoading');
     var errorDiv = document.getElementById('aiCorrectError');
@@ -413,27 +464,30 @@ function doAICorrect() {
     fetch('/api/correct', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({text: _previewCorrectText}),
+        body: JSON.stringify({text: original}),
         credentials: 'same-origin'
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
+        if (requestId !== _aiCorrectRequestId || original !== _previewCorrectText) return;
         if (loading) loading.style.display = 'none';
         if (data.code === 0) {
             var corrected = data.data.corrected;
-            var original = _previewCorrectText;
+            var truncated = data.data.truncated === true;
+            var comparedOriginal = truncated ? Array.from(original).slice(0, 2000).join('') : original;
             if (diffDiv) {
                 diffDiv.innerHTML = '<pre class="mb-0" style="white-space:pre-wrap;word-break:break-all;font-family:inherit;font-size:0.85rem;">' + escapeHtml(corrected) + '</pre>';
             }
             if (statsDiv) {
-                if (corrected === original) {
-                    statsDiv.textContent = '未发现问题';
+                if (corrected === comparedOriginal) {
+                    statsDiv.textContent = '模型未提出修改，请人工复核';
                     statsDiv.className = 'badge bg-success me-1';
                 } else {
-                    statsDiv.textContent = '已纠错';
+                    statsDiv.textContent = '已生成校对建议，请人工确认';
                     statsDiv.className = 'badge bg-warning text-dark me-1';
                 }
             }
+            if (truncated && statsDiv) statsDiv.textContent += '；仅校对前 2000 字符，其余尚未校对';
             if (resultDiv) resultDiv.style.display = '';
         } else {
             if (errorDiv) {
@@ -443,6 +497,7 @@ function doAICorrect() {
         }
     })
     .catch(function(err) {
+        if (requestId !== _aiCorrectRequestId || original !== _previewCorrectText) return;
         if (loading) loading.style.display = 'none';
         if (errorDiv) {
             errorDiv.textContent = '请求失败: ' + err;

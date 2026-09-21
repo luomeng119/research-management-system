@@ -803,9 +803,105 @@ def test_file_api_requires_auth_and_round_trips_upload_download(web_app):
     assert "attachment" in downloaded.headers["Content-Disposition"]
 
 
-def test_maintenance_role_cannot_access_business_files(web_app):
+@pytest.mark.parametrize("fixture,name,media_type", [
+    ("office-sample.doc", "原始材料.doc", "application/msword"),
+    ("office-source.xls", "资源登记.xls", "application/vnd.ms-excel"),
+    ("office-source.ppt", "研究汇报.ppt", "application/vnd.ms-powerpoint"),
+])
+def test_legacy_office_attachment_round_trips_without_online_conversion(web_app, service, fixture, name, media_type, monkeypatch):
+    from pathlib import Path
+
+    # Local textutil DOC / LibreOffice MS Excel 97 XLS conversions from the
+    # adjacent text/CSV sources; actual Office files, not signature-only fakes.
+    payload = (Path(__file__).parent / "fixtures/legacy" / fixture).read_bytes()
+    service.max_bytes = 1_000_000
+    service.preview_max_bytes = 1_000_000
+    # A host without Office MIME registrations must still serve stable types.
+    monkeypatch.setattr("app.services.files.mimetypes.guess_type", lambda *_: (None, None))
+    client = _business_client(web_app)
+    uploaded = client.post(
+        "/api/files",
+        data={"objectType": "EXPENSE", "objectId": "7",
+              "file": (io.BytesIO(payload), name)},
+        content_type="multipart/form-data",
+    )
+    assert uploaded.status_code == 201, uploaded.get_json()
+    file_id = uploaded.get_json()["fileId"]
+    preview = client.get(
+        f"/api/files/{file_id}/versions/1/preview?objectType=EXPENSE&objectId=7"
+    )
+    assert preview.status_code == 409
+    assert preview.get_json()["error"]["code"] == "PREVIEW_UNAVAILABLE"
+    download_url = preview.get_json()["downloadUrl"]
+    downloaded = client.get(download_url)
+    assert downloaded.status_code == 200
+    assert downloaded.data == payload
+    assert downloaded.mimetype == media_type
+    assert "attachment" in downloaded.headers["Content-Disposition"]
+    assert downloaded.headers["X-Content-Type-Options"] == "nosniff"
+    assert web_app.test_client().get(download_url).status_code == 401
+
+
+@pytest.mark.parametrize("kind", ["plain", "signature_only", "truncated", "wrong_office_type", "missing_table"])
+def test_binary_word_rejects_invalid_or_mislabeled_content(web_app, service, engine, kind):
+    from pathlib import Path
+
+    fixture_dir = Path(__file__).parent / "fixtures/legacy"
+    payload = {
+        "plain": b"not a Word file",
+        "signature_only": bytes.fromhex("d0cf11e0a1b11ae1"),
+        "truncated": (fixture_dir / "office-sample.doc").read_bytes()[:512],
+        "wrong_office_type": (fixture_dir / "office-source.xls").read_bytes(),
+        "missing_table": (fixture_dir / "office-sample.doc").read_bytes().replace(
+            "1Table".encode("utf-16-le"), "NoTabl".encode("utf-16-le")
+        ),
+    }[kind]
+    service.max_bytes = 100_000
+    response = _business_client(web_app).post(
+        "/api/files",
+        data={"objectType": "EXPENSE", "objectId": "7",
+              "file": (io.BytesIO(payload), "错误材料.doc")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 415
+    assert response.get_json()["error"]["code"] == "UNSUPPORTED_MEDIA_TYPE"
+    assert _rows(engine, "stored_files") == []
+    assert _rows(engine, "stored_file_versions") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
+
+
+@pytest.mark.parametrize("fixture,stream_name", [
+    ("office-sample.doc", "WordDocument"), ("office-source.xls", "Workbook"),
+    ("office-source.ppt", "PowerPoint Document"),
+])
+@pytest.mark.parametrize("defect", ["oversized_stream", "broken_chain"])
+def test_binary_office_rejects_invalid_required_stream(web_app, service, engine, fixture, stream_name, defect):
+    import struct
+    from pathlib import Path
+
+    payload = bytearray((Path(__file__).parent / "fixtures/legacy" / fixture).read_bytes())
+    entry = payload.find((stream_name + "\0").encode("utf-16-le"))
+    assert entry >= 0
+    if defect == "oversized_stream":
+        struct.pack_into("<Q", payload, entry + 120, 100_000_000)
+    else:
+        struct.pack_into("<I", payload, entry + 116, 0xFFFFFFFE)
+    service.max_bytes = 1_000_000
+    response = _business_client(web_app).post(
+        "/api/files",
+        data={"objectType": "EXPENSE", "objectId": "7",
+              "file": (io.BytesIO(payload), fixture)},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 415
+    assert response.get_json()["error"]["code"] == "UNSUPPORTED_MEDIA_TYPE"
+    assert _rows(engine, "stored_files") == []
+    assert not any(path.is_file() for path in service.storage_root.rglob("*"))
+
+
+def test_maintenance_role_can_access_business_files(web_app):
     maintainer = _business_client(web_app, role="SYSTEM_MAINTAINER")
-    assert maintainer.get("/api/files?objectType=EXPENSE&objectId=7").status_code == 403
+    assert maintainer.get("/api/files?objectType=EXPENSE&objectId=7").status_code == 200
     assert maintainer.post(
         "/api/files",
         data={
@@ -813,7 +909,7 @@ def test_maintenance_role_cannot_access_business_files(web_app):
             "file": (_pdf(), "report.pdf"),
         },
         content_type="multipart/form-data",
-    ).status_code == 403
+    ).status_code == 201
 
 
 def test_preview_fallback_and_legacy_path_parameter_rejection(web_app, service):
@@ -844,6 +940,69 @@ def test_preview_fallback_and_legacy_path_parameter_rejection(web_app, service):
     legacy = client.get("/preview/file?path=/etc/passwd&type=other")
     assert legacy.status_code == 400
     assert legacy.get_json()["error"]["code"] == "CONTROLLED_FILE_REFERENCE_REQUIRED"
+
+
+@pytest.mark.parametrize("extension", ["docx", "xlsx"])
+def test_office_preview_audit_failure_is_not_reported_as_unsupported(web_app, service, monkeypatch, extension):
+    service.max_bytes = 100_000
+    service.preview_max_bytes = 100_000
+    data = io.BytesIO()
+    if extension == "docx":
+        from docx import Document
+        document = Document()
+        document.add_paragraph("研究依据")
+        document.save(data)
+    else:
+        from openpyxl import Workbook
+        workbook = Workbook()
+        workbook.active.append(["研究依据"])
+        workbook.save(data)
+        workbook.close()
+    data.seek(0)
+    client = _business_client(web_app)
+    uploaded = client.post("/api/files", data={
+        "objectType": "EXPENSE", "objectId": "7", "file": (data, "材料." + extension),
+    }, content_type="multipart/form-data").get_json()
+    record = service.audit_service.record
+    def fail_success(connection, **values):
+        if values.get("properties", {}).get("operation") == "PREVIEW" and values["result"] == "SUCCESS":
+            raise RuntimeError("injected audit failure")
+        return record(connection, **values)
+    monkeypatch.setattr(service.audit_service, "record", fail_success)
+    response = client.get(f"/api/files/{uploaded['fileId']}/versions/1/preview?objectType=EXPENSE&objectId=7")
+    assert response.status_code == 500
+    assert response.json["error"]["code"] == "FILE_OPERATION_FAILED"
+
+
+def test_excel_preview_closes_workbook_when_text_budget_fails(web_app, service, monkeypatch):
+    service.max_bytes = 100_000
+    service.preview_max_bytes = 100_000
+    import openpyxl
+    import app.web.files as preview_module
+    data = io.BytesIO()
+    workbook = openpyxl.Workbook()
+    workbook.active.append(["研究依据"])
+    workbook.save(data)
+    workbook.close()
+    data.seek(0)
+    client = _business_client(web_app)
+    uploaded = client.post("/api/files", data={
+        "objectType": "EXPENSE", "objectId": "7", "file": (data, "材料.xlsx"),
+    }, content_type="multipart/form-data").get_json()
+    load = openpyxl.load_workbook
+    opened = []
+    def observe(*args, **kwargs):
+        result = load(*args, **kwargs)
+        opened.append(result)
+        return result
+    def exhausted(*args):
+        raise ValueError("preview character budget exceeded")
+    monkeypatch.setattr(openpyxl, "load_workbook", observe)
+    monkeypatch.setattr(preview_module, "_take_text", exhausted)
+    response = client.get(f"/api/files/{uploaded['fileId']}/versions/1/preview?objectType=EXPENSE&objectId=7")
+    assert response.status_code == 409
+    assert len(opened) == 1
+    assert opened[0]._archive.fp is None
 
 
 def test_invalid_file_id_and_object_mismatch_are_controlled_and_audited(web_app, service):

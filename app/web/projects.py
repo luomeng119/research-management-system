@@ -80,11 +80,34 @@ def _payload():
     return value
 
 
+def _progress_display_names(records):
+    """Add a display name without replacing persisted actor IDs or dates."""
+    users = current_app.extensions.get("users_repository")
+    names = {str(account["id"]): account.get("name") or account.get("username")
+             for account in users.list_accounts()} if users is not None else {}
+    def display_name(user_id):
+        return names.get(str(user_id)) or (
+            f"未知用户（账号{user_id}）" if user_id is not None else "未记录"
+        )
+
+    return [{**item, "createdByName": display_name(item.get("createdBy")),
+             "updatedByName": display_name(item.get("updatedBy"))}
+            for item in records]
+
+
 @bp.get("/projects/<project_id>/overview")
 @business_required
 def detail_page(project_id: str):
     try:
         detail = _service().detail(project_id)
+        project = detail["project"]
+        legacy = _service().get_legacy(category=project["category"], business_id=project["businessId"])
+        source_proposal = None
+        if project.get("sourceProposalId"):
+            with _service().repository.engine.connect() as connection:
+                source_proposal = _service().repository.get_proposal_by_id(connection, project["sourceProposalId"])
+        detail = {**detail, "start_date": legacy.get("start_date"), "source_proposal": source_proposal}
+        detail = {**detail, "progress": _progress_display_names(detail["progress"])}
         return render_template("projects/lifecycle_detail.html", **detail)
     except ProjectServiceError as error:
         return render_template(
@@ -113,7 +136,7 @@ def list_progress_api(project_id: str):
             page=request.args.get("page", 1), page_size=request.args.get("pageSize", 50),
         )
         return jsonify({
-            "data": result["items"],
+            "data": _progress_display_names(result["items"]),
             "pagination": {
                 "page": result["page"], "pageSize": result["pageSize"],
                 "totalItems": result["total"],
@@ -134,6 +157,19 @@ def add_progress_api(project_id: str):
             request_id=request.request_id,
         )
         return jsonify(result), 201
+    except ProjectServiceError as error:
+        return _error(error)
+
+
+@bp.patch("/api/projects/<project_id>/progress/<progress_id>")
+@business_required
+def update_progress_api(project_id: str, progress_id: str):
+    try:
+        result = _service().update_progress(
+            project_id, progress_id, _payload(), actor_user_id=_actor_id(),
+            request_id=request.request_id,
+        )
+        return jsonify(result)
     except ProjectServiceError as error:
         return _error(error)
 
@@ -232,6 +268,11 @@ def close_project_api(project_id: str):
 @business_required
 def research_path_api(project_id: str):
     try:
-        return jsonify(_service().research_path(project_id))
+        result = _service().research_path(project_id)
+        nodes = result["tree"]["children"][1]["children"]
+        names = _progress_display_names([{"createdBy": node["data"].get("ownerId")} for node in nodes])
+        for node, name in zip(nodes, names):
+            node["data"]["ownerDisplay"] = name["createdByName"]
+        return jsonify(result)
     except ProjectServiceError as error:
         return _error(error)

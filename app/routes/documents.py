@@ -1,3 +1,26 @@
+# -*- coding: utf-8 -*-
+"""报销单据模板路由：模板管理、单据填充及汇总打印。"""
+import os
+import io
+import uuid as _uuid
+from decimal import Decimal, InvalidOperation
+from datetime import datetime
+from flask import Blueprint, current_app, render_template, request, jsonify, session, send_file, redirect, url_for
+from werkzeug.exceptions import HTTPException
+
+from app.expense_db import (
+    get_reimbursement_by_id,
+    get_reimbursement_documents,
+    add_document_to_reimbursement,
+    update_document_in_reimbursement,
+    delete_document_from_reimbursement,
+    get_document_templates,
+    get_document_template,
+    get_reimbursement_children,
+)
+from app.document_engine import DocumentFiller, _cn_number
+
+
 def _fill_chuchai_template(tmpl_docx_bytes, context):
     """
     填充出差完整报销单据模板.docx（合并三合一模板）。
@@ -5,9 +28,8 @@ def _fill_chuchai_template(tmpl_docx_bytes, context):
     context: _build_report_context() 返回的字典。
     返回填充后的 docx 字节串。
     """
-    import io, zipfile, re
+    import zipfile
     from lxml import etree
-    from copy import deepcopy
 
     NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
@@ -73,7 +95,6 @@ def _fill_chuchai_template(tmpl_docx_bytes, context):
                 continue
             new_full_text = full_text.replace(old_text, new_text, 1)
             # 保留段落属性(pPr)，清除所有 runs，重建一个包含完整新文本的 run
-            pPr = para.find(q('pPr'))
             # 清除所有 runs
             for r in list(para.findall(f'{q("r")}')):
                 para.remove(r)
@@ -184,31 +205,7 @@ def _fill_chuchai_template(tmpl_docx_bytes, context):
         else:
             out_zip.writestr(item, doc_zip.read(item))
     out_zip.close()
-    return buf.getvalue()# -*- coding: utf-8 -*-
-"""
-报销单据模板路由
-模板管理 + 新建单据 + 自动填充 + 汇总打印
-"""
-import os
-import io
-import json
-import uuid as _uuid
-from decimal import Decimal, InvalidOperation
-from datetime import datetime
-from flask import Blueprint, current_app, render_template, request, jsonify, session, send_file, redirect, url_for
-from werkzeug.exceptions import HTTPException
-
-from app.expense_db import (
-    get_reimbursement_by_id,
-    get_reimbursement_documents,
-    add_document_to_reimbursement,
-    update_document_in_reimbursement,
-    delete_document_from_reimbursement,
-    get_document_templates,
-    get_document_template,
-    get_reimbursement_children,
-)
-from app.document_engine import DocumentFiller, _cn_number
+    return buf.getvalue()
 
 bp = Blueprint('documents', __name__, url_prefix='/expense/documents')
 
@@ -457,7 +454,7 @@ def api_auto_fill(rid):
     }
 
     # 加载填充引擎
-    filler = DocumentFiller(templates_dir=TEMPLATE_DIR)
+    DocumentFiller(templates_dir=TEMPLATE_DIR)
 
     # 对每个字段计算建议值
     suggestions = {}
@@ -466,7 +463,6 @@ def api_auto_fill(rid):
     for field in meta.get('fields', []):
         fid = field['field_id']
         source = field.get('source', '')
-        locked = field.get('editable', True) is False
 
         # 用户已填的值优先
         if fid in user_fields and user_fields[fid]:
@@ -716,6 +712,21 @@ def api_auto_fill(rid):
             'source': 'user_input',
             'locked': False,
         }
+
+    # 采购模板按全部发票商品形成数组，前端据此渲染并保存多条明细。
+    if '采购' in doc_type:
+        item_rows = [item for invoice in invoices for item in (invoice.get('items') or [])]
+        purchase_fields = {
+            'T0[3,1]': 'name', 'T0[4,1]': 'spec', 'T0[4,3]': 'quantity',
+            'T0[4,5]': 'unit_price', 'T0[4,7]': 'amount',
+        }
+        for fid, key in purchase_fields.items():
+            if item_rows and not user_fields.get(fid):
+                suggestions[fid] = {
+                    'value': [str(item.get(key) or '') for item in item_rows],
+                    'source': f'invoice:all_items.{key} ({len(item_rows)}条)',
+                    'locked': False,
+                }
 
     # 计算 amount_to_cn（基于当前 suggestions 中的申报金额）
     total_amount = Decimal('0')
@@ -1025,9 +1036,6 @@ def api_generate_report(rid):
         return jsonify({'success': False, 'error': '未登录'}), 401
 
     from app.expense_db import get_reimbursement_by_id
-    from app.document_engine import DocumentFiller
-    _base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    TEMPLATE_DIR = os.path.join(_base_dir, '报销单模板')
 
     reimb = get_reimbursement_by_id(rid)
     if not reimb:
@@ -1042,8 +1050,10 @@ def api_generate_report(rid):
         if not os.path.isfile(tmpl_path):
             return jsonify({'success': False, 'error': '完整出差报销模板缺失'}), 404
     else:
-        # 交付包只有 JSON 定义，没有真实 DOCX；不得伪造成功结果。
-        return jsonify({'success': False, 'error': '科研物资采购申请单模板缺失'}), 404
+        tmpl_name = '模板.docx'
+        tmpl_path = os.path.join(TEMPLATE_DIR, '科研物资采购申请单', tmpl_name)
+        if not os.path.isfile(tmpl_path):
+            return jsonify({'success': False, 'error': '科研物资采购申请单模板缺失'}), 404
 
     context = _build_report_context(rid)
     if context is None:
@@ -1054,6 +1064,26 @@ def api_generate_report(rid):
         with open(tmpl_path, 'rb') as f:
             tmpl_bytes = f.read()
         docx_bytes = _fill_chuchai_template(tmpl_bytes, context)
+    else:
+        session_context = {
+            'session': {
+                'name': session.get('name', ''),
+                'dept': session.get('dept', ''),
+                'dept_title': (session.get('dept', '') + ' ' + session.get('title', '')).strip(),
+            },
+            'invoices': context.get('invoices', []),
+            'payments': context.get('payments', []),
+        }
+        field_values = {
+            'T0[5,1]': reimb.get('title', '') or '科研物资采购',
+            'T0[10,1]': reimb.get('approver', '') or '',
+        }
+        try:
+            docx_bytes = DocumentFiller(templates_dir=TEMPLATE_DIR).generate(
+                '科研物资采购申请单', field_values, session_context,
+            )
+        except (FileNotFoundError, ValueError):
+            return jsonify({'success': False, 'error': '科研物资采购申请单模板无效'}), 500
 
     # 追加发票+支付记录附件到文档末尾
     invoices = context.get('invoices', [])
@@ -1184,7 +1214,6 @@ def _merge_docx_and_images(docx_bytes_list, invoices, payments):
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
     import zipfile
-    import os
     from lxml import etree
 
     merged = Document()

@@ -15,13 +15,13 @@
     <span class="proposal-status proposal-status-{{ status_classes.get(proposal.status, 'draft') if proposal else 'draft' }}">{{ status_labels.get(proposal.status, proposal.status) if proposal else '草稿' }}</span>
   </header>
 
-  <div class="proposal-form-layout {{ 'proposal-form-layout-single' if not proposal }}">
+  <div class="proposal-form-layout" id="proposal-editor-layout">
     <form method="post" novalidate id="proposal-form" class="proposal-form-main">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
       {% if proposal %}<input type="hidden" name="version" value="{{ proposal.version }}">{% endif %}
 
       <section class="proposal-panel proposal-form-section" aria-labelledby="proposal-source-heading">
-        <div class="proposal-section-heading"><span class="proposal-section-number">01</span><div><h2 id="proposal-source-heading">原始依据</h2><p>记录想法从哪里来；会议结论仅作为来源，不创建会议对象。</p></div></div>
+        <div class="proposal-section-heading"><span class="proposal-section-number">01</span><div><h2 id="proposal-source-heading">原始依据</h2><p>记录想法从哪里来；会议结论仅作为来源，不创建会议对象。</p></div>{% if proposal and config.get('AI_FEATURES_VISIBLE') %}<button class="proposal-button proposal-button-secondary proposal-button-sm proposal-assistant-trigger" type="button" id="assistant-open" aria-controls="proposal-assistant" aria-expanded="false"><span class="ai-action-badge">AI</span><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#sparkles"></use></svg>提案助手</button>{% endif %}</div>
         <div class="proposal-form-grid">
           <label class="proposal-field proposal-field-wide" for="title"><span>提案名称 <b class="proposal-required">*</b></span><input class="{{ 'is-invalid' if errors.get('title') }}" id="title" name="title" value="{{ form.get('title', '') }}" maxlength="200" placeholder="例如：便携式保障设备适配研究" required>{% if errors.get('title') %}<span class="invalid-feedback">{{ errors.title }}</span>{% endif %}</label>
           <label class="proposal-field" for="sourceType"><span>来源类型 <b class="proposal-required">*</b></span><select class="{{ 'is-invalid' if errors.get('sourceType') }}" id="sourceType" name="sourceType" required><option value="">请选择</option>{% for value in source_types %}<option value="{{ value }}" {{ 'selected' if form.get('sourceType') == value or (request.method == 'GET' and not proposal and not form and value == 'IDEA') }}>{{ source_labels.get(value, value) }}</option>{% endfor %}</select>{% if errors.get('sourceType') %}<span class="invalid-feedback">{{ errors.sourceType }}</span>{% endif %}</label>
@@ -31,14 +31,14 @@
       </section>
 
       <section class="proposal-panel proposal-form-section" aria-labelledby="proposal-content-heading">
-        <div class="proposal-section-heading"><span class="proposal-section-number">02</span><div><h2 id="proposal-content-heading">研究内容</h2><p>所有内容由用户确认，AI 建议不会自动覆盖。</p></div></div>
+        <div class="proposal-section-heading"><span class="proposal-section-number">02</span><div><h2 id="proposal-content-heading">研究内容</h2><p>{% if config.get('AI_FEATURES_VISIBLE') %}所有内容由用户确认，AI 建议不会自动覆盖。{% else %}请根据实际依据人工填写并核对全部研究内容。{% endif %}</p></div></div>
         {% set fields = [('researchProblem','拟解决的研究问题',4),('objectives','研究目标',4),('researchContent','主要研究内容',5),('expectedOutcomes','预期成果',4)] %}
         <div class="proposal-form-grid">{% for name, label, rows in fields %}<label class="proposal-field proposal-field-wide" for="{{ name }}"><span>{{ label }} <b class="proposal-required">*</b></span><textarea class="{{ 'is-invalid' if errors.get(name) }}" id="{{ name }}" name="{{ name }}" rows="{{ rows }}" required>{{ form.get(name, '') }}</textarea>{% if errors.get(name) %}<span class="invalid-feedback">{{ errors[name] }}</span>{% endif %}</label>{% endfor %}</div>
       </section>
 
       <div class="proposal-form-actions"><button class="proposal-button proposal-button-primary proposal-save-action" type="submit"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#check"></use></svg><span>保存草稿</span></button></div>
     </form>
-    {% if proposal %}{% include 'proposals/_assistant.html' %}{% endif %}
+    {% if proposal and config.get('AI_FEATURES_VISIBLE') %}{% include 'proposals/_assistant.html' %}{% endif %}
   </div>
 </div>
 {% endblock %}
@@ -47,6 +47,43 @@
 (() => {
   const form = document.getElementById('proposal-form');
   if (!form) return;
+  // The server owns validation; focus its first rejected field after a 422 render.
+  const invalidFields = form.querySelectorAll('input.is-invalid, select.is-invalid, textarea.is-invalid');
+  invalidFields.forEach(field => {
+    field.setAttribute('aria-invalid', 'true');
+    const feedback = field.parentElement.querySelector('.invalid-feedback');
+    if (feedback) {
+      feedback.id = `${field.id}-error`;
+      field.setAttribute('aria-describedby', feedback.id);
+    }
+  });
+  invalidFields[0]?.focus();
+
+  const drawer = document.getElementById('proposal-assistant');
+  const open = document.getElementById('assistant-open');
+  const close = document.getElementById('assistant-close');
+  const layout = document.getElementById('proposal-editor-layout');
+  if (drawer && open && close) {
+    const closeDrawer = () => {
+      drawer.hidden = true;
+      layout.classList.remove('proposal-assistant-open');
+      open.setAttribute('aria-expanded', 'false');
+      open.focus();
+    };
+    open.addEventListener('click', () => {
+      drawer.hidden = false;
+      layout.classList.add('proposal-assistant-open');
+      open.setAttribute('aria-expanded', 'true');
+      close.focus();
+    });
+    close.addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && !drawer.hidden) {
+        event.preventDefault();
+        closeDrawer();
+      }
+    });
+  }
   form.addEventListener('submit', event => {
     if (!form.checkValidity()) return;
     if (form.dataset.submitting === 'true') {

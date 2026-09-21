@@ -1,0 +1,9 @@
+{% extends "research_reports/layout.html" %}
+{% block report_content %}
+<a href="{{ url_for('research_reports.detail_page', report_id=report.id) }}">返回报告</a>
+<h1>{{ draft.inputTitle|default(report.title) }} · 待确认草稿</h1><p>基于 v{{ draft.baseVersion }} · 本地模型：{{ draft.model }}。请核对事实、来源和缺项，修改后再保存新版本。</p>
+{% if conflict %}<p role="alert">报告已更新，本次未保存。请先复制下方修改，返回报告核对最新版本后重新整合；不得直接覆盖。</p>{% endif %}
+<form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="baseVersion" value="{{ form.get('baseVersion', '') }}">
+{% include 'research_reports/fields.html' %}{% include 'research_reports/wording.html' %}<button class="btn btn-primary" type="submit">确认并保存新版本</button></form>
+{% set sources = draft.sources %}{% include 'research_reports/sources.html' %}
+{% endblock %}

@@ -9,6 +9,7 @@ from flask import redirect, session
 from sqlalchemy.pool import StaticPool
 
 import app as app_module
+import app.models as legacy_models
 from app import create_app
 from app.repositories.projects import ProjectsRepository
 from app.repositories.resources import EquipmentResourcesRepository
@@ -96,8 +97,6 @@ equipment_resources_service.add_group_member(
 )
 
 data_dir = tempfile.mkdtemp(prefix="research-v1-e2e-")
-import app.models as legacy_models
-
 legacy_models.DB_PATH = f"{data_dir}/research.db"
 legacy_models.EquipmentGroupModel().create_tables()
 application = create_app({

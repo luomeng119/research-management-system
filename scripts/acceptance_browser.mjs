@@ -1,6 +1,7 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { chromium, expect } from '@playwright/test';
-import { runJourney } from './acceptance_journey.mjs';
+import { runJourney, runProjectFiles, verifyRestoredProjectFiles } from './acceptance_journey.mjs';
 
 
 function required(name) {
@@ -22,9 +23,18 @@ const resultPath = required('ACCEPTANCE_RESULT');
 const username = required('ACCEPTANCE_USERNAME');
 const phase = process.env.ACCEPTANCE_PHASE || 'before-backup';
 if (!['before-backup', 'after-restore'].includes(phase)) throw new Error('Unknown acceptance phase.');
+const runtimeRoot = fs.realpathSync(required('ACCEPTANCE_DATA_ROOT'));
+const evidenceRoot = fs.realpathSync(path.dirname(resultPath));
+if (path.dirname(evidenceRoot) !== fs.realpathSync('build')
+    || !/^acceptance-posix\.[A-Za-z0-9]+$/.test(path.basename(evidenceRoot))
+    || runtimeRoot !== path.join(evidenceRoot, phase === 'after-restore' ? 'restored-runtime' : 'runtime')) {
+  throw new Error('Legacy fixture access requires the isolated acceptance runtime.');
+}
 const outbound = [];
 const browserErrors = [];
 const expectedValidationErrors = [];
+const verifiedDownloadUrls = [];
+const expectedDownloadTransitions = [];
 let status = 'FAILED';
 let browser;
 let page;
@@ -80,7 +90,8 @@ try {
   context.on('requestfailed', request => {
     const url = new URL(request.url());
     if (['127.0.0.1', 'localhost'].includes(url.hostname)) {
-      browserErrors.push({ type: 'requestfailed', url: request.url(), message: request.failure()?.errorText });
+      browserErrors.push({ type: 'requestfailed', url: request.url(), message: request.failure()?.errorText,
+        method: request.method(), navigation: request.isNavigationRequest() });
     }
   });
 
@@ -181,6 +192,11 @@ try {
     await page.getByRole('tab', { name: /成果/ }).click();
     await expect(page.getByText(previous.journey.outputTitle, { exact: true })).toBeVisible();
     journey.restored = { proposalBusinessId: previous.journey.proposalBusinessId, projectId: previous.journey.projectId, readOnly: true };
+    journey.restoredFiles = [];
+    for (const sample of [previous.journey, ...previous.journey.additionalProjectFiles]) {
+      verifiedDownloadUrls.push(await verifyRestoredProjectFiles(page, sample, runtimeRoot));
+      journey.restoredFiles.push({ category: sample.projectFiles.category, contentVerified: true, deletionPreserved: true });
+    }
     await page.screenshot({ path: `${resultPath}.png`, fullPage: true });
     journey.desktopLayouts = [];
     for (const [width, height] of [[1280, 720], [1366, 768], [1440, 900]]) {
@@ -199,7 +215,37 @@ try {
   } else {
   await runJourney(page, journey);
   // Retained editor: exercise real controls, persistence and a fresh history view.
-  page.on('dialog', dialog => dialog.accept());
+  journey.dialogs = [];
+  page.on('dialog', async dialog => {
+    journey.dialogs.push({ type: dialog.type(), message: dialog.message() });
+    await dialog.accept();
+  });
+  await runProjectFiles(page, journey, runtimeRoot);
+  journey.additionalProjectFiles = [];
+  for (const [category, prefix] of [
+    ['SECURITY_CONFIDENTIALITY', 'security_projects'], ['CRYPTO_APPLICATION', 'crypto_projects'],
+  ]) {
+    const title = `页面演练-${category}-${Date.now()}`;
+    await page.goto(`/${prefix}/add`);
+    await page.locator('input[name="project_id"]').fill('');
+    await page.locator('input[name="name"]').fill(title);
+    await page.locator('input[name="leader"]').fill('李老师');
+    const [created] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === `/${prefix}/add`
+        && response.request().method() === 'POST'),
+      page.waitForURL(url => url.pathname === `/${prefix}/`, { waitUntil: 'load' }),
+      page.locator('form.card button[type="submit"]').click(),
+    ]);
+    expect(created.status()).toBe(302);
+    const response = await page.request.get('/api/projects?pageSize=100');
+    expect(response.ok()).toBeTruthy();
+    const matches = (await response.json()).data.filter(item => item.name === title);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].category).toBe(category);
+    const sample = { projectId: matches[0].id };
+    journey.additionalProjectFiles.push(sample);
+    await runProjectFiles(page, sample, runtimeRoot);
+  }
   await page.goto('/template/edit/research');
   const staleTemplate = await context.newPage();
   const expectedTemplateConflicts = [];
@@ -325,6 +371,14 @@ try {
   journey.retainedArgumentation.plainTextDeviceLabels = true;
   }
   if (outbound.length !== 0) throw new Error('Non-local browser requests were observed.');
+  // A navigation handed to Chromium's download manager may report ERR_ABORTED.
+  // Match at most one such event per completed, hash-verified download, never all aborts.
+  for (const url of verifiedDownloadUrls) {
+    const index = browserErrors.findIndex(error => error.type === 'requestfailed'
+      && error.navigation === true && error.method === 'GET'
+      && error.message === 'net::ERR_ABORTED' && error.url === url);
+    if (index !== -1) expectedDownloadTransitions.push(...browserErrors.splice(index, 1));
+  }
   if (browserErrors.length !== 0) throw new Error(`Browser errors observed: ${JSON.stringify(browserErrors)}`);
   if (expectedValidationErrors.length > 1) throw new Error('Unexpected repeated validation response.');
   status = 'PASSED';
@@ -345,7 +399,8 @@ try {
       if (browser) await browser.close();
     } finally {
       fs.writeFileSync(outboundPath, JSON.stringify(outbound, null, 2));
-      fs.writeFileSync(resultPath, JSON.stringify({ status, journey, browserErrors, expectedValidationErrors }, null, 2));
+      fs.writeFileSync(resultPath, JSON.stringify({ status, journey, browserErrors, expectedValidationErrors,
+        verifiedDownloadUrls, expectedDownloadTransitions }, null, 2));
     }
   }
 }

@@ -398,13 +398,14 @@ def test_llm_maintenance_endpoints_reject_business_accounts(app, engine):
     client = app.test_client()
     assert _login(client, "alice").status_code == 302
 
-    assert client.get("/api/llm/status").status_code == 403
+    # The current delivery hides local-AI routes entirely before role checks.
+    assert client.get("/api/llm/status").status_code == 404
     token = _csrf(client, "/users/change-password")
     assert client.post(
         "/api/llm/reload",
         json={"name": "corrector", "_csrf_token": token},
         headers={"X-CSRF-Token": token},
-    ).status_code == 403
+    ).status_code == 404
 
 
 def test_business_templates_do_not_restore_legacy_role_or_leader_permissions():

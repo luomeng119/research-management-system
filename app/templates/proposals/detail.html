@@ -17,6 +17,10 @@
   </header>
   {% if action_error %}<div class="proposal-alert proposal-alert-danger" role="alert"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#circle-alert"></use></svg><span>{{ action_error }}</span></div>{% endif %}
 
+  {% if linked_project %}<p class="proposal-decision-note"><a href="{{ url_for('project_registry.detail_page', project_id=linked_project.id) }}">查看已立项项目</a>：{{ linked_project.name }}（{{ linked_project.businessId }}）</p>{% endif %}
+
+  {% if config.RESEARCH_REPORTS_AVAILABLE %}<p><a class="proposal-button proposal-button-secondary" href="{{ url_for('research_reports.list_page', objectType='PROPOSAL', objectId=proposal.businessId) }}">科研报告与版本</a></p>{% endif %}
+
   <nav class="proposal-subnav" aria-label="提案详情目录"><a href="#proposal-content">提案内容</a><a href="#argumentation-records">论证记录 <span>{{ argumentation_pagination.total }}</span></a><a href="#decision-records">立项决定 <span>{{ decision_pagination.total }}</span></a></nav>
 
   <section class="proposal-panel proposal-detail-summary" id="proposal-content" aria-labelledby="proposal-content-heading">
@@ -39,7 +43,15 @@
 
     <aside class="proposal-panel proposal-card" aria-labelledby="proposal-files-heading">
       <div class="proposal-card-heading"><div><h2 id="proposal-files-heading">依据附件</h2><p>与当前提案直接相关的材料。</p></div></div>
-      {% if files %}<ul class="proposal-file-list">{% for file in files %}<li><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#upload"></use></svg>{% if file.versionNo is defined %}<a href="{{ url_for('files.download_file', file_id=file.fileId, version_no=file.versionNo, objectType='PROPOSAL', objectId=proposal.businessId) }}">{{ file.originalName or file.fileId }}</a>{% else %}<span>{{ file.originalName or file.fileId }}</span>{% endif %}</li>{% endfor %}</ul>{% else %}<div class="proposal-file-empty" role="status"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#upload"></use></svg><span>尚无附件</span></div>{% endif %}
+      {% if files %}<ul class="proposal-file-list proposal-version-files">{% for file in files %}<li><div class="proposal-version-file">
+        {% if file.versionNo is defined %}<a href="{{ url_for('files.download_file', file_id=file.fileId, version_no=file.versionNo, objectType='PROPOSAL', objectId=proposal.businessId) }}">{{ file.originalName or file.fileId }}</a>
+        <p class="proposal-record-meta">当前 v{{ file.versionNo }} · 上传 <time title="{{ file.createdAt or '' }}">{{ file.createdAt.replace('T', ' ')[:16] if file.createdAt else '时间未记录' }}</time></p>
+        <p class="proposal-record-meta">独立附件编号：{{ file.fileId }}</p>
+        <details class="proposal-version-history" data-history-url="{{ url_for('files.list_versions', file_id=file.fileId, objectType='PROPOSAL', objectId=proposal.businessId) }}"><summary>版本历史</summary><div class="proposal-version-results" aria-live="polite"></div></details>
+        {% if proposal.status not in ['ESTABLISHED', 'REJECTED'] %}<details><summary>上传此文件新版本</summary><form class="proposal-upload" method="post" enctype="multipart/form-data" action="{{ url_for('proposals.upload_attachment_version_page', business_id=proposal.businessId, file_id=file.fileId) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expectedVersion" value="{{ file.versionNo }}"><label for="version-{{ file.fileId }}">选择修订文件（保留历史版本）</label><input class="form-control" id="version-{{ file.fileId }}" name="file" type="file" required><button class="proposal-button proposal-button-secondary proposal-button-sm" type="submit">上传新版本</button></form></details>{% endif %}
+        {% else %}<span>{{ file.originalName or file.fileId }}</span>{% endif %}
+      </div></li>{% endfor %}</ul>{% else %}<div class="proposal-file-empty" role="status"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#upload"></use></svg><span>尚无附件</span></div>{% endif %}
+      {% if files %}<p class="proposal-record-meta">同名独立附件分别保留；修订已有材料请使用“上传此文件新版本”。</p>{% endif %}
       {% if proposal.status not in ['ESTABLISHED', 'REJECTED'] %}<form class="proposal-upload" method="post" enctype="multipart/form-data" action="{{ url_for('proposals.upload_attachment_page', business_id=proposal.businessId) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label class="form-label" for="attachment">上传附件</label><div class="proposal-upload-row"><input class="form-control" id="attachment" name="file" type="file" required><button class="proposal-button proposal-button-secondary" type="submit">上传</button></div></form>{% endif %}
     </aside>
   </div>
@@ -56,7 +68,7 @@
     <div class="proposal-card-heading"><div><h2 id="decision-heading">论证处理</h2><p>记录立项、暂缓或不立项的结果，不形成审批流。</p></div></div>
     <p class="proposal-decision-note">立项时决定记录、项目创建、提案关联和状态变更会一次提交；任一步失败均不会改变提案。</p>
     <form method="post" action="{{ url_for('proposals.decide_page', business_id=proposal.businessId) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="version" value="{{ proposal.version }}"><input type="hidden" name="idempotencyKey" value="{{ idempotency_key }}"><div class="proposal-form-grid"><label class="proposal-field" for="decision"><span>处理结果 <b class="proposal-required">*</b></span><select id="decision" name="decision" required><option value="">请选择</option>{% if project_establishment_available %}<option value="ESTABLISH" {{ 'selected' if decision_form and decision_form.decision == 'ESTABLISH' }}>立项</option>{% endif %}<option value="DEFER" {{ 'selected' if decision_form and decision_form.decision == 'DEFER' }}>暂缓</option><option value="REJECT" {{ 'selected' if decision_form and decision_form.decision == 'REJECT' }}>不立项</option></select></label><label class="proposal-field" for="decisionDate"><span>处理日期 <b class="proposal-required">*</b></span><input id="decisionDate" type="date" name="decisionDate" value="{{ decision_form.decisionDate if decision_form else '' }}" required></label><label class="proposal-field" for="decisionConclusion"><span>处理结论 <b class="proposal-required">*</b></span><input id="decisionConclusion" name="conclusion" value="{{ decision_form.conclusion if decision_form else '' }}" required></label><label class="proposal-field" for="decisionBasis"><span>处理依据 <b class="proposal-required">*</b></span><input id="decisionBasis" name="basis" value="{{ decision_form.basis if decision_form else '' }}" required></label></div>
-      <div class="proposal-form-grid proposal-form-block" id="establish-fields" {% if not decision_form or decision_form.decision != 'ESTABLISH' %}hidden{% endif %}><label class="proposal-field" for="projectCategory"><span>项目类别</span><select class="establish-required" id="projectCategory" name="projectCategory"><option value="GENERAL_RESEARCH">一般科研</option><option value="SECURITY_CONFIDENTIALITY">安全保密</option><option value="CRYPTO_APPLICATION">密码应用</option></select></label><label class="proposal-field" for="projectName"><span>项目名称</span><input class="establish-required" id="projectName" name="projectName" value="{{ decision_form.projectName if decision_form else proposal.title }}"></label><label class="proposal-field" for="projectLeader"><span>负责人</span><input class="establish-required" id="projectLeader" name="projectLeader" value="{{ decision_form.projectLeader if decision_form else '' }}" placeholder="如：张老师"></label><label class="proposal-field" for="plannedEndDate"><span>计划结束日期（选填）</span><input id="plannedEndDate" type="date" name="plannedEndDate" value="{{ decision_form.plannedEndDate if decision_form else '' }}"></label></div>
+      <div class="proposal-form-grid proposal-form-block" id="establish-fields" {% if not decision_form or decision_form.decision != 'ESTABLISH' %}hidden{% endif %}><label class="proposal-field" for="projectCategory"><span>项目类别</span><select class="establish-required" id="projectCategory" name="projectCategory"><option value="GENERAL_RESEARCH" {{ 'selected' if decision_form and decision_form.projectCategory == 'GENERAL_RESEARCH' }}>一般科研</option><option value="SECURITY_CONFIDENTIALITY" {{ 'selected' if decision_form and decision_form.projectCategory == 'SECURITY_CONFIDENTIALITY' }}>安全保密</option><option value="CRYPTO_APPLICATION" {{ 'selected' if decision_form and decision_form.projectCategory == 'CRYPTO_APPLICATION' }}>密码应用</option></select></label><label class="proposal-field" for="projectName"><span>项目名称</span><input class="establish-required" id="projectName" name="projectName" value="{{ decision_form.projectName if decision_form else proposal.title }}"></label><label class="proposal-field" for="projectLeader"><span>负责人</span><input class="establish-required" id="projectLeader" name="projectLeader" value="{{ decision_form.projectLeader if decision_form else '' }}" placeholder="如：张老师"></label><label class="proposal-field" for="plannedEndDate"><span>计划结束日期（选填）</span><input id="plannedEndDate" type="date" name="plannedEndDate" value="{{ decision_form.plannedEndDate if decision_form else '' }}"></label></div>
       <div class="proposal-form-actions"><button class="proposal-button proposal-button-primary" type="submit"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#check"></use></svg>记录处理</button></div>
     </form>
     <form class="proposal-form-actions mt-2" method="post" action="{{ url_for('proposals.return_to_draft_page', business_id=proposal.businessId) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="version" value="{{ proposal.version }}"><button class="proposal-button proposal-button-secondary" type="submit">退回补充</button></form>
@@ -74,8 +86,48 @@
 </div>
 {% endblock %}
 {% block extra_js %}
+{% include 'components/preview_panel.html' %}
 <script>
 (() => {
+  document.querySelectorAll('.proposal-version-history').forEach(details => {
+    details.addEventListener('toggle', async () => {
+      if (!details.open || details.dataset.loaded || details.dataset.loading) return;
+      details.dataset.loading = 'true';
+      const target = details.querySelector('.proposal-version-results');
+      target.textContent = '正在读取版本…';
+      try {
+        const response = await fetch(details.dataset.historyUrl, {headers: {'Accept': 'application/json'}});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error?.message || '版本读取失败');
+        target.replaceChildren();
+        data.versions.forEach(version => {
+          const row = document.createElement('p');
+          row.textContent = `v${version.versionNo} · `;
+          const time = document.createElement('time');
+          time.title = version.createdAt || '';
+          time.textContent = version.createdAt ? version.createdAt.replace('T', ' ').slice(0, 16) : '时间未记录';
+          row.append(time, document.createTextNode(` · ${version.sizeBytes} B `));
+          ['preview', 'download'].forEach((operation, index) => {
+            const link = document.createElement('a');
+            const url = new URL(details.dataset.historyUrl, window.location.href);
+            url.pathname += `/${version.versionNo}/${operation}`;
+            link.href = url.href;
+            link.textContent = index ? '下载' : '预览';
+            if (!index) link.addEventListener('click', event => {
+              event.preventDefault();
+              const downloadUrl = new URL(url);
+              downloadUrl.pathname = downloadUrl.pathname.replace(/\/preview$/, '/download');
+              openControlledPreview(data.fileId, version.versionNo, 'PROPOSAL', url.searchParams.get('objectId'), data.originalName, downloadUrl.href, url.href);
+            });
+            row.append(link, document.createTextNode(' '));
+          });
+          target.append(row);
+        });
+        details.dataset.loaded = 'true';
+      } catch (error) { target.textContent = `${error.message}，关闭后重新展开可重试。`; }
+      finally { delete details.dataset.loading; }
+    });
+  });
   const forms = document.querySelectorAll('.proposal-page form[method="post"]');
   forms.forEach(form => form.addEventListener('submit', event => {
     if (!form.checkValidity()) return;

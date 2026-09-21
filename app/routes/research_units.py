@@ -3,7 +3,7 @@
 研制单位字典路由
 页面 + RESTful API
 """
-from flask import Blueprint, current_app, jsonify, request, session
+from flask import Blueprint, current_app, jsonify, request
 from app.services.resources import ResourceServiceError
 from app.security.auth import business_required
 

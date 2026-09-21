@@ -372,7 +372,7 @@ class UserModel:
             stored = json.loads(user['directory_permissions']) if user['directory_permissions'] else {}
             # 缺失的目录默认 visible
             return {d: stored.get(d, 'visible') for d in DIRECTORIES}
-        except:
+        except Exception:
             return {d: 'visible' for d in DIRECTORIES}
     
     def set_directory_permissions(self, username, permissions):
@@ -833,11 +833,11 @@ class ExpertModel:
         c = conn.cursor()
         try:
             c.execute("SELECT phone FROM experts LIMIT 1")
-        except:
+        except Exception:
             try:
                 c.execute("ALTER TABLE experts ADD COLUMN phone TEXT")
                 conn.commit()
-            except Exception as e:
+            except Exception:
                 pass
         conn.close()
     
@@ -847,11 +847,11 @@ class ExpertModel:
         c = conn.cursor()
         try:
             c.execute("SELECT id_card FROM experts LIMIT 1")
-        except:
+        except Exception:
             try:
                 c.execute("ALTER TABLE experts ADD COLUMN id_card TEXT")
                 conn.commit()
-            except Exception as e:
+            except Exception:
                 pass
         conn.close()
 
@@ -918,7 +918,7 @@ class ExpertModel:
         phone = kwargs.get('phone', '')
         id_card = kwargs.get('id_card', '')
         
-        sql = f"""UPDATE experts SET 
+        sql = """UPDATE experts SET
             name = ?, unit = ?, position = ?, expertise = ?, 
             bank_card = ?, bank_name = ?, phone = ?, id_card = ?, updated_at = ? 
             WHERE expert_id = ?"""
@@ -1563,7 +1563,6 @@ class HostDeviceModel:
             rows = c.fetchall()
             all_data = [self._row_to_dict(c, r) for r in rows]
             total = len(all_data)
-            total_pages = (total + per_page - 1) // per_page if total > 0 else 1
             start = (page - 1) * per_page
             end = start + per_page
             return all_data[start:end], total
@@ -1887,7 +1886,6 @@ class KnowledgeSubclassModel:
             c = conn.cursor()
             c.execute('SELECT COUNT(*) FROM knowledge_subclasses')
             if c.fetchone()[0] == 0:
-                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 defaults = [
                     # 密码设备
                     ('密码设备', '密码机', '2026-01-01 00:00:00'),

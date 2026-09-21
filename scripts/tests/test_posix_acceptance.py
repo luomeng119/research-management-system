@@ -1,4 +1,9 @@
 from pathlib import Path
+import json
+import re
+import subprocess
+import os
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -7,6 +12,54 @@ SCRIPTS = ROOT / "scripts"
 
 def _text(name: str) -> str:
     return (SCRIPTS / name).read_text(encoding="utf-8")
+
+
+def test_acceptance_python_selection_fails_closed_before_database_access(tmp_path):
+    # Ignoring an explicit interpreter must not silently use the development venv.
+    for selected, expected in ((str(tmp_path / "missing"), 69), ("", 69),
+                               (str(tmp_path), 69), (sys.executable, 64)):
+        result = subprocess.run(
+            ["bash", str(SCRIPTS / "acceptance_posix.sh")], cwd=tmp_path,
+            env={"PATH": os.environ["PATH"], "ACCEPTANCE_PYTHON": selected},
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == expected, result.stderr
+        assert not (tmp_path / "build").exists()
+    default = subprocess.run(
+        ["bash", str(SCRIPTS / "acceptance_posix.sh")], cwd=tmp_path,
+        env={"PATH": os.environ["PATH"]}, capture_output=True, text=True, timeout=10,
+    )
+    assert default.returncode == 69
+    assert ".venv/bin/python" in default.stderr
+
+
+def test_download_navigation_classification_is_exact_and_one_to_one():
+    source = _text("acceptance_browser.mjs")
+    code = re.search(r"  for \(const url of verifiedDownloadUrls\) \{.*?\n  \}", source, re.S)[0]
+    aborted = {"type": "requestfailed", "navigation": True, "method": "GET",
+               "message": "net::ERR_ABORTED", "url": "http://127.0.0.1:12345/download"}
+    cases = [
+        ([], [aborted], 1),
+        ([aborted["url"]], [aborted], 0),
+        ([aborted["url"]], [aborted, aborted], 1),
+        ([aborted["url"]], [{**aborted, "navigation": False}], 1),
+        ([aborted["url"]], [{**aborted, "method": "POST"}], 1),
+        ([aborted["url"]], [{**aborted, "url": "http://127.0.0.1:12345/other"}], 1),
+        ([aborted["url"]], [{**aborted, "message": "net::ERR_CONNECTION_RESET"}], 1),
+    ]
+    for urls, errors, remaining in cases:
+        result = subprocess.run(["node", "-e", """
+const fs = require('fs'); const vm = require('vm');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const state = {verifiedDownloadUrls: input.urls, browserErrors: input.errors,
+  expectedDownloadTransitions: []};
+vm.runInNewContext(input.code, state);
+process.stdout.write(JSON.stringify(state));
+"""], input=json.dumps({"code": code, "urls": urls, "errors": errors}),
+            text=True, capture_output=True, check=True, timeout=10)
+        state = json.loads(result.stdout)
+        assert len(state["browserErrors"]) == remaining
+        assert len(state["expectedDownloadTransitions"]) == len(errors) - remaining
 
 
 def test_postgres_harness_runs_optional_command_without_eval_before_cleanup():
@@ -93,6 +146,14 @@ def test_posix_browser_checks_authenticated_business_surfaces_and_outbound_reque
     assert "websocket.connectToServer()" in source
     assert "serviceWorkers: 'block'" in source
     assert "Invalid password was accepted" in source
+
+
+def test_acceptance_journey_uses_current_status_transition_modal_contract():
+    source = _text("acceptance_journey.mjs")
+    assert "#statusTransitionModal" in source
+    assert "#statusTransitionReason" in source
+    assert "#statusTransitionConfirm" in source
+    assert "page.once('dialog'" not in source
 
 
 def test_acceptance_user_password_is_read_from_stdin_and_not_argv():

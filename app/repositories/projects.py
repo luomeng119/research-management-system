@@ -74,6 +74,11 @@ class ProjectsRepository:
             statement = statement.with_for_update(of=self.proposals)
         return connection.execute(statement).mappings().first()
 
+    def get_proposal_by_id(self, connection: Connection, proposal_id):
+        return connection.execute(sa.select(self.proposals).where(
+            self.proposals.c.id == self._id(connection, proposal_id)
+        )).mappings().first()
+
     def update_proposal(
         self, connection: Connection, *, proposal_id, expected_version: int, values: dict
     ) -> int:
@@ -245,6 +250,7 @@ class ProjectsRepository:
                 "project_created_from_proposal",
                 "project_status_changed",
                 "project_record_added",
+                "project_record_updated",
             )),
         )
         if operator:
@@ -348,6 +354,29 @@ class ProjectsRepository:
             connection, payload["project_registry_id"]
         )
         connection.execute(table.insert().values(**self._values(table, payload)))
+
+    def get_progress(self, connection: Connection, *, registry_id, progress_id):
+        return connection.execute(
+            sa.select(self.progress).where(
+                self.progress.c.id == self._id(connection, progress_id),
+                self.progress.c.project_registry_id == self._id(connection, registry_id),
+            ).with_for_update()
+        ).mappings().first()
+
+    def update_progress(
+        self, connection: Connection, *, registry_id, progress_id,
+        expected_version: int, values: dict,
+    ) -> int:
+        result = connection.execute(
+            self.progress.update().where(
+                self.progress.c.id == self._id(connection, progress_id),
+                self.progress.c.project_registry_id == self._id(connection, registry_id),
+                self.progress.c.version == expected_version,
+            ).values(**self._values(self.progress, values), version=expected_version + 1)
+        )
+        if result.rowcount != 1:
+            raise OptimisticLockConflict("progress record changed")
+        return expected_version + 1
 
     def list_process_records(
         self, connection: Connection, *, record_type: str, registry_id,

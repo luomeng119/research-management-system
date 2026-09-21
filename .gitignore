@@ -1,18 +1,100 @@
-# 京东发票测试数据（本地测试用，上传后不纳入版本控制）
-2026京东发票-测试数据/
+# Local test data
+/2026京东发票-测试数据/
+/test_data/设备知识库_1200条.xlsx
 
-# 截图
-screenshots/
+# Environment and secrets
+.env
+.env.*
+.envrc
+!.env.example
+!.env.sample
+*.secret
+*.token
+*.pem
+*.key
+*.p12
+*.pfx
+/.secrets/
+/secrets/
+/credentials/
 
-# expense.db
+# Local generation models, weights, and interrupted downloads
+/models/
+/model-cache/
+/model_cache/
+*.gguf
+*.ggml
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.h5
+pytorch_model*.bin
+model-*-of-*.bin
+*.part
+*.part-*
+*.part[0-9]*
+*.partial
+*.crdownload
+*.segment-*
+*.download
+*.incomplete
+*.aria2
+
+# Runtime data and private business material
+/data/
+/runtime/
+/instance/
+/uploads/
+/downloads/
+/sessions/
+/logs/
+/backups/
 *.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.dump
+*.log
+*.pid
+/tmp/
 
-# Python cache
+# Local evidence and generated reports
+/.dev-workflow/
+/evidence/
+/local-evidence/
+/artifacts/
+/screenshots/
+/test-results/
+/playwright-report/
+/graphify-out/
+
+# Python and tooling caches
 __pycache__/
-node_modules/
-build/
-*.pyc
+*.py[cod]
 *.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+/.venv/
+/venv/
+.tox/
+.nox/
+*.egg-info/
+
+# JavaScript dependencies and build output
+/node_modules/
+/build/
+/dist/
+/coverage/
 
 # IDE
 .vscode/
@@ -22,7 +104,11 @@ build/
 .DS_Store
 Thumbs.db
 
-# 离线部署包（不纳入版本控制）
+# Offline deployment packages (generated locally)
 research_offline_deploy_*.zip
-data/flask_sessions/
-test_data/设备知识库_1200条.xlsx
+
+# Source fixtures and product delivery documents are publication inputs.
+!app/tests/fixtures/
+!app/tests/fixtures/**
+!docs/delivery/
+!docs/delivery/**

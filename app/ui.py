@@ -5,7 +5,7 @@ AI进化沙盘 - Tkinter UI
 import os
 import sys
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox
 import threading
 import json
 import datetime
@@ -19,7 +19,7 @@ def launch_ui():
     root.title("AI 进化沙盘 - 硅基智能推演系统")
     root.geometry("1100x750")
     root.minsize(900, 600)
-    app = AIEvolutionSandbox(root)
+    AIEvolutionSandbox(root)
     root.mainloop()
 
 

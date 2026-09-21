@@ -210,14 +210,16 @@ class ExpenseService:
             self.repository.update_reimbursement(connection, int(rid), values)
             self._audit(connection, operation="UPDATE", object_type="EXPENSE", object_id=rid)
 
-    def toggle_type(self, rid):
+    def toggle_type(self, rid, *, reimbursement_type=None):
+        if reimbursement_type is not None and (not isinstance(reimbursement_type, str) or reimbursement_type not in self.TYPES):
+            raise ExpenseValidationError("INVALID_TYPE", "报销类型无效")
         with self.repository.engine.begin() as connection:
             row = self.repository.get_reimbursement(connection, int(rid), lock=True)
             if not row:
                 raise ExpenseError("NOT_FOUND", "报销项不存在", 404)
             if row["status"] != "草稿":
                 raise ExpenseError("INVALID_STATUS", "已确认的报销项不可切换类型", 409)
-            value = "出差报销" if row.get("reimbursement_type") == "采购报销" else "采购报销"
+            value = reimbursement_type if reimbursement_type is not None else ("出差报销" if row.get("reimbursement_type") == "采购报销" else "采购报销")
             self.repository.update_reimbursement(connection, int(rid), {"reimbursement_type": value, "updated_at": self._now()})
             self._audit(connection, operation="TOGGLE_TYPE", object_type="EXPENSE", object_id=rid)
             return value
@@ -827,10 +829,20 @@ class ExpenseService:
             self._audit(connection, operation="UPDATE_DOCUMENTS", object_type="EXPENSE", object_id=rid)
             return result
 
+    def _document_field_value(self, value):
+        """Keep dynamic line-item arrays as JSON arrays while bounding stored text."""
+        if isinstance(value, list):
+            if len(value) > 100:
+                raise ExpenseValidationError("INVALID_DOCUMENT_FIELD", "单据明细不能超过100项")
+            return [self._text(item, field="单据明细", maximum=4000) for item in value]
+        if isinstance(value, (dict, tuple, set)):
+            raise ExpenseValidationError("INVALID_DOCUMENT_FIELD", "单据字段格式无效")
+        return self._text(value, field="单据字段", maximum=4000)
+
     def add_document(self, rid, doc):
         if not isinstance(doc, dict) or not isinstance(doc.get("fields", {}), dict):
             raise ExpenseValidationError("INVALID_DOCUMENT", "单据内容无效")
-        clean = {"id": self._text(doc.get("id") or uuid.uuid4().hex, maximum=64), "template_id": self._text(doc.get("template_id"), maximum=200), "doc_type": self._text(doc.get("doc_type"), maximum=200), "filled_by": self._text(doc.get("filled_by"), maximum=100), "filled_at": self._now().strftime("%Y-%m-%d %H:%M:%S"), "fields": {self._text(key, maximum=200): self._text(value, maximum=4000) for key, value in doc.get("fields", {}).items()}}
+        clean = {"id": self._text(doc.get("id") or uuid.uuid4().hex, maximum=64), "template_id": self._text(doc.get("template_id"), maximum=200), "doc_type": self._text(doc.get("doc_type"), maximum=200), "filled_by": self._text(doc.get("filled_by"), maximum=100), "filled_at": self._now().strftime("%Y-%m-%d %H:%M:%S"), "fields": {self._text(key, maximum=200): self._document_field_value(value) for key, value in doc.get("fields", {}).items()}}
         return self._documents_update(rid, lambda docs: docs + [clean])
 
     def update_document(self, rid, doc_id, updates):
@@ -841,7 +853,7 @@ class ExpenseService:
             for doc in docs:
                 if doc.get("id") == doc_id:
                     found = True
-                    doc.setdefault("fields", {}).update({self._text(key, maximum=200): self._text(value, maximum=4000) for key, value in updates.get("fields", {}).items()})
+                    doc.setdefault("fields", {}).update({self._text(key, maximum=200): self._document_field_value(value) for key, value in updates.get("fields", {}).items()})
                     doc["updated_at"] = self._now().strftime("%Y-%m-%d %H:%M:%S")
             if not found:
                 raise ExpenseError("NOT_FOUND", "单据不存在", 404)

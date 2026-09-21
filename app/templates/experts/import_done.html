@@ -104,23 +104,23 @@
 
     <div class="step-indicator">
         <div class="step done">
-            <span class="step-num">✓</span>
+            <span class="step-num"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#check"></use></svg></span>
             <span>上传文件 + 列映射</span>
         </div>
         <div class="step-sep"></div>
         <div class="step done">
-            <span class="step-num">✓</span>
+            <span class="step-num"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#check"></use></svg></span>
             <span>逐行预览确认</span>
         </div>
         <div class="step-sep"></div>
         <div class="step done">
-            <span class="step-num">✓</span>
+            <span class="step-num"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#check"></use></svg></span>
             <span>导入结果</span>
         </div>
     </div>
 
     <div class="result-summary">
-        <h3>✓ 导入完成</h3>
+        <h3><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#check"></use></svg> 导入完成</h3>
         <div class="row">
             <div class="col-md-4">
                 <div class="result-card success">
@@ -131,7 +131,7 @@
             <div class="col-md-4">
                 <div class="result-card warning">
                     <div class="num">{{ results.skip }}</div>
-                    <div class="label">跳过（缺姓名）</div>
+                    <div class="label">跳过</div>
                 </div>
             </div>
             <div class="col-md-4">
@@ -173,7 +173,7 @@
     {% endif %}
 
     {% if results.fail %}
-    <h6 class="mt-4 text-danger">⚠ 失败 {{ results.fail|length }} 条</h6>
+    <h6 class="mt-4 text-danger"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#circle-alert"></use></svg> 失败 {{ results.fail|length }} 条</h6>
     <div class="table-responsive">
         <table class="table table-sm table-bordered fail-table">
             <thead>
@@ -198,7 +198,7 @@
 
     <div class="action-bar">
         <a href="/experts/import" class="btn btn-light">再导一批</a>
-        <a href="/experts/" class="btn btn-primary">返回列表 →</a>
+        <a href="/experts/" class="btn btn-primary">返回列表 <svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#arrow-right"></use></svg></a>
     </div>
 </div>
 {% endblock %}

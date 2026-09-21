@@ -2,7 +2,7 @@
 {% include "components/preview_panel.html" %}
 {% include "components/list_preview_helper.html" %}
 
-{% block title %}报销项列表 - 报销助手 - 科研管理系统{% endblock %}
+{% block title %}报销项列表 - 报销助手 - 科研创新管理{% endblock %}
 
 {% block content %}
 <div class="container-fluid mt-3">
@@ -17,7 +17,7 @@
             <a href="/expense/documents/" class="btn btn-outline-info btn-sm">
                 <i class="bi bi-file-earmark-word"></i> 报销单据
             </a>
-            <button class="btn btn-success btn-sm" onclick="document.getElementById('fileInput').click()">
+            <button class="btn btn-success btn-sm" id="expense-upload" onclick="document.getElementById('fileInput').click()">
                 <i class="bi bi-upload"></i> 上传识别
             </button>
             <input type="file" id="fileInput" multiple accept=".jpg,.jpeg,.png,.pdf,.bmp,.gif,.webp" style="display:none" onchange="handleFiles(this.files)">
@@ -375,7 +375,7 @@ function fetchDetail(rid, invoiceOffset = 0, paymentOffset = 0) {
                     <td><small>${escapeHtml(pay.payment_no || '-')}</small></td>
                     <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="pay_date" title="点击编辑">${escapeHtml(pay.pay_date || '-')}</span></td>
                     <td><span class="editable text-warning" data-type="payment" data-id="${pay.id}" data-field="amount" title="点击编辑">¥${(pay.amount||0).toFixed(2)}</span></td>
-                    <td><small class="text-muted">-</small></td>
+                    <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="payer" data-value="${escapeHtml(pay.payer || '')}" title="点击编辑收款方">${escapeHtml(pay.payer || '-')}</span></td>
                     <td><small class="text-muted">-</small></td>
                     <td onclick="event.stopPropagation()">
                         <button class="btn btn-sm btn-outline-info py-0 me-1" onclick="previewById('payment', ${pay.id})" title="预览">👁</button>
@@ -427,9 +427,9 @@ function fetchDetail(rid, invoiceOffset = 0, paymentOffset = 0) {
                     <tbody>${invRows}</tbody>
                 </table>
                 ${invoicePager}
-                <div class="fw-bold text-muted mb-1">💳 支付记录 <span class="small">（金额/日期点击即可编辑）</span></div>
+                <div class="fw-bold text-muted mb-1">💳 支付记录 <span class="small">（金额/日期/收款方点击即可编辑）</span></div>
                 <table class="table table-sm table-hover mb-2" style="width:100%;min-width:500px;">
-                    <thead><tr><th>凭证号</th><th>日期</th><th>金额</th><th>销售方</th><th>内容</th><th>操作</th></tr></thead>
+                    <thead><tr><th>凭证号</th><th>日期</th><th>金额</th><th>收款方</th><th>内容</th><th>操作</th></tr></thead>
                     <tbody>${payRows}</tbody>
                 </table>
                 ${paymentPager}
@@ -685,14 +685,14 @@ function handleFiles(files) {
                     _uploadedFiles.add(file.name);
                     // 上传到报销项时返回结构不同
                     if (data.results) {
-                        data.results.forEach(r => results.push({ name: r.filename || file.name, success: r.success, type: r.type, error: r.error, matched: r.matched || [], match_warning: r.match_warning || data.match_warning || '' }));
+                        data.results.forEach(r => results.push({ name: r.filename || file.name, success: r.success, type: r.type, error: r.error, manual_required: r.manual_required, matched: r.matched || [], match_warning: r.match_warning || data.match_warning || '' }));
                     } else {
                         // 收集 matched 信息用于展示
                         if (data.matched && data.matched.length > 0) {
                             if (!window._lastMatched) window._lastMatched = [];
                             data.matched.forEach(m => window._lastMatched.push(m));
                         }
-                        results.push({ name: file.name, success: true, type: data.type, fields: data.fields, matched: data.matched || [], match_warning: data.match_warning || '' });
+                        results.push({ name: file.name, success: true, type: data.type, fields: data.fields, manual_required: data.manual_required, matched: data.matched || [], match_warning: data.match_warning || '' });
                     }
                 }
                 if (completed === count) {
@@ -727,7 +727,7 @@ function showUploadResult(results) {
             ? '<span class="badge bg-success">支付记录</span>'
             : '<span class="badge bg-warning text-dark">发票</span>';
         const amt = r.fields?.amount || r.fields?.payment_no || '-';
-        return `<div class="border-bottom py-1 mb-1 small">${tag} <strong>${escapeHtml(r.name)}</strong> ${r.success ? '✓ 成功' : '<span class="text-danger">✗ ' + escapeHtml(r.error || '失败') + '</span>'}</div>`;
+        return `<div class="border-bottom py-1 mb-1 small">${tag} <strong>${escapeHtml(r.name)}</strong> ${r.success ? (r.manual_required ? '文件已保存，待手工补录金额、日期等信息' : '✓ 已保存，请核对识别信息') : '<span class="text-danger">✗ ' + escapeHtml(r.error || '失败') + '</span>'}</div>`;
     }).join('');
 
     // 匹配信息
@@ -753,9 +753,9 @@ function showUploadResult(results) {
     }
 
     document.getElementById('uploadFeedback').style.display = 'block';
-    document.getElementById('uploadFeedback').className = 'alert alert-success alert-dismissible fade show';
+    document.getElementById('uploadFeedback').className = 'alert alert-' + (results.some(r => r.manual_required) ? 'warning' : 'success') + ' alert-dismissible fade show';
     const feedbackText = document.getElementById('uploadFeedbackText');
-    feedbackText.innerHTML = '<strong>识别完成：</strong>' + html + matchHtml;
+    feedbackText.innerHTML = '<strong>上传结果：</strong>' + html + matchHtml;
     appendMatchWarnings(feedbackText, results);
     document.getElementById('uploadError').style.display = 'none';
 }
@@ -778,6 +778,15 @@ function showFeedback(msg, isError) {
 // ============================================================
 // 待整理区加载
 // ============================================================
+function focusUploadEntry() {
+    if (window.location.hash !== '#expense-upload') return;
+    const upload = document.getElementById('expense-upload');
+    upload.scrollIntoView({block: 'center'});
+    upload.focus({preventScroll: true});
+}
+window.addEventListener('hashchange', focusUploadEntry);
+focusUploadEntry();
+
 function loadAll() {
     loadRecords();
     loadPendingInvoices();
@@ -842,11 +851,11 @@ function loadPendingPayments() {
                 const fname = file ? file.originalName : '-';
                 const uploadUrl = file ? file.url : '';
                 return `<tr class="preview-row" data-file="${escapeHtml(uploadUrl)}" data-name="${escapeHtml(fname)}" data-type="payment" onclick="previewRow(this)">
-                    <td>${escapeHtml(pay.payer || '-')}</td>
+                    <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="payer" data-value="${escapeHtml(pay.payer || '')}" title="点击编辑收款方">${escapeHtml(pay.payer || '-')}</span></td>
                     <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="amount">¥${(pay.amount||0).toFixed(2)}</span></td>
                     <td><span class="editable" data-type="payment" data-id="${pay.id}" data-field="pay_date">${escapeHtml(pay.pay_date || '-')}</span></td>
                     <td style="font-size:11px;">${escapeHtml(pay.payment_no || '-')}</td>
-                    <td class="small text-truncate" style="max-width:120px;" title="${escapeHtml(pay.payer || '')}">${escapeHtml(pay.payer || '-')}</td>
+                    <td class="small text-truncate" data-payee-label="${pay.id}" style="max-width:120px;" title="${escapeHtml(pay.payer || '')}">${escapeHtml(pay.payer || '-')}</td>
                     <td class="text-center">
                         <button class="btn btn-sm text-danger border-0 bg-transparent py-0" onclick="event.stopPropagation(); deletePayment(${pay.id},this)" title="删除"><i class="bi bi-trash"></i></button>
                     </td>
@@ -907,6 +916,7 @@ function attachEditableListeners(container) {
 }
 
 function startEdit(el) {
+    if (el.dataset.field === 'payer') { startEditPayer(el); return; }
     const type = el.dataset.type;     // 'invoice' | 'payment'
     const id = parseInt(el.dataset.id);
     const field = el.dataset.field;   // 'amount' | 'date' | 'pay_date'
@@ -971,6 +981,61 @@ function startEdit(el) {
 // ============================================================
 // 预览（适配 preview_panel.html 的 openPreview）
 // ============================================================
+function startEditPayer(el) {
+    if (el.dataset.editing === 'true') return;
+    el.dataset.editing = 'true';
+    const original = el.dataset.value || '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 200;
+    input.setAttribute('aria-label', '收款方');
+    input.className = 'form-control form-control-sm';
+    input.value = original;
+    let finished = false;
+    const restore = value => {
+        el.dataset.value = value;
+        el.textContent = value || '-';
+        delete el.dataset.editing;
+    };
+    const save = async () => {
+        if (finished) return;
+        finished = true;
+        const value = input.value.trim();
+        if (value === original) { restore(original); return; }
+        input.disabled = true;
+        try {
+            const response = await fetch(`/expense/api/payments/${el.dataset.id}`, {
+                method: 'PUT', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ payer: value })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) throw new Error('save failed');
+            restore(value);
+            document.querySelectorAll('[data-payee-label]').forEach(label => {
+                if (label.dataset.payeeLabel === el.dataset.id) {
+                    label.textContent = value || '-';
+                    label.title = value;
+                }
+            });
+        } catch {
+            restore(original);
+            alert('收款方保存失败，原值已保留，请核对后再试。');
+        }
+    };
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', event => {
+        if (event.isComposing) return;
+        if (event.key === 'Escape') {
+            event.preventDefault(); finished = true; restore(original);
+        } else if (event.key === 'Enter') {
+            event.preventDefault(); input.blur();
+        }
+    });
+    el.replaceChildren(input);
+    input.focus(); input.select();
+}
+
 function previewDocument(fileUrl, fileName) {
     if (!fileUrl) return;
     const ext = (fileName || fileUrl).split('.').pop().toLowerCase();
@@ -1237,27 +1302,28 @@ function confirmAddToReimb() {
         }
     }
 
-    Promise.all([
-        ...invIds.map(iid => fetch(`/expense/api/invoices/${iid}`, {
-            method: 'PUT',
+    fetch(`/expense/api/reimbursements/${addToReimbRid}/toggle_type`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ reimbursement_type: finalType })
+    }).then(r => r.json()).then(result => {
+        if (!result.success) throw new Error(result.error || '报销类型更新失败');
+        return Promise.all([
+        ...invIds.map(iid => fetch(`/expense/api/reimbursements/${addToReimbRid}/add_invoice/${iid}`, {
+            method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ reimbursement_id: addToReimbRid })
         }).then(r => r.json())),
-        ...payIds.map(pid => fetch(`/expense/api/payments/${pid}`, {
-            method: 'PUT',
+        ...payIds.map(pid => fetch(`/expense/api/reimbursements/${addToReimbRid}/add_payment/${pid}`, {
+            method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ reimbursement_id: addToReimbRid })
         }).then(r => r.json())),
-        // 更新报销类型
-        fetch(`/expense/api/reimbursements/${addToReimbRid}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ reimbursement_type: finalType })
-        }).then(r => r.json())
-    ]).then(results => {
+        ]);
+    }).then(results => {
+        const failed = results.find(result => !result.success);
+        if (failed) throw new Error(failed.error || '部分条目增加失败，请刷新核对后重试');
         btn.disabled = false;
         btn.textContent = '确定增加';
         bootstrap.Modal.getInstance(document.getElementById('addToReimbModal')).hide();
@@ -1267,7 +1333,8 @@ function confirmAddToReimb() {
         console.error('confirmAddToReimb失败:', err);
         btn.disabled = false;
         btn.textContent = '确定增加';
-        alert('增加失败，请重试');
+        loadRecords();
+        alert(err.message || '增加失败，请重试');
     });
 }
 

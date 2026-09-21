@@ -170,10 +170,11 @@ def _target_engine() -> sa.Engine:
     sa.Table("expense_payment", metadata, sa.Column("id", sa.Integer, primary_key=True), sa.Column("reimbursement_id", sa.Integer), sa.Column("payment_no", sa.String), sa.Column("amount", sa.Numeric), sa.Column("pay_date", sa.Date), sa.Column("file_path", sa.String), sa.Column("matched_invoice_ids", sa.JSON), sa.Column("created_at", sa.DateTime(timezone=True)))
     sa.Table("expense_invoice_item", metadata, sa.Column("id", sa.Integer, primary_key=True), sa.Column("invoice_id", sa.Integer), sa.Column("seq", sa.Integer), sa.Column("name", sa.String), sa.Column("quantity", sa.Numeric), sa.Column("unit_price", sa.Numeric), sa.Column("amount", sa.Numeric), sa.Column("tax_amount", sa.Numeric))
     sa.Table("project_registry", metadata, sa.Column("id", sa.String, primary_key=True), sa.Column("category", sa.String), sa.Column("business_id", sa.String), sa.Column("status", sa.String))
-    common = lambda: (
-        sa.Column("created_by", sa.Integer), sa.Column("updated_by", sa.Integer),
-        sa.Column("version", sa.Integer, nullable=False, server_default="1"),
-    )
+    def common():
+        return (
+            sa.Column("created_by", sa.Integer), sa.Column("updated_by", sa.Integer),
+            sa.Column("version", sa.Integer, nullable=False, server_default="1"),
+        )
     sa.Table("reference_template_folders", metadata,
         sa.Column("id", sa.String, primary_key=True), sa.Column("parent_id", sa.String),
         sa.Column("name", sa.String, nullable=False), sa.Column("status", sa.String, nullable=False),

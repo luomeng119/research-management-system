@@ -74,6 +74,7 @@ def _schema(engine):
         "object_files", metadata,
         sa.Column("id", sa.Text, primary_key=True), sa.Column("object_type", sa.Text),
         sa.Column("object_id", sa.Text), sa.Column("file_id", sa.Text),
+        sa.Column("purpose", sa.Text),
         sa.Column("created_by", sa.Integer), sa.Column("updated_by", sa.Integer),
         sa.Column("version", sa.Integer),
     )
@@ -427,7 +428,7 @@ def test_reference_logs_include_file_uploads_and_filter_before_the_limit(referen
         ReferenceLibraryRepository(reference_engine), audit,
         FileService(FilesRepository(reference_engine), audit, storage_root=tmp_path / "log-files", max_bytes=1024 * 1024, preview_max_bytes=1024),
     )
-    standard = service.upload_standard(_pdf(b"audit-standard"), "audit-standard.pdf", "审计标准", "国家标准", 7, "req-log-standard")
+    service.upload_standard(_pdf(b"audit-standard"), "audit-standard.pdf", "审计标准", "国家标准", 7, "req-log-standard")
     template = service.upload_template(_pdf(b"audit-template"), "audit-template.pdf", "其他模板", "审计模板.pdf", actor_user_id=7, request_id="req-log-template")
     with reference_engine.begin() as connection:
         for index in range(101):
@@ -529,10 +530,16 @@ def test_controlled_preview_json_contract_supports_text_word_and_excel(reference
 
     _seed_folder(reference_engine, "typed-preview", "其他模板")
     reference_service.file_service.preview_max_bytes = 1024 * 1024
-    word = Document(); word.add_paragraph("Word preview")
-    word_bytes = BytesIO(); word.save(word_bytes); word_bytes.seek(0)
-    workbook = openpyxl.Workbook(); workbook.active.append(["Excel preview"])
-    excel_bytes = BytesIO(); workbook.save(excel_bytes); excel_bytes.seek(0)
+    word = Document()
+    word.add_paragraph("Word preview")
+    word_bytes = BytesIO()
+    word.save(word_bytes)
+    word_bytes.seek(0)
+    workbook = openpyxl.Workbook()
+    workbook.active.append(["Excel preview"])
+    excel_bytes = BytesIO()
+    workbook.save(excel_bytes)
+    excel_bytes.seek(0)
     uploaded = [
         ("text", reference_service.upload_template(BytesIO(b"text preview"), "preview.txt", "其他模板", "preview.txt", actor_user_id=7, request_id="req-preview-text")),
         ("word", reference_service.upload_template(word_bytes, "preview.docx", "其他模板", "preview.docx", actor_user_id=7, request_id="req-preview-word")),

@@ -22,7 +22,7 @@ def _build_evaluation_record(
 ) -> dict:
     return {
         "sampleId": sample_id,
-        "providerKind": "DEEPSEEK",
+        "providerKind": "LOCAL",
         "modelVersion": metadata.get("model") or model,
         "providerRawOutput": provider_raw if provider_output_available else None,
         "providerRawOutputAvailable": provider_output_available,
@@ -40,22 +40,48 @@ def _build_evaluation_record(
 
 
 def main() -> int:
-    from app.ai.deepseek import DeepSeekProposalAssistant
+    from app.ai.local_model import LocalProposalAssistant
     from app.ai.contract import PROMPT_VERSION, finalize_assistant_content
     from app.tests.ai_eval.dataset import DATASET_SHA256, DATASET_VERSION, load_samples
     from app.tests.ai_eval.scorer import evaluate
 
     parser = argparse.ArgumentParser(description="Run the frozen proposal assistant evaluation")
     parser.add_argument("--output", required=True, help="JSON result path")
-    parser.add_argument("--model", default=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"))
+    parser.add_argument("--model", default="Qwen3.5-9B")
+    parser.add_argument("--base-url", default="http://127.0.0.1:18081")
     args = parser.parse_args()
-    key = os.environ.get("DEEPSEEK_API_KEY")
-    if not key:
-        parser.error("DEEPSEEK_API_KEY is required")
-
-    provider = DeepSeekProposalAssistant(api_key=key, model=args.model)
+    provider = LocalProposalAssistant(base_url=args.base_url, model=args.model)
+    destination = Path(args.output)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        parser.error("output already exists; use a new path to preserve prior evidence")
+    samples = load_samples()
+    canonical_samples = json.dumps(samples, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if hashlib.sha256(canonical_samples.encode("utf-8")).hexdigest() != DATASET_SHA256:
+        parser.error("frozen dataset hash mismatch")
     records = []
-    for sample in load_samples():
+    result = {
+        "runAt": datetime.now(timezone.utc).isoformat(),
+        "datasetVersion": DATASET_VERSION,
+        "datasetSha256": DATASET_SHA256,
+        "promptVersion": PROMPT_VERSION,
+        "providerKind": "LOCAL",
+        "endpoint": args.base_url,
+        "requestedModel": args.model,
+        "runStatus": "RUNNING",
+        "records": records,
+    }
+
+    def checkpoint():
+        result["report"] = evaluate(records)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, destination)
+
+    checkpoint()
+    for index, sample in enumerate(samples, 1):
+        print(json.dumps({"event": "sample_started", "sample": sample["id"],
+                          "index": index, "total": len(samples)}, ensure_ascii=False), flush=True)
         started = time.monotonic()
         raw = ""
         provider_raw = ""
@@ -80,19 +106,12 @@ def main() -> int:
             latency_seconds=time.monotonic() - started, error=error,
             provider_output_available=provider_output_available,
         ))
-    result = {
-        "runAt": datetime.now(timezone.utc).isoformat(),
-        "datasetVersion": DATASET_VERSION,
-        "datasetSha256": DATASET_SHA256,
-        "promptVersion": PROMPT_VERSION,
-        "records": records,
-        "report": evaluate(records),
-    }
-    destination = Path(args.output)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(destination.suffix + ".tmp")
-    temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, destination)
+        checkpoint()
+        print(json.dumps({"event": "sample_finished", "sample": sample["id"],
+                          "index": index, "error": error,
+                          "latencySeconds": records[-1]["latencySeconds"]}, ensure_ascii=False), flush=True)
+    result["runStatus"] = "COMPLETE"
+    checkpoint()
     print(json.dumps({
         "output": str(destination),
         "status": result["report"]["status"],

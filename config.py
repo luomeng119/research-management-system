@@ -52,12 +52,22 @@ LLM_N_threads = 4          # CPU 推理线程数（根据机器 CPU 核心数调
 LLM_MAX_TOKENS = 256       # 生成最大 token 数
 
 # ============ LLM（AI 模型）配置 ============
-# 是否启用本地小模型推理（需手动开启，会占用约 2-3GB 内存）
+# Product-level visibility gate.  The local AI implementation remains available
+# for an explicit deployment override, but is not part of the default delivery.
+AI_FEATURES_VISIBLE = False
+
+# 旧版进程内推理开关；当前交付由外部Qwen3.5-9B llama.cpp服务提供推理。
 ENABLE_LLM = False
 
-# 科研提案助手。业务系统本地部署；V1 的 AI 是可选在线能力，未配置或断网不影响核心业务。
+# 科研提案、报告和框选助手。当前交付使用本机OpenAI兼容接口，不调用云端模型。
 DEPLOYMENT_MODE = os.environ.get('DEPLOYMENT_MODE', 'DEVELOPMENT').upper()
 AI_PROVIDER = os.environ.get('AI_PROVIDER', 'DISABLED').upper()
+# The confirmed client workflow limits the model to proposal/report drafting,
+# report revision and selected-text suggestions. Legacy proofreading, summary
+# and AI-search endpoints stay closed unless a separate deployment opts in.
+AUXILIARY_AI_ENABLED = os.environ.get('AUXILIARY_AI_ENABLED', '').lower() in {'1', 'true', 'yes'}
+LOCAL_MODEL_BASE_URL = os.environ.get('LOCAL_MODEL_BASE_URL', 'http://127.0.0.1:18081')
+LOCAL_MODEL_NAME = os.environ.get('LOCAL_MODEL_NAME', 'Qwen3.5-9B')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-v4-flash')
 
@@ -73,3 +83,6 @@ LLM_QWEN_MODEL = 'qwen2.5-1.5b-instruct-q4_k_m.gguf'
 # 次版本：新增功能
 # 主版本：重大架构变更
 VERSION = '1.17.0'
+
+# Only a deployment-supplied local controller can start or stop model processes.
+LOCAL_MODEL_CONTROLLER_PATH = os.environ.get("LOCAL_MODEL_CONTROLLER_PATH")

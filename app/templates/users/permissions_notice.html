@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}目录权限说明 - 科研创新管理{% endblock %}
+{% block content %}
+<div class="container-fluid">
+    <h2 class="mb-4">目录权限说明</h2>
+    <p>V1业务账号权限一致，无需单独设置</p>
+    <a href="{{ url_for('users.index') }}" class="btn btn-outline-primary">返回账号管理</a>
+</div>
+{% endblock %}

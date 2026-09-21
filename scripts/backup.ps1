@@ -306,7 +306,8 @@ try {
         @{ Relative = "uploads"; Source = (Join-Path $DataRoot "uploads") },
         @{ Relative = "documents"; Source = (Join-Path $DataRoot "documents") },
         @{ Relative = "data\documents"; Source = (Join-Path (Join-Path $DataRoot "data") "documents") },
-        @{ Relative = "data\templates"; Source = (Join-Path (Join-Path $DataRoot "data") "templates") }
+        @{ Relative = "data\templates"; Source = (Join-Path (Join-Path $DataRoot "data") "templates") },
+        @{ Relative = "data\legacy-folder-archive"; Source = (Join-Path (Join-Path $DataRoot "data") "legacy-folder-archive") }
     )
     $BusinessFiles = @(
         "data\research.db",

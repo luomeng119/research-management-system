@@ -5,13 +5,11 @@
 支持 PDF 和图片，自动选择最优识别策略
 """
 import os
-import io
 import re
 import logging
 import subprocess
-import json
 from pathlib import Path
-from PIL import Image, ImageOps, ImageFilter, ImageEnhance
+from PIL import ImageFilter, ImageEnhance
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +60,7 @@ def deskew_image(img):
     try:
         # 转为 RGB 以便检测边缘
         if img.mode == 'L':
-            img_rgb = img.convert('RGB')
-        else:
-            img_rgb = img
+            img.convert('RGB')
 
         # 简化处理：不做复杂倾斜校正，直接返回预处理后的图
         # 倾斜校正需要 numpy + opencv，这里用 PIL 简单方法
@@ -74,33 +70,29 @@ def deskew_image(img):
         return img
 
 def pdf_to_images(pdf_path):
-    """将 PDF 转换为图片列表（PIL Image）"""
+    """将扫描 PDF 转换为独立的 PIL 图片，并清理本次转换文件。"""
     try:
-        # 用 pdftoppm（poppler-utils）转图片
         from PIL import Image
-        import tempfile
-        import subprocess
+        from tempfile import TemporaryDirectory
 
-        cmd = ['pdftoppm', '-r', '200', '-png', str(pdf_path)]
-        result = subprocess.run(cmd, capture_output=True, timeout=60)
-        if result.returncode != 0:
-            logger.warning(f"pdftoppm 失败: {result.stderr.decode()}")
-            return []
+        with TemporaryDirectory(prefix='research-ocr-') as temp_dir:
+            prefix = Path(temp_dir) / 'page'
+            cmd = ['pdftoppm', '-r', '200', '-png',
+                   str(Path(pdf_path).resolve()), str(prefix)]
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
+            if result.returncode != 0:
+                logger.warning(f"pdftoppm 失败: {result.stderr.decode(errors='replace')}")
+                return []
 
-        # pdftoppm 输出文件到当前目录，生成了如 xxx-1.png, xxx-2.png
-        # 找到生成的图片（使用绝对路径防止路径遍历）
-        pdf_name = Path(pdf_path).stem
-        pdf_dir = Path(pdf_path).parent.resolve()
-        png_files = sorted(pdf_dir.glob(f'{pdf_name}-*.png'))
-        images = []
-        for pf in png_files:
-            try:
-                img = Image.open(str(pf))
-                images.append(img.copy())
-                pf.unlink()  # 删除临时文件
-            except Exception as e:
-                logger.warning(f"读取临时图片失败: {pf}, {e}")
-        return images
+            png_files = sorted(
+                Path(temp_dir).glob('page-*.png'),
+                key=lambda path: int(path.stem.rsplit('-', 1)[1]),
+            )
+            images = []
+            for png_file in png_files:
+                with Image.open(png_file) as img:
+                    images.append(img.copy())
+            return images
     except Exception as e:
         logger.error(f"PDF 转图片失败: {e}")
         return []
@@ -152,7 +144,6 @@ def image_to_text(img, lang=LANG):
     回退 tesseract（需系统安装 tesseract-ocr）
     """
     import tempfile
-    import numpy as np
 
     # 保存到临时文件（tesseract 和 RapidOCR 都需要文件路径）
     with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
@@ -287,7 +278,6 @@ def extract_invoice_fields(text):
     从 OCR 文本中提取发票关键字段
     返回 dict，含置信度评估
     """
-    import sys
     from app.expense_utils import parse_date, parse_amount
     fields = {
         'invoice_no': '',
@@ -465,9 +455,6 @@ def extract_invoice_fields(text):
     # ===== 火车票结构化字段提取 =====
     if fields['invoice_type'] == '火车票':
         # 出发站 / 到达站：尝试多种模式
-        # 模式1: 带标签 "出发站：XXX"
-        dep_m = re.search(r'出发站[：:]\s*([^\s,，]+站?)', text_for_field)
-        arr_m = re.search(r'到达站[：:]\s*([^\s,，]+站?)', text_for_field)
         # 模式2: 找所有以"站"结尾的中文词组（支持pdfminer行间无换行情况）
         # 用更宽松的模式：捕获"站"及其前面的2-6个中文字
         station_matches = list(re.finditer(r'[\u4e00-\u9fff]{1,6}站', text_for_field))
@@ -681,17 +668,26 @@ def extract_invoice_fields(text):
 
     return fields
 
+def _is_pdf_file(path):
+    """识别已验证上传的 PDF；受控暂存文件使用 .part 后缀。"""
+    if path.suffix.lower() == '.pdf':
+        return True
+    try:
+        with path.open('rb') as source:
+            return source.read(5) == b'%PDF-'
+    except OSError:
+        return False
+
+
 def recognize_file(file_path):
     """
     对文件（图片或 PDF）执行完整 OCR 识别流程
     返回 {text, fields, pages, confidence}
     """
-    import sys
     path = Path(file_path)
-    suffix = path.suffix.lower()
     all_text = []
 
-    if suffix == '.pdf':
+    if _is_pdf_file(path):
         # 优先用 pdftotext（数字发票直接提取文字，无需 OCR）
         raw_text = pdf_to_text(str(path))
         if raw_text:
@@ -760,10 +756,9 @@ def recognize_payment(file_path):
     返回：{payment_no, amount, pay_date, payer, ocr_text}
     """
     path = Path(file_path)
-    suffix = path.suffix.lower()
     all_text = []
 
-    if suffix == '.pdf':
+    if _is_pdf_file(path):
         raw_text = pdf_to_text(str(path))
         if raw_text:
             all_text.append(raw_text)
@@ -786,7 +781,7 @@ def recognize_payment(file_path):
             return {'payment_no': '', 'amount': '', 'pay_date': '', 'payer': '', 'ocr_text': '', 'error': str(e)}
 
     combined_text = '\n'.join(all_text)
-    from app.expense_utils import parse_date, parse_amount
+    from app.expense_utils import parse_date
 
     # 提取支付日期（支持标签和值在同一行或相邻行）
     pay_date = ''

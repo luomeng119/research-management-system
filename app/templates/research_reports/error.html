@@ -1,0 +1,2 @@
+{% extends "research_reports/layout.html" %}
+{% block report_content %}<h1>科研报告暂不可用</h1><p>请返回关联提案或项目后重试。</p>{% if recovery_form is not none and recovery_form is defined %}<p>下方是未保存的输入，请先复制保留。</p>{% set form = recovery_form %}{% include 'research_reports/fields.html' %}{% endif %}{% if recovery_sources %}<p>本次所选资料版本（请复制保留）：</p><ul>{% for item in recovery_sources %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}{% endblock %}

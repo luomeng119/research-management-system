@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}科研报告{% endblock %}
+{% block extra_css %}<link href="/static/css/proposal-workflow.css" rel="stylesheet">{% endblock %}
+{% block content %}
+<main class="proposal-page proposal-page-narrow" data-report-object-type="{{ report.objectType if report is defined else object_type|default('') }}">
+{% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+{% block report_content %}{% endblock %}
+</main>
+{% endblock %}

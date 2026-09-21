@@ -180,7 +180,8 @@ try {
         (Join-Path $DataRoot "uploads"),
         (Join-Path $DataRoot "documents"),
         (Join-Path (Join-Path $DataRoot "data") "documents"),
-        (Join-Path (Join-Path $DataRoot "data") "templates")
+        (Join-Path (Join-Path $DataRoot "data") "templates"),
+        (Join-Path (Join-Path $DataRoot "data") "legacy-folder-archive")
     )
     $TargetFiles = @(
         (Join-Path (Join-Path $DataRoot "data") "research.db"),
@@ -275,6 +276,7 @@ SELECT
     Copy-DirectoryContents -Source (Join-Path (Join-Path $ExtractRoot "payload") "documents") -Destination $TargetRoots[2]
     Copy-DirectoryContents -Source (Join-Path (Join-Path $ExtractRoot "payload") "data\documents") -Destination $TargetRoots[3]
     Copy-DirectoryContents -Source (Join-Path (Join-Path $ExtractRoot "payload") "data\templates") -Destination $TargetRoots[4]
+    Copy-DirectoryContents -Source (Join-Path (Join-Path $ExtractRoot "payload") "data\legacy-folder-archive") -Destination $TargetRoots[5]
     Copy-SingleFileIfPresent -Source (Join-Path (Join-Path $ExtractRoot "payload") "data\research.db") -Destination $TargetFiles[0]
     Copy-SingleFileIfPresent -Source (Join-Path (Join-Path $ExtractRoot "payload") "data\research.db-wal") -Destination $TargetFiles[1]
     Copy-SingleFileIfPresent -Source (Join-Path (Join-Path $ExtractRoot "payload") "data\research.db-shm") -Destination $TargetFiles[2]

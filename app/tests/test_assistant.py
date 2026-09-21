@@ -18,6 +18,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.ai.contract import (
     AssistantContractError,
+    SYSTEM_PROMPT,
     finalize_assistant_content,
     parse_assistant_content,
 )
@@ -239,6 +240,11 @@ def test_finalizer_does_not_report_information_as_missing_when_source_supplies_i
     assert "对比方案" not in comparison["missingInformation"]
 
 
+def test_prompt_treats_redacted_aliases_as_complete_identifiers():
+    assert "代号、英文、简拼和符号是已确认的有效识别信息" in SYSTEM_PROMPT
+    assert "不得要求补充或还原其对应的真实名称" in SYSTEM_PROMPT
+
+
 def test_fixed_eval_dataset_is_versioned_balanced_and_hash_stable():
     from app.tests.ai_eval.dataset import DATASET_SHA256, DATASET_VERSION, load_samples
 
@@ -405,7 +411,7 @@ def test_eval_runner_records_make_provider_output_auditable():
     records[0]["providerRawOutput"] = "tampered"
     assert evaluate(records, annotations)["status"] == "FAILED"
 
-def test_local_deployment_allows_optional_deepseek_and_rejects_unsafe_local_configuration(tmp_path):
+def test_local_deployment_rejects_retired_deepseek_and_unsafe_local_configuration(tmp_path):
     from app import create_app
 
     common = {
@@ -414,13 +420,13 @@ def test_local_deployment_allows_optional_deepseek_and_rejects_unsafe_local_conf
         "DATA_DIR": str(tmp_path / "data"),
         "SESSION_FILE_DIR": str(tmp_path / "sessions"),
         "LOG_FILE": None,
+        "AI_FEATURES_VISIBLE": True,
     }
-    without_key = create_app({
-        **common, "DEPLOYMENT_MODE": "PRODUCTION", "AI_PROVIDER": "DEEPSEEK",
-        "DEEPSEEK_API_KEY": None,
-    })
-    assert "assistant_service" not in without_key.extensions
-    assert without_key.config["AI_ASSISTANT_AVAILABLE"] is False
+    with pytest.raises(RuntimeError, match="AI_PROVIDER"):
+        create_app({
+            **common, "DEPLOYMENT_MODE": "PRODUCTION", "AI_PROVIDER": "DEEPSEEK",
+            "DEEPSEEK_API_KEY": None,
+        })
 
     disabled_with_unused_key = create_app({
         **common, "DEPLOYMENT_MODE": "PRODUCTION", "AI_PROVIDER": "DISABLED",
@@ -455,7 +461,7 @@ def test_unconfigured_ai_keeps_local_core_editing_available(tmp_path, engine, se
         "SESSION_FILE_DIR": str(tmp_path / "sessions"),
         "DATABASE_ENGINE": engine, "PROPOSAL_SERVICE": service,
         "SECURITY_AUTH_ENABLED": False, "CSRF_ENABLED": False, "LOG_FILE": None,
-        "DEPLOYMENT_MODE": "PRODUCTION", "AI_PROVIDER": "DEEPSEEK",
+        "DEPLOYMENT_MODE": "PRODUCTION", "AI_PROVIDER": "DISABLED",
         "DEEPSEEK_API_KEY": None,
     })
     client = app.test_client()
@@ -468,9 +474,8 @@ def test_unconfigured_ai_keeps_local_core_editing_available(tmp_path, engine, se
     assert edit.status_code == 200
     assert client.get("/healthz").status_code == 200
     html = edit.get_data(as_text=True)
-    assert "当前未连接 AI" in html
-    assert 'id="assistant-generate"' in html
-    assert 'id="assistant-generate"' in html and "disabled" in html
+    assert "当前未连接 AI" not in html
+    assert 'id="assistant-generate"' not in html
 
     manual = client.patch(
         f"/api/proposals/{created['businessId']}",
@@ -483,8 +488,7 @@ def test_unconfigured_ai_keeps_local_core_editing_available(tmp_path, engine, se
         f"/api/proposals/{created['businessId']}/assistant-drafts",
         json={"sourceText": "测试", "proposalVersion": 2, "runId": "offline"},
     )
-    assert unavailable.status_code == 503
-    assert unavailable.get_json()["error"]["code"] == "AI_UNAVAILABLE"
+    assert unavailable.status_code == 404
 
 
 def test_deepseek_adapter_uses_one_fixed_json_request_without_retry():
@@ -495,7 +499,9 @@ def test_deepseek_adapter_uses_one_fixed_json_request_without_retry():
     def transport(*, url, headers, payload, timeout, cancel_check):
         calls.append((url, headers, payload, timeout, cancel_check))
         return {
-            "choices": [{"message": {"content": json.dumps(VALID, ensure_ascii=False)}}],
+            "status": "completed",
+            "output": [{"type": "message", "status": "completed", "role": "assistant",
+                        "content": [{"type": "output_text", "text": json.dumps(VALID, ensure_ascii=False)}]}],
             "model": "deepseek-test",
         }
 
@@ -506,15 +512,15 @@ def test_deepseek_adapter_uses_one_fixed_json_request_without_retry():
     assert json.loads(raw) == VALID
     assert len(calls) == 1
     url, headers, payload, timeout, _ = calls[0]
-    assert url == "https://api.deepseek.com/chat/completions"
+    assert url == "https://api.deepseek.com/responses"
     assert headers["Authorization"] == "Bearer secret"
     assert payload["model"] == "deepseek-test"
-    assert payload["response_format"] == {"type": "json_object"}
-    assert payload["thinking"] == {"type": "disabled"}
+    assert payload["text"]["format"]["type"] == "json_schema"
+    assert payload["reasoning"] == {"effort": "none"}
     assert payload["temperature"] == 0
-    assert payload["max_tokens"] == 2000
+    assert payload["max_output_tokens"] == 2000
     assert timeout == 60
-    assert "必须只返回" in payload["messages"][0]["content"]
+    assert "必须只返回" in payload["input"][0]["content"]
 
     failures = []
 
@@ -535,7 +541,7 @@ def test_local_adapter_rejects_redirects_and_uses_loopback_without_proxy():
 
     def transport(**kwargs):
         calls.append(kwargs)
-        return {"choices": [{"message": {"content": json.dumps(VALID)}}], "model": "local"}
+        return {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(VALID)}}], "model": "local"}
 
     provider = LocalProposalAssistant(
         base_url="http://127.0.0.1:8000", model="local-test", transport=transport
@@ -1116,6 +1122,7 @@ def test_assistant_http_contract_and_edit_panel_keep_manual_path(tmp_path, engin
         "CSRF_ENABLED": False,
         "LOG_FILE": None,
         "AI_PROVIDER": "DISABLED",
+        "AI_FEATURES_VISIBLE": True,
     })
     client = app.test_client()
     with client.session_transaction() as session:
@@ -1203,6 +1210,7 @@ def test_generation_audit_failure_rolls_back_and_returns_fixed_json(tmp_path, en
         "DATABASE_ENGINE": engine, "PROPOSAL_SERVICE": service,
         "ASSISTANT_SERVICE": assistant, "SECURITY_AUTH_ENABLED": False,
         "CSRF_ENABLED": False, "LOG_FILE": None, "AI_PROVIDER": "DISABLED",
+        "AI_FEATURES_VISIBLE": True,
     })
     client = app.test_client()
     with client.session_transaction() as session:
@@ -1280,3 +1288,21 @@ def test_postgresql_concurrent_apply_allows_exactly_one_winner():
             )
         )
     assert applied_events == 1
+
+
+def test_local_configuration_wires_real_adapter_without_network_during_startup(tmp_path, engine):
+    from app import create_app
+    from app.ai.local_model import LocalProposalAssistant
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "fixture", "LOG_FILE": None,
+        "DATA_DIR": str(tmp_path), "SESSION_FILE_DIR": str(tmp_path / "sessions"),
+        "DATABASE_ENGINE": engine, "AI_PROVIDER": "LOCAL",
+        "AI_FEATURES_VISIBLE": True,
+        "SECURITY_AUTH_ENABLED": False, "CSRF_ENABLED": False,
+        "LOCAL_MODEL_BASE_URL": "http://127.0.0.1:18081",
+        "LOCAL_MODEL_NAME": "Qwen3.5-9B", "AUDIT_SERVICE": Audit(),
+    })
+    provider = app.extensions["assistant_service"].provider
+    assert isinstance(provider, LocalProposalAssistant)
+    assert provider.base_url == "http://127.0.0.1:18081"
+    assert app.config["AI_ASSISTANT_AVAILABLE"] is True

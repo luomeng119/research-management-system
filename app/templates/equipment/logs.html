@@ -2,9 +2,9 @@
 
 {% block title %}{{ module_title }} - 操作日志{% endblock %}
 
-{% block content %}<div class="row mb-3">
+{% block content %}<section class="equipment-logs-page"><div class="row mb-3 log-summary">
     <div class="col-md-3">
-        <div class="card bg-primary text-white">
+        <div class="card log-summary-card">
             <div class="card-body">
                 <h5 class="card-title">操作总数</h5>
                 <h2>{{ logs|length }}</h2>
@@ -12,7 +12,7 @@
         </div>
     </div>
     <div class="col-md-3">
-        <div class="card bg-success text-white">
+        <div class="card log-summary-card">
             <div class="card-body">
                 <h5 class="card-title">添加设备</h5>
                 <h2>{{ logs|selectattr("operation_type", "equalto", "添加设备")|list|length }}</h2>
@@ -20,7 +20,7 @@
         </div>
     </div>
     <div class="col-md-3">
-        <div class="card bg-warning text-white">
+        <div class="card log-summary-card">
             <div class="card-body">
                 <h5 class="card-title">删除设备</h5>
                 <h2>{{ logs|selectattr("operation_type", "equalto", "删除设备")|list|length }}</h2>
@@ -28,7 +28,7 @@
         </div>
     </div>
     <div class="col-md-3">
-        <div class="card bg-info text-white">
+        <div class="card log-summary-card">
             <div class="card-body">
                 <h5 class="card-title">导入文件</h5>
                 <h2>{{ logs|selectattr("operation_type", "equalto", "导入文件")|list|length }}</h2>
@@ -38,35 +38,37 @@
 </div>
 
 
-<div class="row mb-3">
-    <div class="col-md-4">
-        <select class="form-select" onchange="location.href='?operation_type='+this.value">
-            <option value="">全部操作</option>
-            <option value="添加设备">添加设备</option>
-            <option value="删除设备">删除设备</option>
-            <option value="上传图片">上传图片</option>
-            <option value="上传文件">上传文件</option>
-        </select>
-    </div>
-</div>
 <div class="container-fluid">
     <h4 class="mb-4">
         <i class="bi bi-clock-history"></i> {{ module_title }} - 操作日志
     </h4>
     
     <!-- 筛选表单 -->
-    <form method="get" class="row g-3 mb-4">
+    <form method="get" class="log-filters mb-4">
         <div class="col-md-3">
-            <input type="text" name="operator" class="form-control" placeholder="操作人" value="{{ request.args.get('operator', '') }}">
+            <label for="logOperation" class="form-label">操作类型</label>
+            <select id="logOperation" class="form-select" name="operation_type" aria-label="操作类型">
+                <option value="">全部操作</option>
+                {% for value, label in [('添加设备','添加设备'),('删除设备','删除设备'),('更新设备','更新设备'),('上传图片','上传图片'),('上传文件','上传文件'),('导入文件','导入文件'),('PREVIEW','预览文件')] %}
+                <option value="{{ value }}" {{ 'selected' if request.args.get('operation_type') == value }}>{{ label }}</option>
+                {% endfor %}
+            </select>
         </div>
         <div class="col-md-3">
-            <input type="text" name="file_name" class="form-control" placeholder="文件名" value="{{ request.args.get('file_name', '') }}">
+            <label for="logOperator" class="form-label">操作人</label>
+            <input id="logOperator" type="text" name="operator" class="form-control" placeholder="操作人" value="{{ request.args.get('operator', '') }}">
+        </div>
+        <div class="col-md-3">
+            <label for="logFileName" class="form-label">文件名</label>
+            <input id="logFileName" type="text" name="file_name" class="form-control" placeholder="文件名" value="{{ request.args.get('file_name', '') }}">
         </div>
         <div class="col-md-2">
-            <input type="date" name="start_date" class="form-control" value="{{ request.args.get('start_date', '') }}">
+            <label for="logStartDate" class="form-label">开始日期</label>
+            <input id="logStartDate" type="date" name="start_date" class="form-control" value="{{ request.args.get('start_date', '') }}">
         </div>
         <div class="col-md-2">
-            <input type="date" name="end_date" class="form-control" value="{{ request.args.get('end_date', '') }}">
+            <label for="logEndDate" class="form-label">结束日期</label>
+            <input id="logEndDate" type="date" name="end_date" class="form-control" value="{{ request.args.get('end_date', '') }}">
         </div>
         <div class="col-md-2">
             <button type="submit" class="btn btn-primary w-100">
@@ -96,10 +98,12 @@
                     <tbody>
                         {% for log in logs %}
                         <tr>
-                            <td>{{ log.timestamp }}</td>
+                            <td>{% if log.timestamp %}{% set source_time = log.timestamp|string %}<time title="{{ source_time }}">{{ log.timestamp.strftime('%Y-%m-%d %H:%M') if log.timestamp.strftime is defined else source_time[:16]|replace('T', ' ') }}</time>{% else %}未记录{% endif %}</td>
                             <td>{{ log.operator }}</td>
                             <td>
-                                {% if log.operation_type == '上传文件' %}
+                                {% if log.operation_type == 'PREVIEW' %}
+                                <span class="badge bg-secondary" title="PREVIEW">预览文件</span>
+                                {% elif log.operation_type == '上传文件' %}
                                 <span class="badge bg-success">{{ log.operation_type }}</span>
                                 {% elif log.operation_type == '删除文件' or log.operation_type == '删除设备' %}
                                 <span class="badge bg-danger">{{ log.operation_type }}</span>
@@ -122,4 +126,5 @@
         </div>
     </div>
 </div>
+</section>
 {% endblock %}

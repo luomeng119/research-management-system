@@ -349,8 +349,8 @@ def export():
             device_count,
             device_ids,
             device_names,
-            h['created_at'] or '',
-            h['updated_at'] or '',
+            str(h['created_at'] or ''),
+            str(h['updated_at'] or ''),
         ])
 
     # 自动列宽
@@ -360,7 +360,7 @@ def export():
             try:
                 if cell.value:
                     max_len = max(max_len, len(str(cell.value)))
-            except:
+            except Exception:
                 pass
         ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
 

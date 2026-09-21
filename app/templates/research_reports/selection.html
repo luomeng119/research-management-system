@@ -1,0 +1,6 @@
+{% if generation_error %}<p role="status">{{ generation_error }}</p>{% endif %}
+{% if generation_available %}
+<fieldset class="proposal-panel p-3 mt-3"><legend><span class="ai-action-badge">AI</span>本地资料整合</legend><input type="hidden" name="generationDictionaryVersion" value="{{ generation_dictionary_version }}"><p>新整合草稿使用词库 v{{ generation_dictionary_version }}；已保存报告及当前框选建议继续沿用各自固定词库。已有代称无法明确转换时将停止整合并要求核对。</p><p>请选择 1 至 8 份文字或图片资料（提取文本合计不超过 12000 字符），以当前编辑框中的正文作为修订基础，生成独立待确认草稿。图片先由当前本地模型提取；命中敏感词库的原图不会直接进入报告。确认保存前不会改变报告版本。</p>
+{% for file in available_sources %}{% if file.versionNo is defined %}<div class="form-check"><input class="form-check-input" id="source-{{ loop.index }}" type="checkbox" name="sources" value='{{ [file.fileId, file.versionNo]|tojson }}' {% if (file.fileId, file.versionNo) in selected_pairs %}checked{% endif %}><label class="form-check-label" for="source-{{ loop.index }}">{{ file.originalName or file.filename or file.fileId }} · v{{ file.versionNo }}</label></div>{% endif %}{% else %}<p>当前提案或项目尚无附件，请先上传资料。</p>{% endfor %}
+<button class="btn btn-outline-primary mt-3" type="submit" formaction="{{ url_for('research_reports.generate_page', report_id=report.id) }}" {% if not available_sources %}disabled{% endif %}><span class="ai-action-badge">AI</span>整合报告草稿</button>
+</fieldset>{% endif %}

@@ -27,10 +27,80 @@ INFERENCE_URL = "http://127.0.0.1:18789"
 def local_model_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if not current_app.config.get('ENABLE_LLM', False):
+        if current_app.config.get('AI_FEATURES_VISIBLE') is not True:
+            abort(404)
+        if str(current_app.config.get('AI_PROVIDER', 'DISABLED')).upper() != 'LOCAL' and not current_app.config.get('ENABLE_LLM', False):
             abort(404)
         return view(*args, **kwargs)
     return wrapped
+
+
+def _is_local_runtime():
+    return str(current_app.config.get('AI_PROVIDER', 'DISABLED')).upper() == 'LOCAL'
+
+
+def _auxiliary_ai_enabled():
+    return (current_app.config.get('AI_FEATURES_VISIBLE') is True
+            and current_app.config.get('AUXILIARY_AI_ENABLED') is True)
+
+
+def _local_get_json(url):
+    """Bounded loopback GET; environment proxies and redirects are disabled."""
+    from urllib.parse import urlsplit
+    from app.ai.local_model import _validated_base_url
+    parsed = urlsplit(url)
+    _validated_base_url(f"{parsed.scheme}://{parsed.netloc}")
+    if parsed.path not in {'/health', '/v1/models'} or parsed.query or parsed.fragment:
+        raise ValueError('invalid status endpoint')
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    with opener.open(urllib.request.Request(url, method='GET'), timeout=2) as response:
+        raw = response.read(65537)
+    if len(raw) > 65536:
+        raise ValueError('status response too large')
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError('invalid status response')
+    return value
+
+
+def _local_runtime_status():
+    from app.services.local_model_runtime import configured, runtime_status, public_status
+    if configured(current_app.config):
+        try:
+            result = public_status(runtime_status(current_app.config))
+            return {**result, 'success': result['state'] != 'failed',
+                    'server_status': 'running' if result.get('state') == 'ready' else 'unavailable',
+                    'model_loaded': result.get('model') if result.get('state') == 'ready' else None,
+                    'total_requests': None, 'avg_latency_ms': None, 'last_request_time': None}
+        except Exception:
+            return {**public_status({'state': 'failed', 'errorCode': 'RUNTIME_UNAVAILABLE'}),
+                    'success': False, 'server_status': 'unavailable', 'model_loaded': None}
+    from app.ai.local_model import _validated_base_url
+    result = {'success': True, 'server_status': 'unavailable', 'model_loaded': None,
+              'configured_model': current_app.config.get('LOCAL_MODEL_NAME'),
+              'latency_ms': None, 'total_requests': None, 'avg_latency_ms': None,
+              'last_request_time': None, 'error_message': ''}
+    try:
+        base = _validated_base_url(current_app.config.get('LOCAL_MODEL_BASE_URL'))
+        started = time.monotonic()
+        health = _local_get_json(base + '/health')
+        models = _local_get_json(base + '/v1/models')
+        model_ids = [item.get('id') for item in models.get('data', []) if isinstance(item, dict)]
+        expected = current_app.config.get('LOCAL_MODEL_NAME')
+        if health.get('status') != 'ok' or expected not in model_ids:
+            raise ValueError('expected model not ready')
+        result.update(server_status='running', model_loaded=expected,
+                      latency_ms=round((time.monotonic() - started) * 1000))
+    except Exception:
+        result['error_message'] = '本地模型尚未就绪或配置不匹配，请检查本版本运行器。'
+    return result
+
+
+def _local_config_readonly():
+    return jsonify({'success': False, 'error': '本版本使用固定的本地模型配置；请通过本 Mac 运行器维护，不使用旧模型启动器。'}), 409
 
 
 def allowed_file(filename):
@@ -48,6 +118,8 @@ def index():
 def document_correction():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
+    if not _auxiliary_ai_enabled():
+        abort(404)
     return render_template('utils/document_correction.html')
 
 
@@ -58,6 +130,8 @@ def document_correction():
 def model_config():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
+    if _is_local_runtime():
+        return render_template('utils/local_model_status.html')
     return render_template('utils/model_config.html')
 
 
@@ -65,6 +139,16 @@ def model_config():
 @local_model_required
 @maintenance_required
 def api_models_list():
+    if _is_local_runtime():
+        from app.services.local_model_runtime import configured
+        if configured(current_app.config):
+            status = _local_runtime_status()
+            return jsonify(success=status.get('success', False), readonly=False,
+                           models=status.get('profiles', []), state=status.get('state'))
+        return jsonify({'success': True, 'readonly': True, 'models': [{
+            'name': current_app.config.get('LOCAL_MODEL_NAME'),
+            'base_url': current_app.config.get('LOCAL_MODEL_BASE_URL'),
+            'provider': 'LOCAL'}]})
     """获取所有模型配置"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
@@ -81,6 +165,8 @@ def api_models_list():
 @local_model_required
 @maintenance_required
 def api_models_create():
+    if _is_local_runtime():
+        return _local_config_readonly()
     """新建模型配置"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
@@ -113,6 +199,8 @@ def api_models_create():
 @local_model_required
 @maintenance_required
 def api_models_update(id):
+    if _is_local_runtime():
+        return _local_config_readonly()
     """更新模型配置"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
@@ -135,6 +223,8 @@ def api_models_update(id):
 @local_model_required
 @maintenance_required
 def api_models_delete(id):
+    if _is_local_runtime():
+        return _local_config_readonly()
     """删除模型配置"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
@@ -151,6 +241,8 @@ def api_models_delete(id):
 @local_model_required
 @maintenance_required
 def api_models_activate(id):
+    if _is_local_runtime():
+        return _local_config_readonly()
     """激活指定模型"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
@@ -180,6 +272,8 @@ def api_models_activate(id):
 def monitor():
     if 'user' not in session:
         return redirect(url_for('auth.login'))
+    if _is_local_runtime():
+        return render_template('utils/local_model_status.html')
     return render_template('utils/monitor.html')
 
 
@@ -187,6 +281,8 @@ def monitor():
 @local_model_required
 @maintenance_required
 def api_monitor_status():
+    if _is_local_runtime():
+        return jsonify(_local_runtime_status())
     """获取推理服务器状态"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
@@ -215,7 +311,7 @@ def api_monitor_status():
         except urllib.error.URLError:
             server_status = 'stopped'
             error_message = '推理服务器未启动'
-        except Exception as e:
+        except Exception:
             server_status = 'error'
             error_message = '推理服务状态异常'
 
@@ -248,6 +344,8 @@ def api_monitor_status():
 @local_model_required
 @maintenance_required
 def api_monitor_restart():
+    if _is_local_runtime():
+        return _local_config_readonly()
     """重启推理服务器"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
@@ -283,7 +381,9 @@ def api_correct():
     """文本校对API"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
-    if not current_app.config.get('ENABLE_LLM', False):
+    if not _auxiliary_ai_enabled():
+        return jsonify({'success': False, 'error': '当前交付未启用自动校对'}), 404
+    if str(current_app.config.get('AI_PROVIDER', 'DISABLED')).upper() != 'LOCAL':
         return jsonify({
             'success': False,
             'error': 'V1 未启用本地模型，请使用人工校对',
@@ -300,17 +400,20 @@ def api_correct():
         from app.llm.corrector import Corrector
         corrector = Corrector()
         result = corrector.correct(text)
+        if result.get('error'):
+            return jsonify({'success': False, 'error': '自动校对未完成，请使用人工校对'}), 503
 
         return jsonify({
             'success': True,
             'original': text,
             'corrected': result.get('corrected', ''),
+            'errors': result.get('errors', []),
             'truncated': result.get('truncated', False),
             'error': result.get('error', '')
         })
     except Exception as e:
         logging.error(f"[Utils] 校对失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': '自动校对未完成，请使用人工校对'}), 503
 
 
 @bp.route('/api/upload_and_correct', methods=['POST'])
@@ -318,7 +421,9 @@ def api_upload_and_correct():
     """文件上传并校对"""
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
-    if not current_app.config.get('ENABLE_LLM', False):
+    if not _auxiliary_ai_enabled():
+        return jsonify({'success': False, 'error': '当前交付未启用自动校对'}), 404
+    if str(current_app.config.get('AI_PROVIDER', 'DISABLED')).upper() != 'LOCAL':
         return jsonify({
             'success': False,
             'error': 'V1 未启用本地模型，请使用人工校对',
@@ -341,7 +446,7 @@ def api_upload_and_correct():
         return jsonify({'success': False, 'error': '文件过大，最大10MB'}), 400
 
     filename = secure_filename(file.filename)
-    ext = filename.rsplit('.', 1)[1].lower()
+    ext = file.filename.rsplit('.', 1)[1].lower()
 
     try:
         text = ''
@@ -362,6 +467,8 @@ def api_upload_and_correct():
         from app.llm.corrector import Corrector
         corrector = Corrector()
         result = corrector.correct(text)
+        if result.get('error'):
+            return jsonify({'success': False, 'error': '自动校对未完成，请使用人工校对'}), 503
 
         return jsonify({
             'success': True,
@@ -369,12 +476,13 @@ def api_upload_and_correct():
             'original': text[:5000] if len(text) > 5000 else text,
             'original_full_length': len(text),
             'corrected': result.get('corrected', ''),
+            'errors': result.get('errors', []),
             'truncated': result.get('truncated', False),
             'error': result.get('error', '')
         })
     except Exception as e:
         logging.error(f"[Utils] 校对失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': '自动校对未完成，请使用人工校对'}), 503
 
 
 def extract_docx_text(file):
@@ -394,12 +502,52 @@ def extract_docx_text(file):
 
 def extract_pdf_text(file):
     try:
-        import PyPDF2
-        pdf_file = io.BytesIO(file.read())
-        reader = PyPDF2.PdfReader(pdf_file)
-        text_parts = []
-        for page in reader.pages:
-            text_parts.append(page.extract_text() or '')
-        return '\n'.join(text_parts)
+        from io import BytesIO
+        from pdfminer.high_level import extract_text
+        return extract_text(BytesIO(file.read()))
     except Exception as e:
         raise Exception(f"pdf解析失败: {e}，请确保是文本型PDF")
+
+
+@bp.post('/api/local-model/load')
+@local_model_required
+@maintenance_required
+def api_local_model_load():
+    return _operate_local_model('load')
+
+
+@bp.post('/api/local-model/unload')
+@local_model_required
+@maintenance_required
+def api_local_model_unload():
+    return _operate_local_model('unload')
+
+
+def _operate_local_model(action):
+    from app.services.local_model_runtime import controller, RuntimeUnavailable, public_status
+    if not _is_local_runtime():
+        abort(404)
+    payload = request.get_json(silent=True)
+    expected = {'profileId'} if action == 'load' else set()
+    if (not isinstance(payload, dict) or set(payload) != expected
+            or (action == 'load' and (not isinstance(payload['profileId'], str)
+                                      or not 1 <= len(payload['profileId']) <= 64))):
+        return jsonify(success=False, errorCode='INVALID_OPERATION', error_message='模型操作参数无效'), 422
+    try:
+        runtime = controller(current_app.config)
+        if action == 'load':
+            profiles = runtime.model_status().get('profiles', [])
+            if payload['profileId'] not in {item['id'] for item in profiles}:
+                return jsonify(success=False, errorCode='UNKNOWN_PROFILE', error_message='请选择本机已有模型'), 422
+        result = runtime.model_operation(action, payload.get('profileId'))
+        result = public_status(result)
+        return jsonify(success=result['state'] != 'failed', **result), (503 if result['state'] == 'failed' else 200)
+    except RuntimeUnavailable:
+        return jsonify(success=False, errorCode='NOT_CONFIGURED', error_message='本机模型控制器未配置'), 409
+    except BlockingIOError:
+        return jsonify(success=False, errorCode='MODEL_BUSY', error_message='模型正在使用或切换，请稍后重试'), 409
+    except (ValueError, FileNotFoundError):
+        return jsonify(success=False, errorCode='MODEL_NOT_AVAILABLE', error_message='模型尚未准备完成或参数无效'), 422
+    except Exception:
+        current_app.logger.error('local model operation failed')
+        return jsonify(success=False, errorCode='MODEL_OPERATION_FAILED', error_message='模型操作未完成，请刷新查看实际状态'), 503

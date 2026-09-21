@@ -6,6 +6,10 @@
 <link rel="stylesheet" href="/static/css/research-path.css">
 {% endblock %}
 
+{% macro record_time(value) -%}<time title="{{ value or '' }}">{{ (value|string).replace('T', ' ')[:16] if value else '未记录' }}</time>{%- endmacro %}
+{% set change_labels = {'GOAL':'目标','PERIOD':'周期','LEADER':'负责人','CONTENT':'内容','OTHER':'其他','STATUS_TRANSITION':'状态变更'} %}
+{% set decision_labels = {'AGREED':'同意','REJECTED':'不同意','FILED':'备案'} %}
+{% set output_labels = {'REPORT':'报告','PAPER':'论文','PATENT':'专利','SOFTWARE':'软件','STANDARD':'标准','PROTOTYPE':'样机','DATA':'数据','OTHER':'其他'} %}
 {% block content %}
 {% if page_error %}
 <div class="alert alert-danger" role="alert">{{ page_error }}</div>
@@ -16,6 +20,7 @@
   <div class="d-flex justify-content-between align-items-center gap-3 mb-3">
     <a class="btn btn-sm btn-outline-secondary" href="/projects/"><i class="bi bi-arrow-left"></i> 返回项目列表</a>
     <div class="d-flex gap-2">
+      {% if config.RESEARCH_REPORTS_AVAILABLE %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('research_reports.list_page', objectType='PROJECT', objectId=project.businessId) }}">科研报告与版本</a>{% endif %}
       {% if project.category == 'GENERAL_RESEARCH' %}
       <a class="btn btn-sm btn-outline-secondary" href="/projects/detail/{{ project.businessId }}"><i class="bi bi-folder2-open"></i> 原项目文件</a>
       {% elif project.category == 'SECURITY_CONFIDENTIALITY' %}
@@ -31,7 +36,8 @@
     <div>
       <p class="project-kicker">{{ project.businessId }} · {{ category_labels[project.category] }}</p>
       <h1>{{ project.name }}</h1>
-      <p>负责人：{{ project.leader or '未记录' }} · 计划结束：{{ project.plannedEndDate or '未记录' }}</p>
+      <p>负责人：{{ project.leader or '未记录' }} · 开始日期：{{ start_date or '未填写' }} · 计划结束：{{ project.plannedEndDate or '未填写' }}</p>
+      <p>来源提案：{% if source_proposal %}<a href="{{ url_for('proposals.detail_page', business_id=source_proposal.business_id) }}" title="{{ project.sourceProposalId }}">{{ source_proposal.business_id }} · {{ source_proposal.title }}</a>{% elif project.sourceProposalId %}<span title="{{ project.sourceProposalId }}">记录未找到</span>{% else %}无来源{% endif %}</p>
     </div>
     <span class="project-status status-{{ project.status|lower }}" id="projectStatusLabel">{{ status_labels[project.status] }}</span>
   </header>
@@ -65,7 +71,7 @@
     <div class="panel-card mt-3">
       <div class="panel-title"><div><h2>最近进展</h2><p>按记录时间倒序</p></div></div>
       {% if progress %}
-      <div class="record-list">{% for item in progress[:5] %}<article><span class="record-state state-{{ item.status|lower }}">{{ {'NORMAL':'正常','RISK':'有风险','BLOCKED':'受阻'}[item.status] }}</span><div><h3>{{ item.summary }}</h3><p>{{ item.issues or '未记录问题' }}</p><small>{{ item.recordedAt }} · 记录人账号 {{ item.createdBy }}</small></div></article>{% endfor %}</div>
+      <div class="record-list">{% for item in progress[:5] %}<article><span class="record-state state-{{ item.status|lower }}">{{ {'NORMAL':'正常','RISK':'有风险','BLOCKED':'受阻'}[item.status] }}</span><div><h3>{{ item.summary }}</h3><p>{{ item.issues or '未记录问题' }}</p><small>{{ record_time(item.recordedAt) }} · 记录人 {{ item.createdByName }}</small><button class="btn btn-sm btn-outline-primary ms-2" type="button" data-bs-toggle="modal" data-bs-target="#progressModal" data-progress='{{ item|tojson|forceescape }}'>编辑进展</button></div></article>{% endfor %}</div>
       {% else %}<p class="empty-copy">尚无进展记录。</p>{% endif %}
     </div>
   </section>
@@ -80,15 +86,24 @@
     <p class="path-boundary"><strong>V1 边界：</strong>路径图只读取已有业务记录，不承担会议管理、自由脑图编辑、任务派发或自动催办。</p>
   </section>
 
-  <section class="project-panel" data-panel-content="progress" hidden><div class="panel-card"><div class="panel-title"><div><h2>进展记录</h2><p>完成情况、问题与下一步均作为业务事实留痕</p></div><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#progressModal">新增进展</button></div><div class="record-list" data-record-list="progress">{% for item in progress %}<article><span class="record-state state-{{ item.status|lower }}">{{ {'NORMAL':'正常','RISK':'有风险','BLOCKED':'受阻'}[item.status] }}</span><div><h3>{{ item.summary }}</h3><p>问题：{{ item.issues or '无' }} · 下一步：{{ item.nextActions or '未记录' }}</p><small>{{ item.recordedAt }} · 记录人账号 {{ item.createdBy }}</small></div></article>{% else %}<p class="empty-copy">尚无进展记录。</p>{% endfor %}</div>{% if recordTruncated.progress %}<button class="btn btn-sm btn-outline-secondary mt-3 load-more-records" type="button" data-record-type="progress" data-page="2">加载更早进展</button>{% endif %}</div></section>
-  <section class="project-panel" data-panel-content="changes" hidden><div class="panel-card"><div class="panel-title"><div><h2>变更记录</h2><p>只记录变更事实与决定，不建设审批流</p></div><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#changeModal">登记变更</button></div><div class="record-list" data-record-list="changes">{% for item in changes %}<article><span class="record-state">{{ item.changeType }}</span><div><h3>{{ item.afterSummary }}</h3><p>变更前：{{ item.beforeSummary or '未记录' }} · 依据：{{ item.basis or '未记录' }}</p><small>{{ item.decisionDate or item.createdAt }} · {{ item.decision or '历史记录' }}</small></div></article>{% else %}<p class="empty-copy">尚无变更记录。</p>{% endfor %}</div>{% if recordTruncated.changes %}<button class="btn btn-sm btn-outline-secondary mt-3 load-more-records" type="button" data-record-type="changes" data-page="2">加载更早变更</button>{% endif %}</div></section>
-  <section class="project-panel" data-panel-content="outputs" hidden><div class="panel-card"><div class="panel-title"><div><h2>成果登记</h2><p>报告、论文、专利、软件、标准、样机和数据等</p></div><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#outputModal">登记成果</button></div><div class="record-list" data-record-list="outputs">{% for item in outputs %}<article><span class="record-state">{{ item.outputType }}</span><div><h3>{{ item.title }}</h3><p>{{ item.description or '未填写说明' }}</p><small>{{ item.formedDate or item.createdAt }} · {{ item.contributors or '未记录完成人' }}</small></div></article>{% else %}<p class="empty-copy">尚无成果记录。</p>{% endfor %}</div>{% if recordTruncated.outputs %}<button class="btn btn-sm btn-outline-secondary mt-3 load-more-records" type="button" data-record-type="outputs" data-page="2">加载更早成果</button>{% endif %}</div></section>
-  <section class="project-panel" data-panel-content="closure" hidden><div class="panel-card"><div class="panel-title"><div><h2>结题记录</h2><p>项目进入结题中后才能提交结论</p></div>{% if project.status == 'CLOSING' %}<button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#closureModal">记录结题</button>{% endif %}</div>{% if closure %}<dl class="closure-summary"><div><dt>结论</dt><dd>{{ {'PASS':'通过','FAIL':'未通过','TERMINATED':'终止'}.get(closure.conclusion, '历史记录') }}</dd></div><div><dt>结题时间</dt><dd>{{ closure.closedAt }}</dd></div><div><dt>完成情况</dt><dd>{{ closure.summary }}</dd></div><div><dt>遗留问题</dt><dd>{{ closure.remainingIssues or '无' }}</dd></div></dl>{% else %}<p class="empty-copy">尚无结题记录。</p>{% endif %}</div></section>
+  <section class="project-panel" data-panel-content="progress" hidden><div class="panel-card"><div class="panel-title"><div><h2>进展记录</h2><p>完成情况、问题与下一步均作为业务事实留痕</p></div><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#progressModal">新增进展</button></div><div class="record-list" data-record-list="progress">{% for item in progress %}<article><span class="record-state state-{{ item.status|lower }}">{{ {'NORMAL':'正常','RISK':'有风险','BLOCKED':'受阻'}[item.status] }}</span><div><h3>{{ item.summary }}</h3><p>问题：{{ item.issues or '无' }} · 下一步：{{ item.nextActions or '未记录' }}</p><small>{{ record_time(item.recordedAt) }} · 记录人 {{ item.createdByName }}</small><button class="btn btn-sm btn-outline-primary ms-2" type="button" data-bs-toggle="modal" data-bs-target="#progressModal" data-progress='{{ item|tojson|forceescape }}'>编辑进展</button></div></article>{% else %}<p class="empty-copy">尚无进展记录。</p>{% endfor %}</div>{% if recordTruncated.progress %}<button class="btn btn-sm btn-outline-secondary mt-3 load-more-records" type="button" data-record-type="progress" data-page="2">加载更早进展</button>{% endif %}</div></section>
+  <section class="project-panel" data-panel-content="changes" hidden><div class="panel-card"><div class="panel-title"><div><h2>变更记录</h2><p>只记录变更事实与决定，不建设审批流</p></div><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#changeModal">登记变更</button></div><div class="record-list" data-record-list="changes">{% for item in changes %}<article><span class="record-state" title="{{ item.changeType }}">{{ change_labels.get(item.changeType, item.changeType) }}</span><div><h3{% if item.changeType == 'STATUS_TRANSITION' %} title="{{ item.afterSummary }}"{% endif %}>{{ status_labels.get(item.afterSummary, item.afterSummary) if item.changeType == 'STATUS_TRANSITION' else item.afterSummary }}</h3><p>变更前：<span{% if item.changeType == 'STATUS_TRANSITION' %} title="{{ item.beforeSummary or '' }}"{% endif %}>{{ status_labels.get(item.beforeSummary, item.beforeSummary or '未记录') if item.changeType == 'STATUS_TRANSITION' else item.beforeSummary or '未记录' }}</span> · 依据：{{ item.basis or '未记录' }}</p><small>{{ record_time(item.decisionDate or item.createdAt) }} · <span title="{{ item.decision or '' }}">{{ decision_labels.get(item.decision, item.decision or '历史记录') }}</span></small></div></article>{% else %}<p class="empty-copy">尚无变更记录。</p>{% endfor %}</div>{% if recordTruncated.changes %}<button class="btn btn-sm btn-outline-secondary mt-3 load-more-records" type="button" data-record-type="changes" data-page="2">加载更早变更</button>{% endif %}</div></section>
+  <section class="project-panel" data-panel-content="outputs" hidden><div class="panel-card"><div class="panel-title"><div><h2>成果登记</h2><p>报告、论文、专利、软件、标准、样机和数据等</p></div><button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#outputModal">登记成果</button></div><div class="record-list" data-record-list="outputs">{% for item in outputs %}<article><span class="record-state" title="{{ item.outputType }}">{{ output_labels.get(item.outputType, item.outputType) }}</span><div><h3>{{ item.title }}</h3><p>{{ item.description or '未填写说明' }}</p><small>{{ record_time(item.formedDate or item.createdAt) }} · {{ item.contributors or '未记录完成人' }}</small></div></article>{% else %}<p class="empty-copy">尚无成果记录。</p>{% endfor %}</div>{% if recordTruncated.outputs %}<button class="btn btn-sm btn-outline-secondary mt-3 load-more-records" type="button" data-record-type="outputs" data-page="2">加载更早成果</button>{% endif %}</div></section>
+  <section class="project-panel" data-panel-content="closure" hidden><div class="panel-card"><div class="panel-title"><div><h2>结题记录</h2><p>项目进入结题中后才能提交结论</p></div>{% if project.status == 'CLOSING' %}<button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#closureModal">记录结题</button>{% endif %}</div>{% if closure %}<dl class="closure-summary"><div><dt>结论</dt><dd>{{ {'PASS':'通过','FAIL':'未通过','TERMINATED':'终止'}.get(closure.conclusion, '历史记录') }}</dd></div><div><dt>结题时间</dt><dd>{{ record_time(closure.closedAt) }}</dd></div><div><dt>完成情况</dt><dd>{{ closure.summary }}</dd></div><div><dt>遗留问题</dt><dd>{{ closure.remainingIssues or '无' }}</dd></div>{% if closure.noOutputReason %}<div><dt>无成果原因</dt><dd>{{ closure.noOutputReason }}</dd></div>{% endif %}</dl>{% else %}<p class="empty-copy">尚无结题记录。</p>{% endif %}</div></section>
 </main>
 
-{% macro form_modal(id, title, body) %}<div class="modal fade" id="{{ id }}" tabindex="-1"><div class="modal-dialog"><form class="modal-content lifecycle-form" data-kind="{{ id[:-5] }}"><div class="modal-header"><h2 class="modal-title fs-5">{{ title }}</h2><button class="btn-close" type="button" data-bs-dismiss="modal"></button></div><div class="modal-body">{{ body|safe }}<div class="form-error text-danger small mt-2" role="alert"></div></div><div class="modal-footer"><button class="btn btn-secondary" type="button" data-bs-dismiss="modal">取消</button><button class="btn btn-primary" type="submit">保存</button></div></form></div></div>{% endmacro %}
-{{ form_modal('progressModal','记录项目进展','<label class="form-label">记录时间</label><input class="form-control mb-3" type="datetime-local" name="recordedAt" required><label class="form-label">状态</label><select class="form-select mb-3" name="status"><option value="NORMAL">正常</option><option value="RISK">有风险</option><option value="BLOCKED">受阻</option></select><label class="form-label">完成情况</label><textarea class="form-control mb-3" name="summary" required></textarea><label class="form-label">问题与风险</label><textarea class="form-control mb-3" name="issues"></textarea><label class="form-label">下一步</label><textarea class="form-control" name="nextActions"></textarea>') }}
-{{ form_modal('changeModal','登记项目变更','<label class="form-label">决定日期</label><input class="form-control mb-3" type="date" name="decisionDate" required><label class="form-label">变更类型</label><select class="form-select mb-3" name="changeType"><option value="GOAL">目标</option><option value="PERIOD">周期</option><option value="LEADER">负责人</option><option value="CONTENT">内容</option><option value="OTHER">其他</option></select><label class="form-label">变更前摘要</label><textarea class="form-control mb-3" name="beforeSummary"></textarea><label class="form-label">变更后摘要</label><textarea class="form-control mb-3" name="afterSummary" required></textarea><label class="form-label">变更原因</label><textarea class="form-control mb-3" name="basis" required></textarea><label class="form-label">决定</label><select class="form-select" name="decision"><option value="AGREED">同意</option><option value="REJECTED">不同意</option><option value="FILED">备案</option></select>') }}
+<div class="modal fade" id="statusTransitionModal" tabindex="-1" aria-labelledby="statusTransitionTitle" aria-describedby="statusTransitionTarget" aria-hidden="true">
+  <div class="modal-dialog"><form class="modal-content" id="statusTransitionForm">
+    <div class="modal-header"><h2 class="modal-title fs-5" id="statusTransitionTitle">变更项目状态</h2><button class="btn-close" type="button" aria-label="关闭状态变更" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body"><p id="statusTransitionTarget"></p><label class="form-label" for="statusTransitionReason">状态变化原因（必填）</label><textarea class="form-control" id="statusTransitionReason" name="reason" rows="4" required aria-describedby="statusTransitionError"></textarea><div class="text-danger small mt-2" id="statusTransitionError" role="alert"></div></div>
+    <div class="modal-footer"><button class="btn btn-secondary" type="button" data-bs-dismiss="modal">取消</button><button class="btn btn-primary" type="submit" id="statusTransitionConfirm">确认变更</button></div>
+  </form></div>
+</div>
+
+<p id="progressEditError" class="text-danger" role="alert"></p>
+{% macro form_modal(id, title, body) %}<div class="modal fade" id="{{ id }}" tabindex="-1"><div class="modal-dialog"><form class="modal-content lifecycle-form" data-kind="{{ id[:-5] }}"><div class="modal-header"><h2 class="modal-title fs-5">{{ title }}</h2><button class="btn-close" type="button" aria-label="关闭" data-bs-dismiss="modal"></button></div><div class="modal-body">{{ body|safe }}<div class="form-error text-danger small mt-2" role="alert"></div></div><div class="modal-footer"><button class="btn btn-secondary" type="button" data-bs-dismiss="modal">取消</button><button class="btn btn-primary" type="submit">保存</button></div></form></div></div>{% endmacro %}
+{{ form_modal('progressModal','记录项目进展','<label class="form-label" for="progressModal-recordedAt">记录时间</label><input class="form-control mb-3" type="datetime-local" id="progressModal-recordedAt" name="recordedAt" required><label class="form-label" for="progressModal-status">状态</label><select class="form-select mb-3" id="progressModal-status" name="status"><option value="NORMAL">正常</option><option value="RISK">有风险</option><option value="BLOCKED">受阻</option></select><label class="form-label" for="progressModal-summary">完成情况</label><textarea class="form-control mb-3" id="progressModal-summary" name="summary" required></textarea><label class="form-label" for="progressModal-issues">问题与风险</label><textarea class="form-control mb-3" id="progressModal-issues" name="issues"></textarea><label class="form-label" for="progressModal-nextActions">下一步</label><textarea class="form-control" id="progressModal-nextActions" name="nextActions"></textarea>') }}
+{{ form_modal('changeModal','登记项目变更','<label class="form-label" for="changeModal-decisionDate">决定日期</label><input class="form-control mb-3" type="date" id="changeModal-decisionDate" name="decisionDate" required><label class="form-label" for="changeModal-changeType">变更类型</label><select class="form-select mb-3" id="changeModal-changeType" name="changeType"><option value="GOAL">目标</option><option value="PERIOD">周期</option><option value="LEADER">负责人</option><option value="CONTENT">内容</option><option value="OTHER">其他</option></select><label class="form-label" for="changeModal-beforeSummary">变更前摘要</label><textarea class="form-control mb-3" id="changeModal-beforeSummary" name="beforeSummary"></textarea><label class="form-label" for="changeModal-afterSummary">变更后摘要</label><textarea class="form-control mb-3" id="changeModal-afterSummary" name="afterSummary" required></textarea><label class="form-label" for="changeModal-basis">变更原因</label><textarea class="form-control mb-3" id="changeModal-basis" name="basis" required></textarea><label class="form-label" for="changeModal-decision">决定</label><select class="form-select" id="changeModal-decision" name="decision"><option value="AGREED">同意</option><option value="REJECTED">不同意</option><option value="FILED">备案</option></select>') }}
 {{ form_modal('outputModal','登记项目成果','<label class="form-label">成果形成日期</label><input class="form-control mb-3" type="date" name="formedDate" required><label class="form-label">成果类型</label><select class="form-select mb-3" name="outputType"><option value="REPORT">报告</option><option value="PAPER">论文</option><option value="PATENT">专利</option><option value="SOFTWARE">软件</option><option value="STANDARD">标准</option><option value="PROTOTYPE">样机</option><option value="DATA">数据</option><option value="OTHER">其他</option></select><label class="form-label">成果名称</label><input class="form-control mb-3" name="title" required><label class="form-label">完成人</label><input class="form-control mb-3" name="contributors" required placeholder="如：张老师、李老师"><label class="form-label">成果说明</label><textarea class="form-control" name="description"></textarea>') }}
 {{ form_modal('closureModal','记录项目结题','<label class="form-label">结题时间</label><input class="form-control mb-3" type="datetime-local" name="closedAt" required><label class="form-label">结题结论</label><select class="form-select mb-3" name="conclusion"><option value="PASS">通过</option><option value="FAIL">未通过，退回补充</option><option value="TERMINATED">终止</option></select><label class="form-label">完成情况摘要</label><textarea class="form-control mb-3" name="summary" required></textarea><label class="form-label">遗留问题</label><textarea class="form-control mb-3" name="remainingIssues"></textarea><label class="form-label">无成果原因（已有成果时可不填）</label><textarea class="form-control" name="noOutputReason"></textarea>') }}
 
@@ -106,8 +121,8 @@ document.addEventListener('DOMContentLoaded', function () {
       if (tab.dataset.panel === 'research-path') window.ResearchPath && window.ResearchPath.mount();
     });
   });
-  async function send(url, payload) {
-    const response = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...payload, version})});
+  async function send(url, payload, method = 'POST', expectedVersion = version) {
+    const response = await fetch(url, {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...payload, version: expectedVersion})});
     const data = await response.json();
     if (!response.ok) throw new Error(data.error && data.error.message || '保存失败');
     version = Number(data.projectVersion || data.version || version);
@@ -116,29 +131,52 @@ document.addEventListener('DOMContentLoaded', function () {
   const localNow = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString();
   document.querySelectorAll('input[type="datetime-local"]').forEach(input => { if (!input.value) input.value = localNow.slice(0, 16); });
   document.querySelectorAll('input[type="date"]').forEach(input => { if (!input.value) input.value = localNow.slice(0, 10); });
+  const statusLabels = {{ status_labels|tojson }};
+  const changeLabels = {{ change_labels|tojson }};
+  const decisionLabels = {{ decision_labels|tojson }};
+  const outputLabels = {{ output_labels|tojson }};
   function recordArticle(kind, item) {
     const article = document.createElement('article');
     const badge = document.createElement('span');
     badge.className = `record-state ${kind === 'progress' ? `state-${String(item.status || '').toLowerCase()}` : ''}`;
-    badge.textContent = kind === 'progress' ? ({NORMAL:'正常', RISK:'有风险', BLOCKED:'受阻'}[item.status] || item.status) : (item.changeType || item.outputType || '记录');
+    badge.textContent = kind === 'progress' ? ({NORMAL:'正常', RISK:'有风险', BLOCKED:'受阻'}[item.status] || item.status) : (kind === 'changes' ? changeLabels[item.changeType] || item.changeType : outputLabels[item.outputType] || item.outputType) || '记录';
+    badge.title = item.changeType || item.outputType || item.status || '';
     const body = document.createElement('div');
     const title = document.createElement('h3');
     const copy = document.createElement('p');
     const meta = document.createElement('small');
+    const rawTime = kind === 'progress' ? item.recordedAt : kind === 'changes' ? item.decisionDate || item.createdAt : item.formedDate || item.createdAt;
+    const time = document.createElement('time');
+    time.title = rawTime || '';
+    time.textContent = rawTime ? String(rawTime).replace('T', ' ').slice(0, 16) : '未记录';
     if (kind === 'progress') {
       title.textContent = item.summary || '未填写';
       copy.textContent = `问题：${item.issues || '无'} · 下一步：${item.nextActions || '未记录'}`;
-      meta.textContent = `${item.recordedAt || '未记录'} · 记录人账号 ${item.createdBy ?? '未记录'}`;
+      meta.append(time, document.createTextNode(` · 记录人 ${item.createdByName || (item.createdBy == null ? '未记录' : `未知用户（账号${item.createdBy}）`)}`));
     } else if (kind === 'changes') {
-      title.textContent = item.afterSummary || '未填写';
-      copy.textContent = `变更前：${item.beforeSummary || '未记录'} · 依据：${item.basis || '未记录'}`;
-      meta.textContent = `${item.decisionDate || item.createdAt || '未记录'} · ${item.decision || '历史记录'}`;
+      const isTransition = item.changeType === 'STATUS_TRANSITION';
+      title.textContent = (isTransition ? statusLabels[item.afterSummary] : null) || item.afterSummary || '未填写';
+      if (isTransition) title.title = item.afterSummary || '';
+      const before = document.createElement('span');
+      before.textContent = (isTransition ? statusLabels[item.beforeSummary] : null) || item.beforeSummary || '未记录';
+      if (isTransition) before.title = item.beforeSummary || '';
+      copy.append(document.createTextNode('变更前：'), before, document.createTextNode(` · 依据：${item.basis || '未记录'}`));
+      const decision = document.createElement('span');
+      decision.title = item.decision || '';
+      decision.textContent = decisionLabels[item.decision] || item.decision || '历史记录';
+      meta.append(time, document.createTextNode(' · '), decision);
     } else {
       title.textContent = item.title || '未填写';
       copy.textContent = item.description || '未填写说明';
-      meta.textContent = `${item.formedDate || item.createdAt || '未记录'} · ${item.contributors || '未记录完成人'}`;
+      meta.append(time, document.createTextNode(` · ${item.contributors || '未记录完成人'}`));
     }
     body.append(title, copy, meta);
+    if (kind === 'progress') {
+      const edit = document.createElement('button');
+      edit.type = 'button'; edit.className = 'btn btn-sm btn-outline-primary ms-2'; edit.textContent = '编辑进展';
+      edit.setAttribute('data-bs-toggle', 'modal'); edit.setAttribute('data-bs-target', '#progressModal');
+      edit.dataset.progress = JSON.stringify(item); body.append(edit);
+    }
     article.append(badge, body);
     return article;
   }
@@ -159,24 +197,112 @@ document.addEventListener('DOMContentLoaded', function () {
       button.textContent = `${error.message}，点击重试`;
     }
   }));
-  document.querySelectorAll('#statusActions [data-status]').forEach(button => button.addEventListener('click', async function () {
-    const reason = window.prompt('请填写本次状态变化原因');
-    if (!reason) return;
-    try { await send(`/api/projects/${projectId}/status-transitions`, {toStatus: button.dataset.status, reason}); window.location.reload(); }
-    catch (error) { window.alert(error.message); }
+  // BEGIN status transition modal
+  const statusModalElement = document.getElementById('statusTransitionModal');
+  const statusForm = document.getElementById('statusTransitionForm');
+  const statusReason = document.getElementById('statusTransitionReason');
+  const statusTarget = document.getElementById('statusTransitionTarget');
+  const statusError = document.getElementById('statusTransitionError');
+  const statusConfirm = document.getElementById('statusTransitionConfirm');
+  const statusDismissButtons = statusModalElement.querySelectorAll('[data-bs-dismiss="modal"]');
+  const statusModal = bootstrap.Modal.getOrCreateInstance(statusModalElement);
+  let statusSubmitting = false, statusOpener = null, targetStatus = null;
+  statusModalElement.addEventListener('shown.bs.modal', () => statusReason.focus());
+  statusModalElement.addEventListener('hide.bs.modal', event => { if (statusSubmitting) event.preventDefault(); });
+  statusModalElement.addEventListener('hidden.bs.modal', () => { if (statusOpener) statusOpener.focus(); targetStatus = null; });
+  document.querySelectorAll('#statusActions [data-status]').forEach(button => button.addEventListener('click', function () {
+    if (statusSubmitting) return;
+    statusOpener = button; targetStatus = button.dataset.status;
+    statusReason.value = ''; statusError.textContent = '';
+    statusTarget.textContent = `从“${statusLabels[page.dataset.projectStatus]}”变更为“${statusLabels[targetStatus]}”`;
+    statusModal.show();
   }));
+  statusForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (statusSubmitting || !targetStatus) return;
+    const reason = statusReason.value;
+    if (!reason.trim()) { statusError.textContent = '请填写本次状态变化原因。'; statusReason.focus(); return; }
+    statusSubmitting = true; statusConfirm.disabled = true;
+    statusReason.readOnly = true;
+    statusDismissButtons.forEach(button => { button.disabled = true; });
+    statusForm.setAttribute('aria-busy', 'true'); statusError.textContent = '';
+    try {
+      await send(`/api/projects/${projectId}/status-transitions`, {toStatus: targetStatus, reason});
+      window.location.reload();
+    } catch (error) {
+      statusError.textContent = error.message || '变更失败，原因已保留，请核对后重试。';
+      statusSubmitting = false; statusConfirm.disabled = false; statusReason.readOnly = false;
+      statusDismissButtons.forEach(button => { button.disabled = false; });
+      statusForm.setAttribute('aria-busy', 'false'); statusReason.focus();
+    }
+  });
+  // END status transition modal
+  // BEGIN lifecycle record forms
+  const progressModal = document.getElementById('progressModal');
+  const progressForm = progressModal.querySelector('form');
+  progressModal.addEventListener('show.bs.modal', function(event) {
+    if (progressForm.dataset.submitting === 'true') { event.preventDefault(); return; }
+    const raw = event.relatedTarget && event.relatedTarget.dataset.progress;
+    const openError = document.getElementById('progressEditError');
+    openError.textContent = '';
+    progressForm.dataset.recordId = '';
+    try {
+      const item = raw ? JSON.parse(raw) : null;
+      const date = item ? new Date(item.recordedAt) : new Date();
+      if (item && (!item.id || !item.recordedAt)) throw new Error('invalid record');
+      const localTime = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      progressForm.reset();
+      progressForm.querySelector('.form-error').textContent = '';
+      progressForm.dataset.recordId = item ? item.id : '';
+      progressForm.dataset.baseVersion = String(version);
+      progressForm.dataset.riskLevel = item && item.riskLevel || '';
+      ['status','summary','issues','nextActions'].forEach(name => {
+        progressForm.elements.namedItem(name).value = item ? item[name] || '' : name === 'status' ? 'NORMAL' : '';
+      });
+      progressForm.elements.namedItem('recordedAt').value = localTime;
+      progressForm.dataset.originalTime = item ? item.recordedAt : '';
+      progressForm.dataset.displayTime = localTime;
+    } catch (_) {
+      event.preventDefault();
+      progressForm.reset();
+      openError.textContent = '这条进展记录无法打开，请刷新后核对记录。';
+    }
+  });
   document.querySelectorAll('.lifecycle-form').forEach(function (form) {
+    const modal = form.closest('.modal');
+    if (form !== progressForm) modal.addEventListener('show.bs.modal', function() { form.dataset.baseVersion = String(version); });
+    modal.addEventListener('hide.bs.modal', function(event) {
+      if (form.dataset.submitting === 'true') event.preventDefault();
+    });
     form.addEventListener('submit', async function (event) {
       event.preventDefault();
-      const data = Object.fromEntries(new FormData(form).entries());
-      const kind = form.dataset.kind;
-      if (kind === 'progress') data.recordedAt = new Date(data.recordedAt).toISOString();
-      if (kind === 'closure') data.closedAt = new Date(data.closedAt).toISOString();
-      const path = {progress:'progress', change:'changes', output:'outputs', closure:'closure'}[kind];
-      try { await send(`/api/projects/${projectId}/${path}`, data); window.location.reload(); }
-      catch (error) { form.querySelector('.form-error').textContent = error.message; }
+      if (form.dataset.submitting === 'true') return;
+      form.dataset.submitting = 'true';
+      const controls = form.querySelectorAll('[type="submit"], [data-bs-dismiss="modal"]');
+      controls.forEach(control => { control.disabled = true; });
+      form.setAttribute('aria-busy', 'true');
+      const error = form.querySelector('.form-error'); error.textContent = '';
+      try {
+        const data = Object.fromEntries(new FormData(form).entries());
+        const kind = form.dataset.kind;
+        const recordId = form.dataset.recordId;
+        if (kind === 'progress') {
+          data.recordedAt = recordId && data.recordedAt === form.dataset.displayTime ? form.dataset.originalTime : new Date(data.recordedAt).toISOString();
+          if (recordId) data.riskLevel = form.dataset.riskLevel || null;
+        }
+        if (kind === 'closure') data.closedAt = new Date(data.closedAt).toISOString();
+        const path = {progress:'progress', change:'changes', output:'outputs', closure:'closure'}[kind];
+        const suffix = kind === 'progress' && recordId ? '/' + encodeURIComponent(recordId) : '';
+        await send(`/api/projects/${projectId}/${path}${suffix}`, data, suffix ? 'PATCH' : 'POST', Number(form.dataset.baseVersion));
+        window.location.reload();
+      } catch (failure) {
+        error.textContent = failure instanceof RangeError ? '时间格式无效，请检查后重试。' : failure.message || '保存失败，输入已保留。';
+      } finally {
+        form.dataset.submitting = 'false'; controls.forEach(control => { control.disabled = false; }); form.setAttribute('aria-busy', 'false');
+      }
     });
   });
+  // END lifecycle record forms
 });
 </script>
 <script>window.__G6_LOAD_FAILED__ = false;</script>

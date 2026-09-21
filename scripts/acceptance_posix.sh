@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+t12_python=${ACCEPTANCE_PYTHON-.venv/bin/python}
+if [[ ! -f "$t12_python" || ! -x "$t12_python" ]]; then
+  echo "acceptance interpreter is unavailable: $t12_python" >&2
+  exit 69
+fi
+
 for t12_name in MIGRATION_DATABASE_URL DATABASE_URL \
   T02_ISOLATED_POSTGRES_ROOT T02_ISOLATED_POSTGRES_PORT \
   T02_ISOLATED_POSTGRES_DATABASE; do
@@ -17,16 +23,11 @@ for t12_command in curl node pg_dump pg_restore createdb psql pg_ctl; do
   fi
 done
 
-if [[ ! -x .venv/bin/python ]]; then
-  echo "project interpreter is unavailable: .venv/bin/python" >&2
-  exit 69
-fi
 if [[ ! -d node_modules/@playwright/test ]]; then
   echo "Playwright test runtime is unavailable: node_modules/@playwright/test" >&2
   exit 69
 fi
 
-t12_python=.venv/bin/python
 export PYTHONPATH="$PWD"
 
 validate_t12_database() {
@@ -191,6 +192,7 @@ printf '%s\n' "$t12_password" | env -i \
   ACCEPTANCE_BASELINE="$t12_baseline" \
   ACCEPTANCE_OUTBOUND="$t12_outbound" \
   ACCEPTANCE_RESULT="$t12_browser_result" \
+  ACCEPTANCE_DATA_ROOT="$t12_runtime_root" \
   ACCEPTANCE_USERNAME="$ACCEPTANCE_USERNAME" \
   node scripts/acceptance_browser.mjs
 
@@ -309,6 +311,7 @@ printf '%s\n' "$t12_password" | env -i \
   ACCEPTANCE_RESULT="$t12_evidence_root/browser-after-restore.json" \
   ACCEPTANCE_USERNAME="$ACCEPTANCE_USERNAME" ACCEPTANCE_PHASE=after-restore \
   ACCEPTANCE_PREVIOUS_RESULT="$t12_browser_result" \
+  ACCEPTANCE_DATA_ROOT="$t12_restore_root" \
   node scripts/acceptance_browser.mjs
 t12_password=""
 stop_t12_waitress

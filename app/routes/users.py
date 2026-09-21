@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, url_for
 
 from app.security.auth import current_identity, maintenance_required, rotate_session
 
@@ -143,6 +143,8 @@ def reset_password(username):
 @bp.route("/permissions/<username>", methods=["GET", "POST"])
 @maintenance_required
 def permissions(username):
+    if request.method == "GET":
+        return render_template("users/permissions_notice.html")
     return jsonify({"error": {"code": "NOT_SUPPORTED", "message": "V1 业务账号权限一致"}}), 404
 
 

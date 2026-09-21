@@ -57,8 +57,8 @@
                                 {% endif %}
                             </td>
                             <td><span class="badge bg-primary">{{ g.member_count }}</span> 台</td>
-                            <td>{{ g.creator }}</td>
-                            <td>{{ g.created_at }}</td>
+                            <td>{{ creator_names.get(g.creator, g.creator) }}</td>
+                            <td>{% if g.created_at %}<time title="{{ g.created_at }}">{{ g.created_at.strftime('%Y-%m-%d %H:%M') if g.created_at.strftime is defined else g.created_at }}</time>{% else %}-{% endif %}</td>
                             <td>
                                 <a href="{{ url_for('equipment_groups.edit', group_id=g.group_id) }}" class="btn btn-sm btn-outline-primary">查看</a>
                                 <a href="{{ url_for('equipment_groups.export', group_id=g.group_id) }}" class="btn btn-sm btn-outline-success">导出</a>

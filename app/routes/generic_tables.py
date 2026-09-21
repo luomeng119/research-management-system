@@ -8,9 +8,8 @@ from pathlib import Path
 import re
 import tempfile
 import uuid
-import json
-from datetime import datetime
-from flask import Blueprint, render_template, request, jsonify, session, send_file
+from flask import Blueprint, render_template, request, jsonify, session, send_file, current_app
+import sqlalchemy as sa
 from app.models_generic_tables import GenericTableModel
 from app.services.generic_tables import GenericTablesError, MAX_FILE_BYTES
 from werkzeug.wsgi import ClosingIterator
@@ -47,6 +46,20 @@ def require_login(f):
 
 
 # ---------- 页面路由 ----------
+
+def _creator_names(versions):
+    """Resolve only creators displayed on this page, without altering stored versions."""
+    usernames = {version.get('creator') for version in versions if version.get('creator')}
+    repository = current_app.extensions.get('users_repository')
+    if not usernames or repository is None:
+        return {}
+    users = repository.table
+    statement = sa.select(users.c.username, users.c.name).where(
+        users.c.username.in_(sorted(usernames))
+    )
+    with repository.engine.connect() as connection:
+        return {row['username']: row['name'] or row['username']
+                for row in connection.execute(statement).mappings()}
 
 @bp.route('')
 def list_page():
@@ -100,6 +113,7 @@ def detail_page(table_id):
                            current_version=version, columns=columns,
                            rows=rows, stats=stats, cols_map=cols_map,
                            snapshots=snapshots, is_current=True,
+                           creator_names=_creator_names([version, *versions]),
                            row_total=row_total, current_page=page)
 
 def version_id_helper_has_stats():
@@ -131,12 +145,13 @@ def version_readonly_page(table_id, version_id):
             raise
         stats = {}
     cols_map = {col['col_key']: col['col_name'] for col in columns}
-    snapshots = [v for v in versions if v['version_id'] != version_id]
+    snapshots = [v for v in versions if v['version_id'] != table.get('current_version_id')]
     return render_template('generic_tables/detail.html',
                            table=table, versions=versions,
                            current_version=version, columns=columns,
                            rows=rows, stats=stats, cols_map=cols_map,
                            snapshots=snapshots, is_current=is_current,
+                           creator_names=_creator_names([version, *versions]),
                            row_total=row_total, current_page=page)
 
 

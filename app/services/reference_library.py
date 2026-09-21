@@ -107,7 +107,7 @@ class ReferenceLibraryService:
             except ReferenceLibraryError:
                 continue
             result.append({
-                **standard, "upload_time": standard.get("upload_time", ""),
+                **standard, "upload_time": standard.get("upload_time") or standard.get("created_at"),
                 "fileId": file_row["fileId"], "versionNo": file_row["versionNo"],
                 "objectType": "STANDARD", "objectId": str(standard["doc_id"]),
             })
@@ -329,11 +329,23 @@ class ReferenceLibraryService:
             file_row = self._first_file("TEMPLATE", str(item["template_id"]))
             node["files"].append({
                 "name": item["display_name"], "path": f"{node['path']}/{item['display_name']}",
-                "size": int(file_row.get("sizeBytes", 0)), "templateId": str(item["template_id"]),
+                "size": None, "templateId": str(item["template_id"]),
                 "fileId": file_row["fileId"], "versionNo": file_row["versionNo"],
                 "objectType": "TEMPLATE", "objectId": str(item["template_id"]),
             })
             node["fileCount"] += 1
+        listed_files = [file for node in nodes.values() for file in node["files"]]
+        if listed_files:
+            file_repository = self._require_file_service().repository
+            versions = file_repository.versions
+            with file_repository.engine.connect() as connection:
+                pairs = [(file_repository._id(connection, file["fileId"]), file["versionNo"]) for file in listed_files]
+                rows = connection.execute(sa.select(
+                    versions.c.file_id, versions.c.version_no, versions.c.size_bytes,
+                ).where(sa.tuple_(versions.c.file_id, versions.c.version_no).in_(pairs))).mappings()
+                sizes = {(str(row["file_id"]), row["version_no"]): row["size_bytes"] for row in rows}
+            for file in listed_files:
+                file["size"] = sizes.get((file["fileId"], file["versionNo"]))
         roots = [nodes[folder_id] for folder_id, row in folders.items() if folder_id in nodes and row.get("parent_id") is None]
         if current_category:
             normalized = self.normalize_logical_path(current_category)

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}报销单据 - 科研管理系统{% endblock %}
+{% block title %}报销单据 - 科研创新管理{% endblock %}
 
 {% block content %}
 <div class="container-fluid mt-3">
@@ -452,7 +452,19 @@ function renderPurchaseTemplate(fields, suggestions) {
     }
     const itemCount = maxItemIndex >= 0 ? maxItemIndex + 1 : 1; // 至少1行
 
-    let html = `<div class="table-responsive mb-3" style="border:1px solid rgba(0,255,255,0.2); border-radius:4px; overflow:hidden;">`;
+    let html = `<div class="row g-2 mb-3">`;
+    ['T0[1,1]', 'T0[2,1]', 'T0[2,4]'].forEach(fid => {
+        const field = fields.find(item => item.field_id === fid);
+        if (!field) return;
+        const value = suggestions[fid]?.value || '';
+        html += `<div class="col-md-4">`;
+        html += `<label class="form-label small text-white mb-1" for="field_${escapeHtml(fid)}">${escapeHtml(field.label)}</label>`;
+        html += `<input type="text" class="form-control form-control-sm" id="field_${escapeHtml(fid)}" data-field="${escapeHtml(fid)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(field.label)}" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff;">`;
+        html += `</div>`;
+    });
+    html += `</div>`;
+
+    html += `<div class="table-responsive mb-3" style="border:1px solid rgba(0,255,255,0.2); border-radius:4px; overflow:hidden;">`;
     html += `<table class="table table-sm mb-0" style="table-layout:fixed; background:#1e3a5f;" id="itemsTable">`;
     html += `<tbody>`;
 
@@ -471,11 +483,11 @@ function renderPurchaseTemplate(fields, suggestions) {
     }
 
     // 采购原因（跨行）
-    html += `<tr>`;
+    html += `<tr class="purchase-reason-row">`;
     html += `<td colspan="5" style="border-color:rgba(0,255,255,0.1); padding:8px;">`;
     html += `<div class="d-flex gap-2 align-items-center">`;
     html += `<label class="form-label small mb-0 text-white fw-bold" style="white-space:nowrap;">采购原因：</label>`;
-    html += `<input type="text" class="form-control form-control-sm" id="field_T0[5,1]" data-field="T0[5,1]" placeholder="请填写采购原因" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; flex:1;">`;
+    html += `<input type="text" class="form-control form-control-sm" id="field_T0[5,1]" data-field="T0[5,1]" value="${escapeHtml(suggestions['T0[5,1]']?.value || '')}" placeholder="请填写采购原因" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; flex:1;">`;
     html += `</div>`;
     html += `</td></tr>`;
 
@@ -487,12 +499,16 @@ function renderPurchaseTemplate(fields, suggestions) {
         html += `<td colspan="5" style="border-color:rgba(0,255,255,0.1); padding:6px 8px;">`;
         html += `<div class="d-flex gap-2 align-items-center">`;
         html += `<label class="form-label small mb-0 text-white fw-bold" style="white-space:nowrap;">${escapeHtml(f.label)}：</label>`;
-        html += `<input type="text" class="form-control form-control-sm" id="field_${escapeHtml(fid)}" data-field="${escapeHtml(fid)}" placeholder="${escapeHtml(f.label)}" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; flex:1;">`;
+        html += `<input type="text" class="form-control form-control-sm" id="field_${escapeHtml(fid)}" data-field="${escapeHtml(fid)}" value="${escapeHtml(suggestions[fid]?.value || '')}" placeholder="${escapeHtml(f.label)}" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.25); color:#fff; flex:1;">`;
         html += `</div>`;
         html += `</td></tr>`;
     });
 
     html += `</tbody></table></div>`;
+    html += `<div class="d-flex justify-content-end gap-2 mb-2">`;
+    html += `<button type="button" class="btn btn-outline-info btn-sm" id="btnAddPurchaseItem"><i class="bi bi-plus-circle"></i> 添加物品</button>`;
+    html += `<button type="button" class="btn btn-outline-secondary btn-sm" id="btnRemovePurchaseItem"><i class="bi bi-dash-circle"></i> 删除末行</button>`;
+    html += `</div>`;
 
     // 动态行追加信息
     if (itemCount > 1) {
@@ -551,12 +567,49 @@ function renderPurchaseItemRow(itemIndex, suggestions) {
     return html;
 }
 
+function addPurchaseItemRow() {
+    const table = document.getElementById('itemsTable');
+    const reasonRow = table?.querySelector('.purchase-reason-row');
+    if (!table || !reasonRow) return;
+    const itemIndex = table.querySelectorAll('tr[data-item-index]').length;
+    reasonRow.insertAdjacentHTML('beforebegin', renderPurchaseItemRow(itemIndex, {}));
+}
+
+function removePurchaseItemRow() {
+    const table = document.getElementById('itemsTable');
+    const rows = table ? Array.from(table.querySelectorAll('tr[data-item-index]')) : [];
+    if (rows.length <= 1) return;
+    rows[rows.length - 1].remove();
+}
+
+document.getElementById('fieldsContainer').addEventListener('click', function(event) {
+    if (event.target.closest('#btnAddPurchaseItem')) addPurchaseItemRow();
+    if (event.target.closest('#btnRemovePurchaseItem')) removePurchaseItemRow();
+});
+
 // 回填单个值到输入框（支持动态 item 行）
 function fillField(fid, value) {
     const inp = document.getElementById('field_' + fid);
     if (inp && !inp.readOnly && !inp.value) {
         inp.value = value || '';
     }
+}
+
+function collectDocumentFields() {
+    const fields = {};
+    document.querySelectorAll('#fieldsContainer input[data-field]').forEach(inp => {
+        const fid = inp.dataset.field;
+        const match = fid.match(/^(T\d+\[\d+,\d+\])_item_(\d+)$/);
+        if (match) {
+            const base = match[1];
+            const itemIndex = Number(match[2]);
+            fields[base] = fields[base] || [];
+            fields[base][itemIndex] = inp.value;
+        } else {
+            fields[fid] = inp.value;
+        }
+    });
+    return fields;
 }
 
 // OCR 进度显示状态
@@ -574,10 +627,7 @@ document.getElementById('btnAutoFill').addEventListener('click', function() {
     statusEl.innerHTML = '<i class="bi bi-hourglass-split"></i> 正在连接服务器...';
     statusEl.style.display = 'block';
 
-    const fields = {};
-    document.querySelectorAll('#fieldsContainer input[data-field]').forEach(inp => {
-        if (inp.value) fields[inp.dataset.field] = inp.value;
-    });
+    const fields = collectDocumentFields();
 
     fetch(`/expense/documents/api/reimbursements/${selectedRid}/documents/auto_fill`, {
         method: 'POST',
@@ -639,22 +689,7 @@ document.getElementById('btnAutoFill').addEventListener('click', function() {
 document.getElementById('btnSaveDoc').addEventListener('click', function() {
     if (!selectedRid || !selectedDocType) return;
     this.disabled = true;
-    const fields = {};
-    document.querySelectorAll('#fieldsContainer input[data-field]').forEach(inp => {
-        const fid = inp.dataset.field;
-        // 动态 item 行字段规范化：T0[x,y]_item_N → T0[x,y] (存为数组，只取单值简化)
-        // 多商品时仅保存第一个商品，后续可通过编辑多商品解决
-        const m = fid.match(/^(T\d+\[\d+,\d+\])_item_\d+$/);
-        if (m) {
-            const base = m[1]; // e.g. T0[3,1]
-            // 只存第一个 item（item_0）的值，多商品时覆盖即可
-            if (!fields[base] || fid.endsWith('_item_0')) {
-                fields[base] = inp.value;
-            }
-        } else {
-            fields[fid] = inp.value;
-        }
-    });
+    const fields = collectDocumentFields();
     fetch(`/expense/documents/api/reimbursements/${selectedRid}/documents`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},

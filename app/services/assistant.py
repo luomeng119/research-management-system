@@ -211,6 +211,7 @@ class AssistantService:
     def _audit_generation(
         self, *, run_id, actor_user_id, request_id, result, error_code=None,
         schema_valid=False, duration_ms=0, remote_input_confirmed=False,
+        input_token_count=None, output_token_count=None,
     ) -> None:
         with self.repository.engine.begin() as connection:
             self.audit_service.record(
@@ -227,8 +228,8 @@ class AssistantService:
                     "adapter_kind": self.provider.provider_kind,
                     "model_version": self.provider.model_version,
                     "prompt_version": PROMPT_VERSION,
-                    "input_token_count": None,
-                    "output_token_count": None,
+                    "input_token_count": input_token_count,
+                    "output_token_count": output_token_count,
                     "schema_valid": schema_valid,
                     "remote_input_confirmed": remote_input_confirmed,
                 },
@@ -285,12 +286,27 @@ class AssistantService:
 
         self.run_registry.start(run_id, actor_user_id)
         started = time.monotonic()
+        # Keep counts local to this invocation; a provider exception must not
+        # reuse metadata from a previous call on the same thread.
+        token_counts = {"inputTokens": None, "outputTokens": None}
         try:
             raw = self.provider.generate(
                 combined_source,
                 deadline_seconds=60,
                 cancel_check=lambda: self.run_registry.is_cancelled(run_id),
             )
+            # Production adapters provide thread-local usage; fixture providers
+            # keep unknown counts rather than audit shared state.
+            metadata = (
+                getattr(self.provider, "last_metadata", {})
+                if self.provider.provider_kind in {"DEEPSEEK", "LOCAL"} else {}
+            )
+            metadata = metadata if isinstance(metadata, dict) else {}
+            token_counts = {
+                key: value if type(value) is int and value >= 0 else None
+                for key in ("inputTokens", "outputTokens")
+                for value in (metadata.get(key),)
+            }
             if self.run_registry.is_cancelled(run_id):
                 raise AssistantServiceError("AI_CANCELLED", "助手运行已取消", 409)
             # Attachment text may contain quoted or hostile instructions.
@@ -340,8 +356,8 @@ class AssistantService:
                             "adapter_kind": self.provider.provider_kind,
                             "model_version": self.provider.model_version,
                             "prompt_version": PROMPT_VERSION,
-                            "input_token_count": None,
-                            "output_token_count": None,
+                            "input_token_count": token_counts["inputTokens"],
+                            "output_token_count": token_counts["outputTokens"],
                             "schema_valid": True,
                             "remote_input_confirmed": remote_input_confirmed,
                         },
@@ -355,6 +371,8 @@ class AssistantService:
                 self._best_effort_failure_audit(
                     run_id=run_id, actor_user_id=actor_user_id, request_id=request_id,
                     result="FAILURE", error_code=error.code,
+                    input_token_count=token_counts["inputTokens"],
+                    output_token_count=token_counts["outputTokens"],
                     remote_input_confirmed=remote_input_confirmed,
                     duration_ms=max(0, int((time.monotonic() - started) * 1000)),
                 )
@@ -364,6 +382,8 @@ class AssistantService:
             self._best_effort_failure_audit(
                 run_id=run_id, actor_user_id=actor_user_id, request_id=request_id,
                 result="FAILURE", error_code=error.code,
+                input_token_count=token_counts["inputTokens"],
+                output_token_count=token_counts["outputTokens"],
                 remote_input_confirmed=remote_input_confirmed,
                 duration_ms=max(0, int((time.monotonic() - started) * 1000)),
             )
@@ -376,6 +396,8 @@ class AssistantService:
                 self._best_effort_failure_audit(
                     run_id=run_id, actor_user_id=actor_user_id, request_id=request_id,
                     result="FAILURE", error_code=code,
+                    input_token_count=token_counts["inputTokens"],
+                    output_token_count=token_counts["outputTokens"],
                     remote_input_confirmed=remote_input_confirmed,
                     duration_ms=max(0, int((time.monotonic() - started) * 1000)),
                 )
@@ -385,6 +407,8 @@ class AssistantService:
             self._best_effort_failure_audit(
                 run_id=run_id, actor_user_id=actor_user_id, request_id=request_id,
                 result="FAILURE", error_code="AI_UNAVAILABLE",
+                input_token_count=token_counts["inputTokens"],
+                output_token_count=token_counts["outputTokens"],
                 remote_input_confirmed=remote_input_confirmed,
                 duration_ms=max(0, int((time.monotonic() - started) * 1000)),
             )

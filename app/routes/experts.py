@@ -139,7 +139,7 @@ def edit(expert_id):
             request_id=actor['request_id'],
         )
         
-        flash(f'更新成功', 'success')
+        flash('更新成功', 'success')
         return redirect(url_for('experts.index'))
     
     return render_template('experts/edit.html', expert=expert)
@@ -231,7 +231,6 @@ def export_selected_word():
     # 尝试生成 Word 文档
     try:
         from docx import Document
-        from docx.shared import Pt
         
         doc = Document()
         doc.add_heading('专家库导出', 0)
@@ -293,6 +292,8 @@ EXPERT_IMPORT_MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 
 
 def _xlsx_cell(value):
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.isoformat()
     if isinstance(value, str) and value.startswith(('=', '+', '-', '@')):
         return "'" + value
     return value
@@ -384,15 +385,6 @@ def import_preview():
                 else:
                     record[db_field] = ''
             processed.append(record)
-
-        valid = [r for r in processed if r.get('name', '').strip()]
-        skip = [r for r in processed if not r.get('name', '').strip()]
-
-        statistics = {
-            'total': len(processed),
-            'valid': len(valid),
-            'skip': len(skip),
-        }
 
         batch = _resources_service().create_expert_import_preview(
             source_name=file.filename,

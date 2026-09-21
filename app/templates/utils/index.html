@@ -1,21 +1,40 @@
 {% extends "base.html" %}
 
-{% block title %}辅助工具 - 科研管理系统{% endblock %}
+{% block title %}辅助工具 - 科研创新管理{% endblock %}
 
 {% block content %}
 <div class="container mt-4">
     <h2 class="mb-4"><i class="bi bi-tools"></i> 辅助工具</h2>
     
     <div class="row g-4">
-        <div class="col-md-4">
+        {% if config.get('AI_FEATURES_VISIBLE') %}<div class="col-md-4">
             <div class="card h-100" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(0,255,255,0.2);">
                 <div class="card-body">
                     <h5 class="card-title"><i class="bi bi-file-earmark-check text-info"></i> 文档校对</h5>
-                    <p class="card-text text-light">原有功能保留；V1 当前不启用本地模型，请先使用人工校对。</p>
-                    <button class="btn btn-outline-secondary" type="button" disabled>当前未启用</button>
+                    {% if config.get('AUXILIARY_AI_ENABLED', False) %}
+                    <p class="card-text text-light">使用本机模型校对文档或整理摘要，结果由您人工确认，原文件保持不变。</p>
+                    <a class="btn btn-outline-primary" href="/utils/document_correction">文档校对与摘要</a>
+                    {% else %}
+                    <p class="card-text text-light">当前交付的模型仅用于科研提案和报告工作流；文档校对请人工完成。</p>
+                    <button class="btn btn-outline-secondary" type="button" disabled>当前范围未启用</button>
+                    {% endif %}
                 </div>
             </div>
-        </div>
+        </div>{% endif %}
+        {% if config.get('AI_FEATURES_VISIBLE') and config.get('AI_PROVIDER', 'DISABLED')|upper == 'LOCAL' and session.get('role') == 'SYSTEM_MAINTAINER' %}
+        <div class="col-md-4"><div class="card h-100"><div class="card-body">
+          <h5 class="card-title">本地模型维护</h5><p>查看当前单模型配置和运行状态。</p>
+          <a class="btn btn-outline-primary" href="/utils/model_config">模型配置</a>
+          <a class="btn btn-outline-secondary" href="/utils/monitor">运行状态</a>
+        </div></div></div>
+        {% endif %}
+        {% if config.get('SENSITIVE_TERMS_AVAILABLE') and session.get('role') == 'SYSTEM_MAINTAINER' %}
+        <div class="col-md-4"><div class="card h-100"><div class="card-body">
+          <h5 class="card-title"><span class="badge text-bg-warning me-2">规则</span>敏感词库维护</h5>
+          <p>维护原词、符号或简拼代称和启用状态；每次确认保存形成新版本，历史版本可回看。</p>
+          <a class="btn btn-outline-primary" href="{{ url_for('sensitive_terms.manage') }}">进入敏感词库</a>
+        </div></div></div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

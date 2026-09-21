@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <title>系统介绍 - 科研创新管理</title>
+    <link href="/static/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/css/design-tokens.css" rel="stylesheet">
+    <link href="/static/css/leadership-intro.css" rel="stylesheet">
+</head>
+<body>
+<div class="intro-app" data-intro-app>
+    <header class="intro-topbar">
+        <a class="intro-brand" href="/system-intro" aria-label="科研创新管理系统介绍首页">
+            <img src="/static/brand/logo-reference.png" alt="科研机构 Logo">
+            <span><strong>科研创新与项目管理系统</strong><small>领导汇报 · 系统介绍</small></span>
+        </a>
+        <div class="intro-entry">
+            <span class="intro-entry-label">系统地址</span>
+            <code>http://127.0.0.1:8893/auth/login</code>
+            <a class="intro-primary-action" href="{{ '/' if session.get('user') else '/auth/login' }}">{{ '返回系统' if session.get('user') else '进入系统' }}</a>
+        </div>
+    </header>
+
+    <div class="intro-layout">
+        <aside class="intro-sidebar" aria-label="系统介绍目录">
+            <div class="intro-sidebar-heading"><span>CONTENTS</span><strong>汇报目录</strong></div>
+            <nav class="intro-nav" role="tablist" aria-orientation="vertical">
+                <button class="intro-nav-item is-active" type="button" role="tab" aria-selected="true" data-intro-target="overview"><span>01</span><b>系统总览</b><small>解决什么问题</small></button>
+                <button class="intro-nav-item" type="button" role="tab" aria-selected="false" data-intro-target="workflow"><span>02</span><b>执行流程</b><small>科研如何闭环</small></button>
+                <button class="intro-nav-item" type="button" role="tab" aria-selected="false" data-intro-target="features"><span>03</span><b>系统功能</b><small>六类核心能力</small></button>
+                <button class="intro-nav-item" type="button" role="tab" aria-selected="false" data-intro-target="data-flow"><span>04</span><b>数据流程</b><small>文档从哪来到哪去</small></button>
+                {% if config.get('AI_FEATURES_VISIBLE') %}<button class="intro-nav-item" type="button" role="tab" aria-selected="false" data-intro-target="local-ai"><span>05</span><b>本地 AI</b><small>入口与作用边界</small></button>{% endif %}
+                <button class="intro-nav-item" type="button" role="tab" aria-selected="false" data-intro-target="architecture"><span>06</span><b>系统架构</b><small>本地如何运行</small></button>
+                <button class="intro-nav-item" type="button" role="tab" aria-selected="false" data-intro-target="delivery"><span>07</span><b>交付结果</b><small>最终形成什么</small></button>
+            </nav>
+            <div class="intro-sidebar-status"><i aria-hidden="true"></i><span><strong>本地运行</strong><small>{% if config.get('AI_FEATURES_VISIBLE') %}数据与模型均在本机{% else %}业务数据保存在本机{% endif %}</small></span></div>
+        </aside>
+
+        <main class="intro-content" aria-live="polite">
+            <section class="intro-section is-active" role="tabpanel" data-intro-section="overview" aria-labelledby="intro-overview-title">
+                <div class="intro-section-heading"><div><span class="intro-kicker">01 · SYSTEM OVERVIEW</span><h1 id="intro-overview-title">把科研工作从“分散材料”变成“可追溯成果”</h1><p>围绕一个真实科研项目，将提案、论证、执行、资料与报告放进同一条业务主线。</p></div><span class="intro-page-no">01</span></div>
+                <figure class="intro-diagram intro-overview-diagram" aria-label="科研管理闭环总览图">
+                    <div class="overview-core"><span>一个科研项目</span><strong>全过程管理</strong><small>一套数据 · 一条主线 · 多个版本</small></div>
+                    <div class="overview-ring">
+                        <div class="overview-node n1"><i>01</i><b>科研想法</b><small>形成提案</small></div>
+                        <div class="overview-node n2"><i>02</i><b>论证立项</b><small>形成决策</small></div>
+                        <div class="overview-node n3"><i>03</i><b>项目执行</b><small>记录过程</small></div>
+                        <div class="overview-node n4"><i>04</i><b>成果报告</b><small>版本交付</small></div>
+                    </div>
+                </figure>
+                <div class="intro-key-points"><article><span>01</span><b>全过程留痕</b><p>关键操作、资料和版本可查。</p></article><article><span>02</span><b>业务数据统一</b><p>项目、专家、设备、标准相互关联。</p></article><article><span>03</span><b>成果可持续完善</b><p>报告按版本迭代，历史内容可回看。</p></article></div>
+            </section>
+
+            <section class="intro-section" role="tabpanel" data-intro-section="workflow" aria-labelledby="intro-workflow-title" hidden>
+                <div class="intro-section-heading"><div><span class="intro-kicker">02 · RESEARCH WORKFLOW</span><h1 id="intro-workflow-title">一条从提案到报告的科研执行流程</h1><p>每一步都有输入、动作和结果，下一步承接上一步形成的真实业务数据。</p></div><span class="intro-page-no">02</span></div>
+                <figure class="intro-diagram flow-diagram" aria-label="科研项目执行流程图">
+                    <div class="flow-track">
+                        <div class="flow-node"><span>01</span><b>提案申报</b><small>想法 · 目标 · 附件</small></div><i aria-hidden="true">→</i>
+                        <div class="flow-node"><span>02</span><b>预研论证</b><small>评审 · 意见 · 决策</small></div><i aria-hidden="true">→</i>
+                        <div class="flow-node"><span>03</span><b>科研立项</b><small>任务 · 负责人 · 资源</small></div><i aria-hidden="true">→</i>
+                        <div class="flow-node"><span>04</span><b>实施管理</b><small>进度 · 变更 · 成果</small></div><i aria-hidden="true">→</i>
+                        <div class="flow-node flow-node-accent"><span>05</span><b>报告交付</b><small>整合 · 版本 · 导出</small></div>
+                    </div>
+                    <div class="flow-support"><span>全程支撑</span><b>专家库</b><b>科研设备</b><b>标准模板</b>{% if config.get('AI_FEATURES_VISIBLE') %}<b>本地 AI</b>{% endif %}<b>操作审计</b></div>
+                </figure>
+                <div class="intro-callout"><strong>现场演示主线</strong><span>登录 → 打开真实科研项目 → 查看资料与过程 → 生成/完善报告 → 导出 Word</span></div>
+            </section>
+
+            <section class="intro-section" role="tabpanel" data-intro-section="features" aria-labelledby="intro-features-title" hidden>
+                <div class="intro-section-heading"><div><span class="intro-kicker">03 · CORE CAPABILITIES</span><h1 id="intro-features-title">六类功能支撑完整科研管理</h1><p>以项目为核心组织业务，避免资料、人员和成果散落在多个工具中。</p></div><span class="intro-page-no">03</span></div>
+                <figure class="intro-diagram feature-map" aria-label="系统核心功能关系图">
+                    <div class="feature-center"><span>科研项目</span><strong>统一工作空间</strong></div>
+                    <article class="f1"><i>01</i><b>提案与论证</b><small>申报、评审、立项</small></article>
+                    <article class="f2"><i>02</i><b>实施与变更</b><small>进度、成果、结项</small></article>
+                    <article class="f3"><i>03</i><b>资料与文件</b><small>上传、预览、版本</small></article>
+                    <article class="f4"><i>04</i><b>专家与资源</b><small>专家、设备、单位</small></article>
+                    <article class="f5"><i>05</i><b>报告与导出</b><small>整合、修订、Word</small></article>
+                    <article class="f6"><i>06</i><b>安全与审计</b><small>权限、脱敏、日志</small></article>
+                </figure>
+            </section>
+
+            <section class="intro-section" role="tabpanel" data-intro-section="data-flow" aria-labelledby="intro-data-flow-title" hidden>
+                <div class="intro-section-heading"><div><span class="intro-kicker">04 · DOCUMENT DATA FLOW</span><h1 id="intro-data-flow-title">文档从进入系统到形成成果的完整来龙去脉</h1><p>数据以文档为主线，经过入库、关联、加工和版本化输出；删除只解除业务关联，历史版本和审计记录仍可追溯。</p></div><span class="intro-page-no">04</span></div>
+                <figure class="intro-diagram document-flow-diagram" aria-label="科研文档数据流程分类图">
+                    <div class="document-flow-track" aria-label="文档主流程">
+                        <div><span>01</span><b>文档来源</b><small>上传与业务生成</small></div><i>→</i>
+                        <div><span>02</span><b>入库关联</b><small>项目与固定版本</small></div><i>→</i>
+                        <div><span>03</span><b>加工操作</b><small>编辑、合并与删除</small></div><i>→</i>
+                        <div><span>04</span><b>版本输出</b><small>报告、DOCX 与审计</small></div>
+                    </div>
+                    <div class="document-flow-groups">
+                        <article><span class="document-flow-tag">A · 资料来源</span><b>文档怎么来</b><ul><li>提案、项目上传文件或文件夹</li><li>标准法规、通用模板和图片资料</li><li>论证、进展、变更、成果等业务记录</li></ul></article>
+                        <article><span class="document-flow-tag">B · 入库与关联</span><b>文档放到哪里</b><ul><li>进入项目资料库并绑定项目</li><li>同名更新形成新文件版本</li><li>报告选用时固定文件编号、版本与校验值</li></ul></article>
+                        <article class="document-flow-operations"><span class="document-flow-tag">C · 文档操作</span><b>文档怎么处理</b><div><em>插入</em><small>上传资料、加入报告来源</small><em>编辑</em><small>人工修改正文并保存新版本</small><em>合并</em><small>多份资料整合成待确认草稿</small><em>删除</em><small>受控移除文件或目录关联</small></div></article>
+                        <article><span class="document-flow-tag">D · 版本与输出</span><b>文档最终到哪去</b><ul><li>资料来源、词库快照与历史版本</li><li>人工确认后的科研报告版本</li><li>DOCX 下载、项目资料库与操作审计</li></ul></article>
+                    </div>
+                </figure>
+            </section>
+
+            {% if config.get('AI_FEATURES_VISIBLE') %}<section class="intro-section" role="tabpanel" data-intro-section="local-ai" aria-labelledby="intro-ai-title" hidden>
+                <div class="intro-section-heading"><div><span class="intro-kicker">05 · LOCAL MULTIMODAL AI</span><h1 id="intro-ai-title">AI 有明确入口，只在三类业务动作中发挥作用</h1><p>当前模型为 Qwen3.5-9B Q8。系统中的 AI 按钮统一显示“AI”标识，生成结果必须经过人工选择或确认。</p></div><span class="intro-page-no">05</span></div>
+                <figure class="intro-diagram ai-boundary" aria-label="本地AI作用边界图">
+                    <div class="ai-inputs"><span>系统中的 AI 入口</span><b>AI 提案助手</b><b>AI 整合报告草稿</b><b>AI 选区措辞建议</b></div>
+                    <div class="ai-engine"><i></i><small>本地多模态模型</small><strong>Qwen3.5-9B Q8</strong><em>llama.cpp · 单模型驻留</em></div>
+                    <div class="ai-outputs"><span>AI 产生的辅助结果</span><b>提案字段建议</b><b>图片理解与多资料整合</b><b>1—3 条文字替换建议</b></div>
+                    <div class="ai-confirm"><span>人工确认</span><strong>采用 · 修改 · 定稿 · 导出</strong></div>
+                </figure>
+                <div class="boundary-grid"><article class="boundary-do"><b>AI 发挥作用</b><p>图片理解、多资料整合、报告草拟、选词建议。</p></article><article><b>敏感词库可维护</b><p>入口：辅助工具 → 敏感词库维护。原词与代称按版本维护。</p></article><article><b>程序与人员负责</b><p>程序执行替换、版本和审计；人员核对并确认成果。</p></article></div>
+            </section>{% endif %}
+
+            <section class="intro-section" role="tabpanel" data-intro-section="architecture" aria-labelledby="intro-architecture-title" hidden>
+                <div class="intro-section-heading"><div><span class="intro-kicker">06 · SYSTEM ARCHITECTURE</span><h1 id="intro-architecture-title">全部能力在本机形成闭环</h1><p>{% if config.get('AI_FEATURES_VISIBLE') %}页面、业务服务、关系型数据库、文件和模型均在当前 Mac 运行，现场演示无需外网。{% else %}页面、业务服务、关系型数据库和文件均在当前 Mac 运行，现场演示无需外网。{% endif %}</p></div><span class="intro-page-no">06</span></div>
+                <figure class="intro-diagram architecture-diagram" aria-label="本地部署系统架构图">
+                    <div class="arch-boundary-label"><i></i>当前 Mac · 本地运行边界</div>
+                    <div class="arch-layer arch-browser"><span>访问层</span><strong>浏览器页面</strong><small>127.0.0.1:8893</small></div>
+                    <div class="arch-connector">↓</div>
+                    <div class="arch-layer arch-app"><span>应用层</span><strong>Flask / Waitress</strong><small>业务流程 · 权限 · 版本 · 导出</small></div>
+                    <div class="arch-split"><i>↙</i><i>↘</i></div>
+                    <div class="arch-bottom"><div class="arch-layer"><span>数据层</span><strong>PostgreSQL</strong><small>项目数据 · 审计记录</small></div>{% if config.get('AI_FEATURES_VISIBLE') %}<div class="arch-layer"><span>智能层</span><strong>Qwen3.5-9B</strong><small>文本 + 图片 · 本地推理</small></div>{% endif %}<div class="arch-layer"><span>文件层</span><strong>本地文件库</strong><small>附件 · 报告 · 版本</small></div></div>
+                </figure>
+                <div class="intro-key-points compact"><article><b>本地可控</b><p>现场不调用外部云服务。</p></article>{% if config.get('AI_FEATURES_VISIBLE') %}<article><b>单模型驻留</b><p>避免多个模型同时占用内存。</p></article>{% endif %}<article><b>关系数据</b><p>项目、人员、资料关系清晰。</p></article></div>
+            </section>
+
+            <section class="intro-section" role="tabpanel" data-intro-section="delivery" aria-labelledby="intro-delivery-title" hidden>
+                <div class="intro-section-heading"><div><span class="intro-kicker">07 · FINAL DELIVERY</span><h1 id="intro-delivery-title">最终交付的是可继续完善的科研成果</h1><p>系统把过程材料沉淀为有来源、有版本、可导出的正式报告。</p></div><span class="intro-page-no">07</span></div>
+                <figure class="intro-diagram delivery-diagram" aria-label="科研报告形成与版本交付图">
+                    <div class="delivery-source"><span>多方资料</span><b>项目文档</b><b>图片与数据</b><b>标准与模板</b><b>过程记录</b></div>
+                    <div class="delivery-funnel"><i></i><strong>整合与校核</strong><small>{% if config.get('AI_FEATURES_VISIBLE') %}本地 AI 辅助 + 人工确认{% else %}人工整理 + 版本确认{% endif %}</small></div>
+                    <div class="delivery-versions"><span>科研报告</span><div><b>V1</b><small>初稿</small></div><i>→</i><div><b>V2</b><small>修订</small></div><i>→</i><div class="current"><b>V3</b><small>定稿</small></div></div>
+                </figure>
+                <div class="delivery-results"><span>可验收结果</span><b>来源可追溯</b><b>敏感内容已处理</b><b>版本可回看</b><b>Word 可下载</b></div>
+            </section>
+
+            <footer class="intro-footer">
+                <span data-intro-progress>01 / {{ '07' if config.get('AI_FEATURES_VISIBLE') else '06' }}</span>
+                <div><button type="button" data-intro-prev disabled>上一项</button><button type="button" data-intro-next>下一项</button></div>
+            </footer>
+        </main>
+    </div>
+</div>
+<script src="/static/js/leadership-intro.js"></script>
+</body>
+</html>

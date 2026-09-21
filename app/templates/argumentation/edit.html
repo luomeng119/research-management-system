@@ -692,7 +692,7 @@ function generateWord() {
     var template = [];
     document.querySelectorAll('.chapter-section').forEach(function(chEl) {
         var chTitleEl = chEl.querySelector('.chapter-title');
-        var chId = chTitleEl ? chTitleEl.dataset.id : '';
+        var chId = chEl.dataset.chapterId;
         var chTitle = chTitleEl ? chTitleEl.childNodes[0].textContent.trim() : '';
         
         var subChapters = [];

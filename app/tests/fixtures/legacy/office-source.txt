@@ -1,0 +1,2 @@
+Legacy Office attachment compatibility fixture.
+Research idea: record and preserve the original attachment.

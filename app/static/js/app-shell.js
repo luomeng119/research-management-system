@@ -6,6 +6,7 @@
 
     var path = window.location.pathname;
     var pageMap = [
+        { key: 'tools', label: '敏感词库维护', match: function (value) { return value.indexOf('/admin/sensitive-terms') === 0; } },
         { key: 'proposals', label: '科研提案', match: function (value) { return value.indexOf('/proposals') === 0; } },
         { key: 'experts', label: '专家库', match: function (value) { return value.indexOf('/experts') === 0; } },
         { key: 'resources', label: '科研资源', match: function (value) { return value.indexOf('/equipment') === 0 || value.indexOf('/standards') === 0 || value.indexOf('/templates') === 0 || value.indexOf('/host_devices') === 0 || value.indexOf('/research_units') === 0; } },
@@ -15,7 +16,12 @@
     ];
 
     var currentPage = pageMap.find(function (item) { return item.match(path); }) || pageMap[5];
-    var activeNav = document.querySelector('[data-primary-nav="' + currentPage.key + '"]');
+    if (path === '/research-reports' || path.indexOf('/research-reports/') === 0) {
+        var reportOwner = document.querySelector('[data-report-object-type]');
+        var ownerType = reportOwner ? reportOwner.getAttribute('data-report-object-type') : '';
+        currentPage = { key: ownerType === 'PROPOSAL' ? 'proposals' : (ownerType === 'PROJECT' ? 'projects' : null), label: '科研报告' };
+    }
+    var activeNav = currentPage.key ? document.querySelector('[data-primary-nav="' + currentPage.key + '"]') : null;
     if (activeNav) {
         activeNav.classList.add('active');
         activeNav.setAttribute('aria-current', 'page');
@@ -51,7 +57,7 @@
     var directoryToggle = document.getElementById('directoryToggle');
     var directorySidebar = document.getElementById('sidebar');
     var resizer = document.getElementById('resizer');
-    if (sessionStorage.getItem('directoryCollapsed') === 'true') appShell.classList.add('directory-collapsed');
+    if (sessionStorage.getItem('directoryCollapsed') !== 'false') appShell.classList.add('directory-collapsed');
 
     function syncDirectoryControl() {
         if (!directoryToggle) return;
@@ -146,10 +152,17 @@
 
     function highlightTree() {
         document.querySelectorAll('.tree-link').forEach(function (control) {
+            control.classList.remove('active');
+            if (path.indexOf('/expense') === 0 && control.dataset.id.indexOf('expense-') === 0) {
+                var expenseId = path === '/expense/records' ? (window.location.hash === '#expense-upload' ? 'expense-upload' : 'expense-records') : (path === '/expense/approvals' ? 'expense-fill' : 'expense-assistant');
+                control.classList.toggle('active', control.dataset.id === expenseId);
+                return;
+            }
             var url = control.dataset.url;
             if (url && (url === path || (url !== '/' && path.indexOf(url + '/') === 0))) control.classList.add('active');
         });
     }
+    window.addEventListener('hashchange', highlightTree);
 
     function showTreeError(message) {
         var loading = document.getElementById('treeLoading');

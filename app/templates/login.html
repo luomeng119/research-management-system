@@ -1,103 +1,71 @@
 {% extends "base.html" %}
 
-{% block title %}登录 - 科研管理系统{% endblock %}
+{% block title %}登录 - 科研创新管理{% endblock %}
 
 {% block login_content %}
 <style>
-.login-bg {
-    background: linear-gradient(135deg, #0a0a1a 0%, #1a1a2e 50%, #16213e 100%);
-    min-height: 100vh;
-    position: relative;
-    overflow: hidden;
-}
-.login-bg::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: 
-        radial-gradient(ellipse at 20% 80%, rgba(0, 255, 255, 0.1) 0%, transparent 50%),
-        radial-gradient(ellipse at 80% 20%, rgba(0, 100, 255, 0.1) 0%, transparent 50%),
-        radial-gradient(ellipse at 50% 50%, rgba(128, 0, 255, 0.05) 0%, transparent 70%);
-    animation: pulse 8s ease-in-out infinite;
-}
-.login-bg::after {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background-image: 
-        linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
-    background-size: 50px 50px;
-    animation: gridMove 20s linear infinite;
-}
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
-@keyframes gridMove { 0% { transform: translate(0, 0); } 100% { transform: translate(50px, 50px); } }
-.login-container { position: relative; z-index: 1; padding-top: 80px; }
-.login-card {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(0, 255, 255, 0.2);
-    border-radius: 15px;
-}
-.login-title {
-    font-size: 1.8rem;
-    color: #fff;
-    text-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
-}
-.form-label { color: #ccc; }
-.form-control {
-    background: rgba(255, 255, 255, 0.1);
-    border: 1px solid rgba(0, 255, 255, 0.3);
-    color: #fff;
-}
-.form-control:focus {
-    background: rgba(255, 255, 255, 0.15);
-    border-color: rgba(0, 255, 255, 0.6);
-    color: #fff;
-    box-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
-}
-.form-control::placeholder { color: rgba(255, 255, 255, 0.5); }
-.login-btn {
-    background: linear-gradient(90deg, #00ffff, #0088ff);
-    border: none;
-    color: #000;
-    font-weight: bold;
-}
-.login-btn:hover {
-    background: linear-gradient(90deg, #00cccc, #0066cc);
-    box-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
-}
-.register-link { color: #00ffff; }
-.register-link:hover { color: #66ffff; text-decoration: none; }
+html { min-width: 0; }
+body { background: #F3F6F4; }
+.login-page { min-height: 100vh; display: grid; grid-template-rows: auto 1fr; color: #102A43; background: radial-gradient(circle at 14% 18%, rgba(11,111,107,.10), transparent 28%), #F3F6F4; }
+.login-header { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 32px; }
+.login-brand { display: flex; align-items: center; gap: 11px; color: #102A43; text-decoration: none; }
+.login-brand img { width: 44px; height: 44px; object-fit: contain; }
+.login-brand span { display: grid; }
+.login-brand strong { font-size: 15px; }
+.login-brand small { color: #667A76; font-size: 9px; font-weight: 700; letter-spacing: .14em; }
+.login-about { min-height: 38px; display: inline-flex; align-items: center; gap: 8px; padding: 0 15px; color: #0B6F6B; background: #FFF; border: 1px solid #CEDBD8; border-radius: 8px; font-size: 13px; font-weight: 750; text-decoration: none; }
+.login-about:hover { color: #075854; border-color: #0B6F6B; }
+.login-main { width: 100%; max-width: 1160px; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(360px, .75fr); align-self: center; margin: auto; padding: 34px 28px 58px; }
+.login-story { min-height: 600px; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; position: relative; padding: 58px 52px 42px; color: #FFF; background: linear-gradient(145deg, #102A43, #154E5A); border-radius: 22px 0 0 22px; box-shadow: 0 28px 80px rgba(16,42,67,.18); }
+.login-story::before { content: ""; width: 390px; height: 390px; position: absolute; right: -165px; top: -170px; border: 1px solid rgba(255,255,255,.13); border-radius: 50%; box-shadow: 0 0 0 55px rgba(255,255,255,.025), 0 0 0 110px rgba(255,255,255,.018); }
+.login-story-copy { position: relative; z-index: 1; }
+.login-eyebrow { color: #68C5B9; font-size: 11px; font-weight: 800; letter-spacing: .15em; }
+.login-story h1 { max-width: 10em; margin: 13px 0 17px; font-size: clamp(34px, 4vw, 52px); line-height: 1.18; letter-spacing: -.04em; }
+.login-story p { max-width: 31em; margin: 0; color: #C5D9D6; line-height: 1.8; }
+.login-flow { display: grid; grid-template-columns: repeat(4, 1fr); align-items: center; position: relative; z-index: 1; margin-top: 48px; }
+.login-flow::before { content: ""; height: 1px; position: absolute; left: 8%; right: 8%; top: 18px; background: rgba(180,219,214,.35); }
+.login-step { display: grid; justify-items: center; position: relative; text-align: center; }
+.login-step span { width: 37px; height: 37px; display: grid; place-items: center; z-index: 1; color: #E8BC6B; background: #163D50; border: 1px solid rgba(232,188,107,.6); border-radius: 50%; font-size: 11px; font-weight: 900; }
+.login-step b { margin-top: 12px; font-size: 12px; }.login-step small { margin-top: 3px; color: #8FB2AD; font-size: 10px; }
+.login-local { display: flex; align-items: center; gap: 10px; position: relative; z-index: 1; padding-top: 26px; border-top: 1px solid rgba(255,255,255,.12); }
+.login-local i { width: 9px; height: 9px; background: #57D59B; border-radius: 50%; box-shadow: 0 0 0 5px rgba(87,213,155,.12); }
+.login-local span { display: grid; }.login-local strong { font-size: 12px; }.login-local small { color: #90ADA9; font-size: 10px; }
+.login-panel { min-height: 600px; display: grid; align-items: center; padding: 54px; background: #FFF; border: 1px solid #D6E1DF; border-left: 0; border-radius: 0 22px 22px 0; box-shadow: 25px 28px 80px rgba(16,42,67,.10); }
+.login-card { width: 100%; max-width: 340px; margin: auto; }
+.login-card-heading span { color: #0B6F6B; font-size: 10px; font-weight: 850; letter-spacing: .14em; }
+.login-card h2 { margin: 7px 0 8px; color: #102A43; font-size: 27px; letter-spacing: -.025em; }
+.login-hint { margin: 0 0 27px; color: #667A76; font-size: 13px; }
+.login-card .form-label { margin-bottom: 7px; color: #273F52; font-size: 12px; font-weight: 750; }
+.login-card .form-control { min-height: 48px; padding: 10px 13px; color: #102A43; background: #FAFCFB; border: 1px solid #C9D7D4; border-radius: 8px; }
+.login-card .form-control:focus { background: #FFF; border-color: #0B6F6B; box-shadow: 0 0 0 3px rgba(11,111,107,.11); }
+.login-btn { min-height: 48px; margin-top: 8px; color: #FFF; background: #0B6F6B; border: 1px solid #0B6F6B; border-radius: 8px; font-weight: 800; }
+.login-btn:hover, .login-btn:focus-visible, .login-btn:active { color: #FFF; background: #075854; border-color: #075854; }
+.login-help { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 20px; padding-top: 18px; border-top: 1px solid #E5ECEA; color: #758783; font-size: 11px; }
+.login-help a { color: #0B6F6B; font-weight: 750; text-decoration: none; }
+.login-card .alert { padding: 10px 12px; font-size: 12px; border-radius: 8px; }
 </style>
-<div class="login-bg">
-    <div class="container login-container">
-        <div class="row justify-content-center">
-            <div class="col-md-4">
-                <div class="card login-card shadow">
-                    <div class="card-body p-4">
-                        <h3 class="text-center mb-4 login-title">科研管理系统</h3>
-                        {% with messages = get_flashed_messages(with_categories=true) %}
-                        {% for category, message in messages %}
-                        <div class="alert alert-{{ 'danger' if category == 'error' else category }}">{{ message }}</div>
-                        {% endfor %}
-                        {% endwith %}
-                        <form method="POST">
-                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                            <div class="mb-3">
-                                <label class="form-label">用户名</label>
-                                <input type="text" name="username" class="form-control" required autofocus>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">密码</label>
-                                <input type="password" name="password" class="form-control" required>
-                            </div>
-                            <button type="submit" class="btn login-btn w-100">登录</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        </div>
+<main class="login-page">
+    <header class="login-header">
+        <a class="login-brand" href="/auth/login"><img src="/static/brand/logo-reference.png" alt="科研机构 Logo"><span><strong>科研创新管理</strong><small>RESEARCH WORKSPACE</small></span></a>
+        <a class="login-about" href="/system-intro"><span aria-hidden="true">◎</span>了解系统</a>
+    </header>
+    <div class="login-main">
+        <section class="login-story" aria-labelledby="login-product-title">
+            <div class="login-story-copy"><span class="login-eyebrow">LOCAL RESEARCH MANAGEMENT</span><h1 id="login-product-title">让科研过程清楚，成果可持续完善</h1><p>围绕真实科研项目，统一管理提案、论证、实施资料与版本化报告。</p></div>
+            <div class="login-flow" aria-label="科研业务主线"><div class="login-step"><span>01</span><b>科研提案</b><small>形成想法</small></div><div class="login-step"><span>02</span><b>论证立项</b><small>形成决策</small></div><div class="login-step"><span>03</span><b>项目实施</b><small>沉淀过程</small></div><div class="login-step"><span>04</span><b>成果报告</b><small>版本交付</small></div></div>
+            <div class="login-local"><i aria-hidden="true"></i><span><strong>本地安全运行</strong><small>{% if config.get('AI_FEATURES_VISIBLE') %}业务数据与 AI 模型均在当前电脑{% else %}业务数据在当前电脑安全运行{% endif %}</small></span></div>
+        </section>
+        <section class="login-panel" aria-labelledby="login-form-title"><div class="login-card">
+            <div class="login-card-heading"><span>SECURE ACCESS</span><h2 id="login-form-title">登录工作空间</h2><p class="login-hint">输入系统账号，继续科研项目工作。</p></div>
+            {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="alert alert-{{ 'danger' if category == 'error' else category }}" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
+            <form method="POST">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                <div class="mb-3"><label class="form-label" for="login-username">用户名</label><input id="login-username" type="text" name="username" autocomplete="username" class="form-control" required autofocus></div>
+                <div class="mb-3"><label class="form-label" for="login-password">密码</label><input id="login-password" type="password" name="password" autocomplete="current-password" class="form-control" required></div>
+                <button type="submit" class="btn login-btn w-100">进入系统</button>
+            </form>
+            <div class="login-help"><span>仅限授权用户使用</span><a href="/system-intro">查看系统介绍 →</a></div>
+        </div></section>
     </div>
-</div>
+</main>
 {% endblock %}

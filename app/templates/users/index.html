@@ -28,8 +28,8 @@
                     <tr>
                         <td>{{ u['username'] }}</td>
                         <td>{{ u['name'] }}</td>
-                        <td>{{ u['created_at'] }}</td>
-                        <td><span class="badge bg-warning">待审核</span></td>
+                        <td>{% if u['created_at'] %}<time title="{{ u['created_at'] }}">{{ u['created_at'].strftime('%Y-%m-%d %H:%M') if u['created_at'].strftime is defined else u['created_at'] }}</time>{% else %}未记录{% endif %}</td>
+                        <td><span class="badge bg-warning" title="pending">待审核</span></td>
                         <td>
                             <button class="btn btn-sm btn-success" onclick="approveUser('{{ u['username'] }}')">通过</button>
                             <button class="btn btn-sm btn-danger" onclick="rejectUser('{{ u['username'] }}')">拒绝</button>
@@ -70,17 +70,20 @@
                     <tr>
                         <td>{{ u['username'] }}</td>
                         <td>{{ u['name'] }}</td>
-                        <td><span class="badge bg-{{ 'primary' if u['role']=='SYSTEM_MAINTAINER' else 'secondary' }}">{{ u['role'] }}</span></td>
+                        <td><span class="badge bg-{{ 'primary' if u['role']=='SYSTEM_MAINTAINER' else 'secondary' }}" title="{{ {'SYSTEM_MAINTAINER': '管理员', 'BUSINESS_USER': '业务用户'}.get(u['role'], '未识别') }}">{{ {'SYSTEM_MAINTAINER': '管理员', 'BUSINESS_USER': '业务用户'}.get(u['role'], '未识别') }}</span></td>
                         <td>
                             <a href="{{ url_for('users.permissions', username=u['username']) }}" class="btn btn-sm btn-outline-primary">
                                 <i class="bi bi-gear"></i> 设置
                             </a>
                         </td>
-                        <td>{{ u['created_at'] }}</td>
-                        <td><span class="badge bg-{{ 'success' if u['status']=='active' else 'secondary' }}">{{ u['status'] }}</span></td>
+                        <td>{% if u['created_at'] %}<time title="{{ u['created_at'] }}">{{ u['created_at'].strftime('%Y-%m-%d %H:%M') if u['created_at'].strftime is defined else u['created_at'] }}</time>{% else %}未记录{% endif %}</td>
+                        <td><span class="badge bg-{{ 'success' if u['status']=='active' else 'secondary' }}" title="{{ u['status'] }}">{{ {'active': '已启用', 'disabled': '已停用'}.get(u['status'], u['status']) }}</span></td>
                         <td>
-                            {% if u['username'] != session.get('user') %}
-                            <button class="btn btn-sm btn-outline-danger" onclick="deleteUser('{{ u['username'] }}')">删除</button>
+                            {% if u['status'] == 'disabled' %}
+                            <button class="btn btn-sm btn-success" onclick="approveUser('{{ u['username'] }}', true)">启用</button>
+                            <button class="btn btn-sm btn-outline-secondary" disabled>已停用</button>
+                            {% elif u['username'] != session.get('user') %}
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteUser('{{ u['username'] }}')">停用</button>
                             {% else %}
                             <span class="text-muted">当前用户</span>
                             {% endif %}
@@ -95,8 +98,8 @@
 </div>
 
 <script>
-function approveUser(username) {
-    if (confirm('确定通过 ' + username + ' 的注册申请？')) {
+function approveUser(username, restoring = false) {
+    if (confirm(restoring ? '确定启用账号 ' + username + '？' : '确定通过 ' + username + ' 的注册申请？')) {
         fetch('/users/approve/' + username, { method: 'POST' })
             .then(r => r.json())
             .then(data => {
@@ -105,7 +108,8 @@ function approveUser(username) {
                 } else {
                     alert(data.message);
                 }
-            });
+            })
+            .catch(() => alert('账号操作未完成，请稍后重试'));
     }
 }
 
@@ -119,12 +123,13 @@ function rejectUser(username) {
                 } else {
                     alert(data.message);
                 }
-            });
+            })
+            .catch(() => alert('拒绝申请未完成，请稍后重试'));
     }
 }
 
 function deleteUser(username) {
-    if (confirm('确定删除用户 ' + username + '？')) {
+    if (confirm('确定停用账号 ' + username + '？')) {
         fetch('/users/delete/' + username, { method: 'POST' })
             .then(r => r.json())
             .then(data => {
@@ -133,7 +138,8 @@ function deleteUser(username) {
                 } else {
                     alert(data.message);
                 }
-            });
+            })
+            .catch(() => alert('停用账号未完成，请稍后重试'));
     }
 }
 </script>

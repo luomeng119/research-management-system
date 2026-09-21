@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}本地模型设置 - 科研创新管理{% endblock %}
+{% block content %}
+<style>
+.model-settings { max-width: 980px; }
+.model-card { border: 1px solid var(--bs-border-color, #dee2e6); }
+.model-card.model-ready { border-color: #198754; background: #eef8f1; }
+.model-card.model-selected { outline: 2px solid #0b5d59; outline-offset: 3px; }
+.model-runtime-metrics dd { overflow-wrap: anywhere; }
+</style>
+<main class="container py-4 model-settings">
+  <a href="/utils" class="btn btn-outline-secondary btn-sm mb-3">返回辅助工具</a>
+  <h1 class="h2">本地模型设置</h1>
+  <p>当前系统只允许加载Qwen3.5-9B；DeepSeek API 已关闭。</p>
+  <fieldset class="mb-4"><legend class="h5">选择本地模型</legend>
+    <p class="text-muted">选择不会自动加载。绿色只表示已通过健康及模型身份核验的当前模型。</p>
+    <div class="row g-3">
+    {% for identifier, name in [('qwen3.5-9b-q8','Qwen3.5-9B Q8')] %}
+      <div class="col-md-6"><article id="card-{{ identifier }}" class="card h-100 model-card"><div class="card-body">
+        <div class="form-check"><input id="choice-{{ identifier }}" class="form-check-input" type="radio" name="localModel" value="{{ identifier }}" disabled><label id="name-{{ identifier }}" class="form-check-label fw-semibold" for="choice-{{ identifier }}">{{ name }}</label></div>
+        <p id="availability-{{ identifier }}" class="small mt-2 mb-1">正在读取安装状态…</p>
+        <p id="state-{{ identifier }}" class="small mb-0">尚未核验</p>
+      </div></article></div>
+    {% endfor %}
+    </div>
+  </fieldset>
+  <div class="d-flex flex-wrap gap-2 mb-3">
+    <button id="loadModel" type="button" class="btn btn-primary" disabled>加载所选模型</button>
+    <button id="unloadModel" type="button" class="btn btn-outline-secondary" disabled>卸载当前模型</button>
+    <button id="refreshModelStatus" type="button" class="btn btn-outline-secondary">刷新状态</button>
+  </div>
+  <p id="modelActionMessage" role="status" aria-live="polite"></p>
+  <section aria-labelledby="runtime-heading" class="card"><div class="card-body">
+    <h2 id="runtime-heading" class="h5">实际运行状态</h2>
+    <p id="modelRuntimeStatus" class="fw-semibold" role="status" aria-live="polite">正在读取状态…</p>
+    <p id="modelRuntimeDetails"></p>
+    <dl class="model-runtime-metrics"><dt>当前模型</dt><dd id="currentModel">未确认</dd><dt>推理能力</dt><dd id="modelCapability">尚未核验</dd><dt>引擎地址</dt><dd id="modelEndpoint">未确认</dd><dt>模型进程内存</dt><dd id="processMemory">未采样</dd><dt>系统内存</dt><dd id="systemMemory">未采样</dd><dt>最近状态读取</dt><dd id="modelCheckedAt">尚未读取</dd></dl>
+    <p class="small text-muted mb-0">内存数值来自运行器实际采样，未提供的数据明确显示“未采样”。加载和卸载期间请等待；失败后先核对实际状态，再重试。</p>
+  </div></section>
+</main>
+<script>
+// BEGIN local model controls
+(() => {
+ const ids=['qwen3.5-9b-q8'];
+ const byId=id=>document.getElementById(id);
+ const radios=ids.map(id=>byId('choice-'+id));
+ const load=byId('loadModel'), unload=byId('unloadModel'), refreshButton=byId('refreshModelStatus');
+ const status=byId('modelRuntimeStatus'), details=byId('modelRuntimeDetails'), message=byId('modelActionMessage');
+ const errors={MODEL_BUSY:'模型正在推理或切换，请等待当前任务结束后重试。',MODEL_NOT_AVAILABLE:'模型尚未安装完成或尚未通过校验，暂不能加载。',IDENTITY_MISMATCH:'模型身份核验未通过，请核对实际状态。',RUNTIME_UNAVAILABLE:'运行器暂不可用，请刷新状态后重试。',MODEL_OPERATION_FAILED:'模型操作未完成，请刷新查看实际状态后再重试。',NOT_CONFIGURED:'本机模型控制器尚未配置。',UNKNOWN_PROFILE:'所选模型不在本机受控清单中。',INVALID_OPERATION:'模型操作参数无效，请刷新页面。',CSRF_REJECTED:'请求验证已失效，请重新登录后重试。'};
+ let profiles=[], selected='', snapshot=null, busy=false, reading=false, readId=0, pollTimer=null, disposed=false;
+ const errorMessage=result=>errors[result.errorCode || result.error?.code] || '操作未完成，请核对实际状态或重新登录后重试。';
+ const measurement=value=>typeof value==='number' && Number.isFinite(value) && value>=0 ? value.toFixed(1)+' MiB' : '未采样';
+ function controls() {
+   const chosen=profiles.find(p=>p.id===selected);
+   const loading=snapshot?.state==='loading';
+   load.disabled=busy || loading || !chosen?.available || (snapshot?.state==='ready' && snapshot.loadedProfileId===selected);
+   unload.disabled=busy || loading || !snapshot || snapshot.state==='unloaded';
+   radios.forEach(radio=>{radio.checked=radio.value===selected;radio.disabled=busy || loading || !profiles.some(p=>p.id===radio.value);byId('card-'+radio.value).classList.toggle('model-selected',radio.checked);});
+   refreshButton.disabled=reading;
+ }
+ function render(result) {
+   if (Array.isArray(result.profiles)) profiles=result.profiles.filter(p=>ids.includes(p.id));
+   snapshot={...result};
+   const active=profiles.find(p=>p.id===result.profileId);
+   const verified=result.success===true && result.state==='ready' && result.identityVerified===true && active?.available===true && result.profileId===result.loadedProfileId && typeof active.expectedModel==='string' && result.model===active.expectedModel && typeof result.endpoint==='string' && result.endpoint.length>0;
+   if(result.state==='ready' && !verified) snapshot={...result,state:'failed',errorCode:'IDENTITY_MISMATCH'};
+   if(!['unloaded','loading','ready','failed'].includes(snapshot.state)) snapshot={...snapshot,state:'failed',errorCode:'RUNTIME_UNAVAILABLE'};
+   if(!selected) selected=profiles.find(p=>p.id===result.profileId)?.id || profiles.find(p=>p.available)?.id || profiles[0]?.id || '';
+   for(const id of ids){
+     const profile=profiles.find(p=>p.id===id), card=byId('card-'+id);
+     if(profile) byId('name-'+id).textContent=profile.name || id;
+     byId('availability-'+id).textContent=!profile?'未取得受控模型信息':profile.available?(profile.visionCapable?'文本与视觉文件已安装':'已安装并可加载'):profile.unavailableReason==='NOT_INSTALLED'?'未安装':profile.unavailableReason==='HASH_UNVERIFIED'?'文件尚未通过完整性校验':'暂不可用';
+     const ready=verified && result.profileId===id;
+     card.classList.toggle('model-ready',ready);
+     byId('state-'+id).textContent=ready?'已加载 · 健康与身份核验通过':snapshot.state==='loading' && result.profileId===id?'加载中':snapshot.state==='failed' && result.profileId===id?'故障 · 未通过核验':'未加载';
+   }
+   status.textContent={unloaded:'未加载',loading:'加载中',ready:'已就绪',failed:'故障'}[snapshot.state];
+   details.textContent=snapshot.state==='failed'?errorMessage(snapshot):snapshot.state==='loading'?'正在等待运行器完成加载，请勿重复操作。':'健康状态与模型身份由本机运行器核验。';
+   byId('currentModel').textContent=result.model || '未加载或未确认';
+   byId('modelCapability').textContent=result.visionVerified===true && result.capabilities?.includes('image')?'文本 + 图片（已核验）':result.state==='ready'?'仅文本':'尚未核验';
+   byId('modelEndpoint').textContent=result.endpoint || '未确认';
+   byId('processMemory').textContent=['ps_rss','psutil_rss'].includes(result.processMemorySource)?measurement(result.processMemoryMiB)+'（进程 RSS 实测）':'未采样';
+   const memory=result.systemMemory;
+   byId('systemMemory').textContent=memory?.source==='psutil_virtual_memory'?'总计 '+measurement(memory.totalMiB)+'；可用 '+measurement(memory.availableMiB)+'；已用 '+measurement(memory.usedMiB)+'（系统实测）':'未采样';
+   byId('modelCheckedAt').textContent=new Date().toLocaleTimeString();
+   controls();
+ }
+ function schedule() {
+   if(pollTimer!==null) clearTimeout(pollTimer);
+   if(!disposed) pollTimer=setTimeout(()=>{pollTimer=null;refresh();},busy || snapshot?.state==='loading'?1500:5000);
+ }
+ async function refresh() {
+   if(disposed || reading)return;
+   reading=true;const requestId=++readId;controls();
+   const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),5000);
+   try {
+     const response=await fetch('/utils/api/monitor/status',{method:'GET',credentials:'same-origin',signal:controller.signal});
+     const result=await response.json();
+     if(requestId!==readId || disposed)return;
+     if(!response.ok) throw new Error('status unavailable');
+     render(result);
+   } catch(_) {
+     if(requestId===readId && !disposed) render({state:'failed',errorCode:'RUNTIME_UNAVAILABLE'});
+   } finally {clearTimeout(timeout);if(requestId===readId){reading=false;controls();schedule();}}
+ }
+ async function operate(action) {
+   if(busy || (action==='load'?load.disabled:unload.disabled))return;
+   busy=true;++readId;reading=false;message.textContent=action==='load'?'正在请求加载所选模型，请等待实际状态。':'正在请求卸载当前模型，请等待实际状态。';
+   ids.forEach(id=>byId('card-'+id).classList.remove('model-ready'));
+   status.textContent='正在确认运行状态…';controls();schedule();
+   const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),130000);
+   try {
+     const response=await fetch('/utils/api/local-model/'+action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':window.APP_CSRF_TOKEN || ''},body:JSON.stringify(action==='load'?{profileId:selected}:{}),signal:controller.signal});
+     const result=await response.json();
+     if(disposed)return;
+     ++readId;reading=false;
+     if(result.state)render({...result,success:response.ok && result.success===true});
+     if(!response.ok || result.success!==true) message.textContent=errorMessage(result);
+     else message.textContent='操作返回，正在核对实际运行状态。';
+   } catch(_) {
+     if(!disposed)message.textContent='操作结果未确认，正在重新读取实际状态；请勿直接重复加载。';
+   } finally {
+     clearTimeout(timeout);
+     if(!disposed){++readId;reading=false;await refresh();busy=false;controls();}
+   }
+ }
+ radios.forEach(radio=>radio.addEventListener('change',()=>{if(!busy && radio.checked){selected=radio.value;controls();}}));
+ load.addEventListener('click',()=>operate('load'));unload.addEventListener('click',()=>operate('unload'));refreshButton.addEventListener('click',refresh);
+ window.addEventListener('pagehide',()=>{disposed=true;++readId;if(pollTimer!==null)clearTimeout(pollTimer);});
+ refresh();
+})();
+// END local model controls
+</script>
+{% endblock %}

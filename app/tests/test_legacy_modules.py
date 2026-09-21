@@ -23,6 +23,31 @@ from app.services.resources import EquipmentResourcesService, ResearchResourcesS
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_retained_pdf_text_reader_uses_installed_parser_and_rejects_invalid_pdf():
+    from app.routes.utils import extract_pdf_text
+
+    content = b"BT /F1 12 Tf 72 720 Td (Research input) Tj ET"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream",
+    ]
+    data = b"%PDF-1.4\n"
+    offsets = []
+    for number, value in enumerate(objects, 1):
+        offsets.append(len(data))
+        data += str(number).encode() + b" 0 obj\n" + value + b"\nendobj\n"
+    xref = len(data)
+    data += b"xref\n0 6\n0000000000 65535 f \n"
+    data += b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets)
+    data += b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n" + str(xref).encode() + b"\n%%EOF\n"
+    assert "Research input" in extract_pdf_text(BytesIO(data))
+    with pytest.raises(Exception, match="pdf解析失败"):
+        extract_pdf_text(BytesIO(b"not a PDF"))
+
+
 class AuditRecorder:
     def __init__(self, *, fail=False):
         self.events = []
@@ -42,6 +67,10 @@ class EquipmentFileServiceRecorder:
 
     def list_project_paths(self, project_id):
         # These equipment-only route fixtures contain no project attachments.
+        assert project_id in {"KY-001", "BM-001", "MM-001"}
+        return []
+
+    def list_deleted_project_paths(self, project_id):
         assert project_id in {"KY-001", "BM-001", "MM-001"}
         return []
 
@@ -1249,7 +1278,7 @@ def test_equipment_images_and_attachments_use_controlled_file_service(
     assert "/api/files/" in html
 
 
-def test_equipment_files_enforce_business_role_and_audit_failures(
+def test_equipment_files_accept_formal_roles_and_audit_failures(
     equipment_routes, equipment_service, monkeypatch
 ):
     equipment = equipment_service.create_equipment({"name": "权限设备"})
@@ -1265,16 +1294,16 @@ def test_equipment_files_enforce_business_role_and_audit_failures(
     detail = equipment_routes.get(f"/equipment/detail/{equipment['equipment_id']}")
     assert detail.status_code == 200
     maintainer_html = detail.get_data(as_text=True)
-    assert "内部附件.pdf" not in maintainer_html
+    assert "内部附件.pdf" in maintainer_html
     assert "const attachmentForm" in maintainer_html
     assert "if (attachmentForm)" in maintainer_html
-    forbidden = equipment_routes.post(
+    allowed = equipment_routes.post(
         f"/equipment/upload_file/{equipment['equipment_id']}",
         data={"related_file": (BytesIO(b"new"), "new.pdf")},
         content_type="multipart/form-data",
     )
-    assert forbidden.status_code == 403
-    assert len(file_service.items) == 1
+    assert allowed.status_code == 200
+    assert len(file_service.items) == 2
 
     with equipment_routes.session_transaction() as active_session:
         active_session["role"] = "BUSINESS_USER"
@@ -1809,7 +1838,7 @@ def test_postgresql_expert_runtime_contract():
             must_change_password=False, version=1,
         ).returning(users.c.id)).scalar_one()
     try:
-        created = service.create_expert(
+        service.create_expert(
             {"name": keyword, "unit": "第三研究室", "phone": "13612345678"},
             uploader="王老师", actor_user_id=owner_id, request_id="req-pg-create",
         )

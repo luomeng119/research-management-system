@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -96,7 +95,11 @@ def test_list_import_switches_current_only_with_successful_xlsx(tmp_path):
     source = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"][0]["version_id"]
     stream = io.BytesIO()
     import openpyxl
-    workbook = openpyxl.Workbook(); workbook.active.append(["名称"]); workbook.active.append(["课题甲"]); workbook.save(stream); stream.seek(0)
+    workbook = openpyxl.Workbook()
+    workbook.active.append(["名称"])
+    workbook.active.append(["课题甲"])
+    workbook.save(stream)
+    stream.seek(0)
     response = client.post(
         f"/api/generic-tables/{table_id}/versions/import",
         data={"source_version_id": source, "file": (stream, "valid.xlsx")},
@@ -152,7 +155,8 @@ def test_export_sanitizes_crlf_name_and_cleans_if_response_build_fails(tmp_path,
     table_id = client.post("/api/generic-tables", json={"name": "台\r\nInjected: yes"}).get_json()["table_id"]
     version = client.get(f"/api/generic-tables/{table_id}/versions").get_json()["versions"][0]["version_id"]
     service = client.application.extensions["generic_tables_service"]
-    first = tmp_path / "first.xlsx"; first.write_bytes(b"xlsx")
+    first = tmp_path / "first.xlsx"
+    first.write_bytes(b"xlsx")
     monkeypatch.setattr(service, "export_to_excel", lambda _version_id: str(first))
     response = client.get(f"/api/generic-tables/versions/{version}/export", buffered=False)
     assert response.status_code == 200
@@ -160,7 +164,8 @@ def test_export_sanitizes_crlf_name_and_cleans_if_response_build_fails(tmp_path,
     response.close()
     assert not first.exists()
 
-    second = tmp_path / "second.xlsx"; second.write_bytes(b"xlsx")
+    second = tmp_path / "second.xlsx"
+    second.write_bytes(b"xlsx")
     monkeypatch.setattr(service, "export_to_excel", lambda _version_id: str(second))
     monkeypatch.setattr("app.routes.generic_tables.send_file", lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("header rejected")))
     with pytest.raises(ValueError, match="header rejected"):

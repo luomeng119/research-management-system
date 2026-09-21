@@ -1,0 +1,10 @@
+{% extends "research_reports/layout.html" %}
+{% block report_content %}
+<a href="{{ url_for('research_reports.version_page', report_id=report.id, version_no=version.versionNo) }}">返回已保存 v{{ version.versionNo }}</a>
+<h1>本版采用前的模型原稿</h1>
+<p>只读：此处保留模型返回的原始候选正文。人工修改后的内容请查看已保存版本，两者分别留存。</p>
+<p>模型：{{ draft.model }} · 生成时间：{{ draft.createdAt }}</p>
+{% if draft.redactionSnapshot %}<p>词库 v{{ draft.redactionSnapshot.version }}</p>{% else %}<p>未记录词库</p>{% endif %}
+<pre class="proposal-panel p-3 mt-3" style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit">{{ draft.body }}</pre>
+{% set sources = draft.sources|default([]) %}{% include 'research_reports/sources.html' %}
+{% endblock %}

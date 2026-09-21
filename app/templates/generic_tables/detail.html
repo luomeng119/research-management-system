@@ -222,7 +222,7 @@
 <!-- 顶部工具栏 -->
 <div class="toolbar">
     <a href="{{ url_for('generic_tables.list_page') }}" class="btn btn-sm btn-outline-secondary">
-        <i class="bi bi-arrow-left"></i> 返回列表
+        <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#arrow-left"></use></svg> 返回列表
     </a>
     <span class="text-secondary" style="font-size:13px;">|</span>
     <span style="font-weight:600;color:#2563eb;">{{ table.name }}</span>
@@ -230,16 +230,14 @@
     <!-- REQ-020: 版本下拉只列历史快照，current 单独显示在徽章里 -->
     <select class="form-select" id="versionSelect" style="width:180px;" onchange="switchVersion(this.value)">
         {% if is_current %}
-        <option value="" selected>🟢 当前编辑 ({{ current_version.version_label or ('v'+current_version.version_number|string) }})</option>
+        <option value="" selected>当前编辑 ({{ current_version.version_label or ('v'+current_version.version_number|string) }})</option>
         {% else %}
-        <option value="" data-href="/tables/{{ table.table_id }}">🟢 返回当前编辑</option>
+        <option value="" data-href="/tables/{{ table.table_id }}">返回当前编辑</option>
         {% endif %}
         {% for v in versions %}
-            {% if not is_current and v.version_id == current_version.version_id %}
-            <option value="" data-href="/tables/{{ table.table_id }}">🟢 当前编辑 ({{ v.version_label or ('v'+v.version_number|string) }})</option>
-            {% elif v.version_id != current_version.version_id %}
-            <option value="{{ v.version_id }}" {% if not is_current and current_version.version_id == v.version_id %}selected{% endif %}>
-                📷 {{ v.version_label or ('v'+v.version_number|string) }} · {{ v.creator }}
+            {% if v.version_id != table.current_version_id %}
+            <option value="{{ v.version_id }}" title="{{ v.creator or '' }}" {% if not is_current and current_version.version_id == v.version_id %}selected{% endif %}>
+                快照 · {{ v.version_label or ('v'+v.version_number|string) }} · {{ creator_names.get(v.creator, v.creator or '?') }}
             </option>
             {% endif %}
         {% endfor %}
@@ -247,16 +245,16 @@
     <!-- REQ-020: 徽章 — 当前编辑绿色 / 只读快照金色 -->
     {% if is_current %}
     <span class="badge bg-success" title="当前编辑版本，可修改">
-        <i class="bi bi-circle-fill"></i> 当前编辑 · 可修改
+        <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#check"></use></svg> 当前编辑 · 可修改
     </span>
     {% else %}
     <span class="badge bg-warning text-dark" title="历史快照版本，行/列/单元格只读">
-        <i class="bi bi-lock-fill"></i> 只读快照 · 不可修改
+        <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#book-open-check"></use></svg> 只读快照 · 不可修改
     </span>
     {% endif %}
     {% if is_current %}
     <button class="btn btn-sm btn-outline-success" onclick="quickSaveSnapshot()" title="把当前编辑版本保存为历史快照（弹窗输入 label/note）">
-        <i class="bi bi-camera"></i> 保存快照
+        <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#database"></use></svg> 保存快照
     </button>
     {% endif %}
 
@@ -273,7 +271,7 @@
     </label>
     {% endif %}
     <button class="btn btn-sm btn-outline-success" onclick="exportExcel()">
-        <i class="bi bi-download"></i> 导出Excel
+        <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#arrow-right"></use></svg> 导出Excel
     </button>
     {% if is_current and snapshots %}
     <button class="btn btn-sm btn-outline-info" onclick="openCompareModal()" title="对比当前编辑版本和某个历史快照">
@@ -354,20 +352,20 @@
 <!-- REQ-020: 右侧版本侧边栏 -->
 <aside class="version-sidebar" style="width:300px;flex-shrink:0;">
     <!-- 当前编辑版本卡片 -->
-    <div class="card border-success mb-3" style="background:linear-gradient(135deg,#f0fdf4 0%,#dcfce7 100%);">
-        <div class="card-header bg-success text-white" style="padding:8px 12px;">
-            <i class="bi bi-circle-fill"></i> <strong>当前编辑版本</strong>
+    <div class="card table-version-card mb-3">
+        <div class="card-header" style="padding:8px 12px;">
+            <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#database"></use></svg> <strong>{{ '当前编辑版本' if is_current else '正在查看的历史快照' }}</strong>
         </div>
         <div class="card-body" style="padding:12px;">
             <h5 class="card-title mb-2" style="font-size:16px;">{{ current_version.version_label or ('v' + current_version.version_number|string) }}</h5>
             <p class="card-text small text-muted mb-2" style="font-size:12px;line-height:1.6;">
                 <span id="rowCountSidebar">{{ row_total | default(rows|length) }}</span> 行 / {{ columns|length }} 列<br>
                 创建于 {{ current_version.created_at[:16] if current_version.created_at else '?' }}<br>
-                创建人 {{ current_version.creator or '?' }}
+                创建人 <span title="{{ current_version.creator or '' }}">{{ creator_names.get(current_version.creator, current_version.creator or '?') }}</span>
             </p>
             {% if is_current %}
             <button class="btn btn-success w-100" onclick="openSaveSnapshotModal()" style="font-size:13px;">
-                <i class="bi bi-camera"></i> 保存快照
+                <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#database"></use></svg> 保存快照
             </button>
             {% endif %}
         </div>
@@ -375,7 +373,7 @@
 
     <!-- 历史快照列表 -->
     <h6 class="text-secondary mb-2" style="font-size:13px;">
-        <i class="bi bi-camera"></i> 历史快照（{{ snapshots|length }}）
+        <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#database"></use></svg> 历史快照（{{ snapshots|length }}）
     </h6>
     {% if snapshots %}
     <div style="max-height:60vh;overflow-y:auto;">
@@ -384,15 +382,15 @@
             <div class="card-body p-2">
                 <div class="d-flex justify-content-between align-items-start">
                     <div style="flex:1;min-width:0;">
-                        <i class="bi bi-camera"></i> <strong>{{ v.version_label or ('v' + v.version_number|string) }}</strong>
+                        <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#database"></use></svg> <strong>{{ v.version_label or ('v' + v.version_number|string) }}</strong>
                         {% if v.note %}<br>
                         <small class="text-muted" style="font-size:11px;">{{ v.note[:30] }}{% if v.note|length > 30 %}...{% endif %}</small>
                         {% endif %}<br>
-                        <small class="text-muted" style="font-size:11px;">{{ v.created_at[:16] }} · {{ v.creator }}</small>
+                        <small class="text-muted" style="font-size:11px;">{{ v.created_at[:16] }} · <span title="{{ v.creator or '' }}">{{ creator_names.get(v.creator, v.creator or '?') }}</span></small>
                     </div>
                     <div class="d-flex flex-column gap-1">
                         <a href="/tables/{{ table.table_id }}/version/{{ v.version_id }}" class="btn btn-sm btn-outline-secondary" style="font-size:11px;padding:2px 6px;" title="查看此历史快照（只读）">
-                            <i class="bi bi-eye"></i>
+                            <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#search"></use></svg>
                         </a>
                         {% if is_current %}
                         <button class="btn btn-sm btn-outline-warning rollback-version" style="font-size:11px;padding:2px 6px;"
@@ -947,7 +945,7 @@ async function doSaveSnapshot(label, note) {
         });
         const data = await vr.json();
         if (data.error) { alert('保存失败：' + data.error); return; }
-        alert(`快照保存成功！\n历史快照：${label}\n新的当前版本：v${data.new_current_id.slice(-6)}`);
+        alert(`快照保存成功！\n历史快照：${label}\n已切换到新的当前编辑版本，名称以刷新后的页面为准。`);
         location.reload();
     } catch (e) {
         alert('保存失败：' + e.message);

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from flask import Blueprint, jsonify, session, current_app, request
+from flask import Blueprint, abort, jsonify, session, current_app, request
 from app.models import ProjectModel, DIRECTORIES, SecurityProjectModel, CryptoProjectModel
 from app.routes._project_bridge import all_legacy_projects
 from app.services.resources import ResourceServiceError
@@ -8,6 +8,11 @@ from app.security.auth import maintenance_required
 import os
 
 bp = Blueprint('api', __name__, url_prefix='/api')
+
+
+def _auxiliary_ai_enabled():
+    return (current_app.config.get('AI_FEATURES_VISIBLE') is True
+            and current_app.config.get('AUXILIARY_AI_ENABLED') is True)
 
 def get_user_directories():
     """All authenticated V1 business accounts receive the same navigation."""
@@ -360,7 +365,8 @@ def tree():
                     sub_path = os.path.join(cat_path, sub)
                     if os.path.isdir(sub_path) and not sub.startswith('.'):
                         children.append({'id': '', 'label': sub, 'icon': 'bi-folder2 text-warning', 'url': '', 'children': []})
-            except: pass
+            except Exception:
+                pass
         template_children.append({'id': f'template-{cat}', 'label': cat, 'icon': 'bi-folder text-warning', 'url': f'/templates?cat={cat}', 'children': children})
     template_children.append({'id': 'template-专家信息库', 'label': '专家信息库', 'icon': 'bi-folder text-secondary', 'url': '/experts', 'children': []})
     template_children.append({'id': 'templates-logs', 'label': '操作日志', 'icon': 'bi-clock-history text-secondary', 'url': '/templates/logs/templates', 'children': []})
@@ -384,21 +390,25 @@ def tree():
                     'icon': 'bi-receipt text-warning',
                     'url': '/expense',
                     'children': [
-                        {'id': 'expense-upload', 'label': '上传发票', 'icon': 'bi-upload text-info', 'url': '/expense', 'children': []},
-                        {'id': 'expense-records', 'label': '报销记录', 'icon': 'bi-list-check text-success', 'url': '/expense', 'children': []},
-                        {'id': 'expense-fill', 'label': '生成审批单', 'icon': 'bi-file-earmark-plus text-primary', 'url': '/expense', 'children': []},
+                        {'id': 'expense-upload', 'label': '上传发票', 'icon': 'bi-upload text-info', 'url': '/expense/records#expense-upload', 'children': []},
+                        {'id': 'expense-records', 'label': '报销记录', 'icon': 'bi-list-check text-success', 'url': '/expense/records', 'children': []},
+                        {'id': 'expense-fill', 'label': '生成审批单', 'icon': 'bi-file-earmark-plus text-primary', 'url': '/expense/approvals', 'children': []},
                     ]
                 },
             ]
+        utils_children = [*expense_children]
+        if _auxiliary_ai_enabled():
+            utils_children.append({
+                'id': 'utils-doc', 'label': '文档校正',
+                'icon': 'bi-file-earmark-check text-info',
+                'url': '/utils/document_correction', 'children': [],
+            })
         tree_data.append({
             'id': 'utils',
             'label': '辅助工具',
             'icon': 'bi-tools text-secondary',
             'url': '/utils',
-            'children': [
-                *expense_children,
-                {'id': 'utils-doc', 'label': '文档校正', 'icon': 'bi-file-earmark-check text-info', 'url': '/utils/document_correction', 'children': []},
-            ]
+            'children': utils_children,
         })
 
     # 通用表格管理
@@ -521,6 +531,8 @@ def llm_status():
     """查询模型加载状态"""
     if 'user' not in session:
         return jsonify({'code': 1, 'msg': '未登录'})
+    if not _auxiliary_ai_enabled():
+        abort(404)
     try:
         from app.llm import get_pool
         pool = get_pool()
@@ -535,6 +547,8 @@ def llm_reload():
     """重新加载指定模型"""
     if 'user' not in session:
         return jsonify({'code': 1, 'msg': '未登录'})
+    if not _auxiliary_ai_enabled():
+        abort(404)
     name = request.json.get('name') if request.is_json else None
     if name not in ('corrector', 'qwen'):
         return jsonify({'code': 1, 'msg': '无效模型名称'})
@@ -553,42 +567,51 @@ def correct_text():
     """文本纠错"""
     if 'user' not in session:
         return jsonify({'code': 1, 'msg': '未登录'})
+    if not _auxiliary_ai_enabled():
+        return jsonify({'code': 2, 'msg': '当前交付未启用自动校对'}), 404
+    if str(current_app.config.get('AI_PROVIDER', 'DISABLED')).upper() != 'LOCAL':
+        return jsonify({'code': 2, 'msg': 'V1 未启用本地模型，请使用人工校对'}), 503
     if not request.is_json:
         return jsonify({'code': 1, 'msg': '需要 JSON 请求'})
-    text = request.json.get('text', '')
-    if not text.strip():
+    data = request.get_json(silent=True)
+    text = data.get('text', '') if isinstance(data, dict) else ''
+    if not isinstance(text, str) or not text.strip():
         return jsonify({'code': 1, 'msg': '文本不能为空'})
     try:
-        from app.llm import get_pool
         from app.llm.corrector import Corrector
-        pool = get_pool()
-        corrector = Corrector(pool)
+        corrector = Corrector()
         result = corrector.correct(text)
+        if result.get('error'):
+            return jsonify({'code': 2, 'msg': '自动校对未完成，请使用人工校对'}), 503
         return jsonify({'code': 0, 'data': result})
     except Exception as e:
-        return jsonify({'code': 2, 'msg': f'纠错失败: {e}'})
+        return jsonify({'code': 2, 'msg': '自动校对未完成，请使用人工校对'}), 503
 
 
 @bp.route('/summarize', methods=['POST'])
 def summarize_text():
-    """文档摘要"""
+    """文档摘要；返回建议，不写回原文件。"""
     if 'user' not in session:
-        return jsonify({'code': 1, 'msg': '未登录'})
-    if not request.is_json:
-        return jsonify({'code': 1, 'msg': '需要 JSON 请求'})
-    text = request.json.get('text', '')
-    max_length = request.json.get('max_length', 100)
-    if not text.strip():
-        return jsonify({'code': 1, 'msg': '内容不能为空'})
+        return jsonify({'code': 1, 'msg': '未登录'}), 401
+    if not _auxiliary_ai_enabled():
+        return jsonify({'code': 2, 'msg': '当前交付未启用自动摘要'}), 404
+    if str(current_app.config.get('AI_PROVIDER', 'DISABLED')).upper() != 'LOCAL':
+        return jsonify({'code': 2, 'msg': '本地模型未启用，请人工整理摘要'}), 503
+    data = request.get_json(silent=True)
+    text = data.get('text', '') if isinstance(data, dict) else ''
+    max_length = data.get('max_length', 100) if isinstance(data, dict) else 100
+    if not isinstance(text, str) or not text.strip():
+        return jsonify({'code': 1, 'msg': '内容不能为空'}), 400
+    if type(max_length) is not int or not 1 <= max_length <= 1000:
+        return jsonify({'code': 1, 'msg': '摘要长度须为1至1000的整数'}), 400
     try:
-        from app.llm import get_pool
-        from app.llm.qwen import QwenHelper
-        pool = get_pool()
-        qwen = QwenHelper(pool)
-        result = qwen.summarize(text, max_length=max_length)
+        from app.llm.corrector import LocalSummarizer
+        result = LocalSummarizer().summarize(text, max_length=max_length)
+        if result.get('error'):
+            return jsonify({'code': 2, 'msg': '自动摘要未完成，请人工整理'}), 503
         return jsonify({'code': 0, 'data': result})
-    except Exception as e:
-        return jsonify({'code': 2, 'msg': f'摘要生成失败: {e}'})
+    except Exception:
+        return jsonify({'code': 2, 'msg': '自动摘要未完成，请人工整理'}), 503
 
 
 @bp.route('/ai-search', methods=['POST'])
@@ -596,6 +619,8 @@ def ai_search():
     """AI 意图检索"""
     if 'user' not in session:
         return jsonify({'code': 1, 'msg': '未登录'})
+    if not _auxiliary_ai_enabled():
+        return jsonify({'code': 2, 'msg': '当前交付未启用模型检索'}), 404
     if not request.is_json:
         return jsonify({'code': 1, 'msg': '需要 JSON 请求'})
     query = request.json.get('query', '')

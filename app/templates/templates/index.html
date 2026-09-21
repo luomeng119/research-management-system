@@ -98,6 +98,14 @@ function encodeLogicalPath(path) {
     return String(path).split('/').map(function(part) { return encodeURIComponent(part); }).join('/');
 }
 
+function formatReferenceSize(size) {
+    if (size === null || size === undefined || !Number.isFinite(Number(size)) || Number(size) < 0) return '未记录';
+    var bytes = Number(size);
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
 function renderTree(nodes, container) {
     container.replaceChildren();
     if (!nodes || nodes.length === 0) {
@@ -142,7 +150,7 @@ function buildNode(node) {
     (node.files || []).forEach(function(file) {
         var row = document.createElement('div'); row.className = 'd-flex align-items-center mb-1';
         var label = document.createElement('span'); label.className = 'me-2'; label.textContent = file.name; row.appendChild(label);
-        var size = document.createElement('span'); size.className = 'text-muted me-2'; size.textContent = '(' + (file.size / 1024).toFixed(1) + ' KB)'; row.appendChild(size);
+        var size = document.createElement('span'); size.className = 'text-muted me-2'; size.textContent = '(' + formatReferenceSize(file.size) + ')'; row.appendChild(size);
         var downloadUrl = '/templates/download/' + encodeLogicalPath(file.path);
         var preview = document.createElement('button'); preview.type = 'button'; preview.className = 'btn btn-outline-info btn-sm me-1'; preview.textContent = '预览'; preview.addEventListener('click', function() { openControlledPreview(file.fileId, file.versionNo, file.objectType, file.objectId, file.name, downloadUrl); }); row.appendChild(preview);
         var link = document.createElement('a'); link.className = 'btn btn-outline-primary btn-sm me-1'; link.href = downloadUrl; link.textContent = '下载'; row.appendChild(link);

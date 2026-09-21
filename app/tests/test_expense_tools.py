@@ -568,8 +568,10 @@ def test_cross_detach_operations_complete_without_deadlock(expense_service):
 
     def detach(kind):
         try:
-            if kind == "invoice": expense_service.detach_invoice(rid, iid)
-            else: expense_service.detach_payment(rid, pid)
+            if kind == "invoice":
+                expense_service.detach_invoice(rid, iid)
+            else:
+                expense_service.detach_payment(rid, pid)
             return "ok"
         except ExpenseError as exc:
             return exc.code
@@ -727,14 +729,122 @@ def test_three_shipped_docx_templates_generate_real_word_files(doc_type):
     assert document.paragraphs or document.tables
 
 
-def test_json_only_purchase_template_and_template_traversal_fail_clearly():
+def test_purchase_template_generates_all_line_items_and_rejects_traversal():
+    from docx import Document
     from app.document_engine import DocumentFiller
 
     filler = DocumentFiller()
-    with pytest.raises(FileNotFoundError, match="docx"):
-        filler.generate("科研物资采购申请单", {}, {})
+    generated = filler.generate(
+        "科研物资采购申请单",
+        {
+            "T0[1,1]": "科研管理处",
+            "T0[2,1]": "admin",
+            "T0[3,1]": ["环境监测传感器", "加密存储介质"],
+            "T0[4,1]": ["EM-01", "SEC-02"],
+            "T0[4,3]": ["2", "3"],
+            "T0[4,5]": ["1280.00", "680.00"],
+            "T0[4,7]": ["2560.00", "2040.00"],
+            "T0[5,1]": "用于科研样机研制和数据采集",
+        },
+        {},
+    )
+    document = Document(io.BytesIO(generated))
+    text = "\n".join(cell.text for table in document.tables for row in table.rows for cell in row.cells)
+    assert generated.startswith(b"PK")
+    assert all(token in text for token in ("科研管理处", "环境监测传感器", "加密存储介质", "2560.00", "2040.00"))
+    assert "['环境监测传感器'" not in text
     with pytest.raises(FileNotFoundError, match="模板不存在"):
         filler.generate("../科研物资采购申请单", {}, {})
+
+
+def test_purchase_page_preserves_multiple_item_rows_as_arrays():
+    source = (Path(__file__).parents[1] / "templates" / "expense" / "documents.html").read_text(encoding="utf-8")
+    assert "fields[base] = fields[base] || []" in source
+    assert "fields[base][itemIndex] = inp.value" in source
+    assert "多商品时仅保存第一个商品" not in source
+    assert 'id="btnAddPurchaseItem"' in source
+    assert "function addPurchaseItemRow()" in source
+
+
+def test_document_field_values_preserve_bounded_item_arrays():
+    from app.services.expenses import ExpenseService, ExpenseValidationError
+
+    class NeverCalledRepository:
+        engine = None
+
+    service = ExpenseService(NeverCalledRepository())
+    assert service._document_field_value(["环境监测传感器", "加密存储介质"]) == ["环境监测传感器", "加密存储介质"]
+    with pytest.raises(ExpenseValidationError, match="明细"):
+        service._document_field_value(["x"] * 101)
+
+
+def test_purchase_auto_fill_returns_all_invoice_items(tmp_path):
+    from app import create_app
+
+    class PurchaseExpenseService:
+        def collect_reimbursement_children(self, _rid):
+            return ([{
+                "id": 1, "invoice_type": "电子发票", "amount": "4600.00", "date": "2026-09-11",
+                "items": [
+                    {"name": "环境监测传感器", "spec": "EM-01", "quantity": "2", "unit_price": "1280.00", "amount": "2560.00"},
+                    {"name": "加密存储介质", "spec": "SEC-02", "quantity": "3", "unit_price": "680.00", "amount": "2040.00"},
+                ],
+            }], [])
+
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "purchase-autofill-test", "DATA_DIR": str(tmp_path),
+        "SESSION_FILE_DIR": str(tmp_path / "sessions"), "SECURITY_AUTH_ENABLED": False,
+        "CSRF_ENABLED": False, "AI_PROVIDER": "DISABLED", "EXPENSE_SERVICE": PurchaseExpenseService(),
+    })
+    client = app.test_client()
+    with client.session_transaction() as state:
+        state.update({"user": "admin", "name": "管理员", "dept": "科研管理处"})
+    response = client.post(
+        "/expense/documents/api/reimbursements/1/documents/auto_fill",
+        json={"doc_type": "科研物资采购申请单", "fields": {}},
+    )
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["suggestions"]["T0[3,1]"]["value"] == ["环境监测传感器", "加密存储介质"]
+    assert payload["suggestions"]["T0[4,7]"]["value"] == ["2560.00", "2040.00"]
+
+
+def test_purchase_complete_report_route_streams_generic_word(tmp_path, monkeypatch):
+    from docx import Document
+    from app import create_app
+    import app.routes.documents as documents_routes
+
+    class PurchaseExpenseService:
+        def get_reimbursement(self, _rid):
+            return {
+                "id": 1, "title": "科研样机物资采购", "approver": "项目负责人",
+                "reimbursement_type": "采购报销",
+            }
+
+        def collect_reimbursement_children(self, _rid):
+            return ([{
+                "id": 1, "invoice_type": "电子发票", "amount": "4600.00", "date": "2026-09-11",
+                "items": [
+                    {"name": "环境监测传感器", "spec": "EM-01", "quantity": "2", "unit_price": "1280.00", "amount": "2560.00"},
+                    {"name": "加密存储介质", "spec": "SEC-02", "quantity": "3", "unit_price": "680.00", "amount": "2040.00"},
+                ],
+            }], [])
+
+    monkeypatch.setattr(documents_routes, "_merge_docx_and_images", lambda parts, _invoices, _payments: parts[0][1])
+    app = create_app({
+        "TESTING": True, "SECRET_KEY": "purchase-report-test", "DATA_DIR": str(tmp_path),
+        "SESSION_FILE_DIR": str(tmp_path / "sessions"), "SECURITY_AUTH_ENABLED": False,
+        "CSRF_ENABLED": False, "AI_PROVIDER": "DISABLED", "EXPENSE_SERVICE": PurchaseExpenseService(),
+    })
+    client = app.test_client()
+    with client.session_transaction() as state:
+        state.update({"user": "admin", "name": "管理员", "dept": "科研管理处"})
+    response = client.post("/expense/documents/api/reimbursements/1/generate_report")
+    assert response.status_code == 200
+    assert response.data.startswith(b"PK")
+    document = Document(io.BytesIO(response.data))
+    text = "\n".join(cell.text for table in document.tables for row in table.rows for cell in row.cells)
+    assert all(token in text for token in ("科研管理处", "管理员", "环境监测传感器", "加密存储介质", "科研样机物资采购"))
 
 
 def test_multiple_documents_are_really_present_in_merged_word():

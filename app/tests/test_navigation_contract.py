@@ -1,5 +1,7 @@
 from hashlib import sha256
+import re
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -57,9 +59,38 @@ def test_shell_assets_are_local_and_match_the_approved_prototype():
     assert sha256((STATIC / "brand" / "logo-reference.png").read_bytes()).hexdigest() == (
         sha256((PROTOTYPE_ASSETS / "logo-reference.png").read_bytes()).hexdigest()
     )
-    assert sha256((STATIC / "icons" / "lucide-icons.svg").read_bytes()).hexdigest() == (
-        sha256((PROTOTYPE_ASSETS / "lucide-icons.svg").read_bytes()).hexdigest()
-    )
+    def definition(element):
+        # Ignore XML indentation only; geometry, attributes and child order stay exact.
+        return (element.tag, tuple(sorted(element.attrib.items())),
+                (element.text or '').strip(), tuple(definition(child) for child in element))
+
+    namespace = {'svg': 'http://www.w3.org/2000/svg'}
+    approved = ET.parse(PROTOTYPE_ASSETS / "lucide-icons.svg").getroot()
+    current = ET.parse(STATIC / "icons" / "lucide-icons.svg").getroot()
+    assert current.tag == approved.tag
+    assert current.attrib == approved.attrib, 'root styles/attributes must not alter approved icons'
+    symbol_tag = '{http://www.w3.org/2000/svg}symbol'
+    assert [definition(child) for child in current if child.tag != symbol_tag] == [
+        definition(child) for child in approved if child.tag != symbol_tag
+    ], 'only new symbols may be appended; global style/other nodes must be preserved'
+    original_symbols = approved.findall('svg:symbol', namespace)
+    symbols = current.findall('svg:symbol', namespace)
+    by_id = {symbol.attrib['id']: symbol for symbol in symbols}
+    assert original_symbols, 'approved sprite must contain symbols'
+    assert len(by_id) == len(symbols), 'duplicate symbol IDs shadow approved icons'
+    for symbol in original_symbols:
+        identifier = symbol.attrib['id']
+        assert identifier in by_id, f'missing approved icon: {identifier}'
+        assert definition(by_id[identifier]) == definition(symbol), identifier
+    for element in current.iter():
+        assert element.tag.rsplit('}', 1)[-1] not in {'script', 'foreignObject', 'style'}
+        for attribute, value in element.attrib.items():
+            if attribute.rsplit('}', 1)[-1] in {'href', 'src'}:
+                assert value.startswith('#') or value.startswith('/static/'), value
+            assert 'http://' not in value and 'https://' not in value and not value.lstrip().startswith('//')
+            for target in re.findall(r"url\(\s*['\"]?([^'\"\s)]+)", value, flags=re.IGNORECASE):
+                assert target.startswith('#') or target.startswith('/static/'), target
+
 
 
 def test_design_tokens_and_responsive_accessibility_contract_are_present():

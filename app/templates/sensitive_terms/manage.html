@@ -1,0 +1,50 @@
+{% extends 'base.html' %}
+{% block title %}敏感词库维护{% endblock %}
+{% block content %}
+<main class="container py-4">
+<h1>敏感词库维护</h1>
+<p>用于管理原词与代称。规则保存为新版本，历史版本保持不变。此页面不代表所有业务功能已接入替换。</p>
+{% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+{% if snapshot %}<p>当前词库：v{{ snapshot.version }}</p>{% endif %}
+{% if preview %}<div class="alert alert-info" role="status">预览通过，尚未保存。请核对规则、启用状态和基础版本，再确认保存。</div>{% endif %}
+<form method="post">
+<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="format" value="rows">
+<input type="hidden" name="expectedVersion" value="{{ form.get('expectedVersion', '0') }}">
+<h2 class="h4">编辑规则</h2>
+<p>基础版本 v{{ form.get('expectedVersion','0') }}。点击“添加规则”增加一行；编号可留空，预览时自动生成。禁用规则仍保留在本版记录中。</p>
+<button class="btn btn-outline-primary mb-3" id="add-sensitive-rule" type="button">＋ 添加规则</button>
+<div class="table-responsive"><table class="table table-bordered"><thead><tr><th scope="col">规则编号</th><th scope="col">原词</th><th scope="col">代称</th><th scope="col">状态</th></tr></thead><tbody id="sensitive-rule-rows">
+{% for rule in rules %}
+<tr><td><input class="form-control" aria-label="第{{ loop.index }}行规则编号" name="ruleId" value="{{ rule.id }}" maxlength="500"></td><td><input class="form-control" aria-label="第{{ loop.index }}行原词" name="source" value="{{ rule.source }}" maxlength="500"></td><td><input class="form-control" aria-label="第{{ loop.index }}行代称" name="replacement" value="{{ rule.replacement }}" maxlength="500"></td><td><select class="form-select" aria-label="第{{ loop.index }}行状态" name="enabled"><option value="true" {% if rule.enabled %}selected{% endif %}>启用</option><option value="false" {% if not rule.enabled %}selected{% endif %}>禁用</option></select></td></tr>
+{% endfor %}
+</tbody></table></div>
+<label class="form-label" for="note">修改备注</label><textarea class="form-control mb-3" id="note" name="note" maxlength="2000">{{ form.get('note','') }}</textarea>
+<button class="btn btn-secondary" type="submit" name="action" value="preview">预览更改</button>
+{% if preview %}<button class="btn btn-primary" type="submit" name="action" value="save">确认保存新版本</button>{% endif %}
+<a class="btn btn-link" href="{{ url_for('sensitive_terms.manage') }}">取消并返回当前词库</a>
+</form>
+<hr><h2 class="h4">JSON导入预览</h2>
+<p>粘贴映射数组；每项包含 id、source、replacement、enabled。导入会替换工作表中的全部规则，提交前先预览。</p>
+<form method="post" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="format" value="json"><input type="hidden" name="expectedVersion" value="{{ form.get('expectedVersion','0') }}"><input type="hidden" name="note" value="{{ form.get('note','') }}">
+<label class="form-label" for="rulesFile">导入UTF-8 JSON文件（可选）</label><input class="form-control mb-3" id="rulesFile" type="file" name="rulesFile" accept=".json,application/json"><label class="form-label" for="rulesJson">JSON映射数组</label><textarea class="form-control mb-3" id="rulesJson" name="rulesJson" rows="8" spellcheck="false">{{ form.get('rulesJson','[]') }}</textarea><button class="btn btn-secondary" type="submit" name="action" value="preview">导入并预览</button></form>
+{% if history['items'] %}<hr><h2 class="h4">最近版本</h2><ul>{% for item in history['items'] %}<li><a href="{{ url_for('sensitive_terms.version',version_no=item.version) }}">v{{ item.version }}</a> · {{ item.createdByName }} · {{ item.createdAt }}</li>{% endfor %}</ul>{% if history.page > 1 %}<a class="btn btn-link" href="{{ url_for('sensitive_terms.manage',page=history.page-1) }}">较新版本</a>{% endif %}{% if history.page * history.pageSize < history.total %}<a class="btn btn-link" href="{{ url_for('sensitive_terms.manage',page=history.page+1) }}">较早版本</a>{% endif %}{% endif %}
+</main>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var addButton = document.getElementById('add-sensitive-rule');
+  var rows = document.getElementById('sensitive-rule-rows');
+  if (!addButton || !rows) return;
+  addButton.addEventListener('click', function () {
+    var index = rows.querySelectorAll('tr').length + 1;
+    var row = document.createElement('tr');
+    row.innerHTML = '<td><input class="form-control" aria-label="第' + index + '行规则编号" name="ruleId" maxlength="500"></td>'
+      + '<td><input class="form-control" aria-label="第' + index + '行原词" name="source" maxlength="500"></td>'
+      + '<td><input class="form-control" aria-label="第' + index + '行代称" name="replacement" maxlength="500"></td>'
+      + '<td><select class="form-select" aria-label="第' + index + '行状态" name="enabled"><option value="true" selected>启用</option><option value="false">禁用</option></select></td>';
+    rows.appendChild(row);
+    row.querySelector('input[name="source"]').focus();
+  });
+});
+</script>
+{% endblock %}

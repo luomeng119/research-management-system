@@ -21,3 +21,7 @@ uploads/
 documents/
 *.db
 *.sqlite
+
+# Test fixtures are source-controlled inputs, including database-format fixtures.
+!tests/fixtures/
+!tests/fixtures/**

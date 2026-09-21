@@ -4,7 +4,7 @@
 
 {% block content %}
 {% include 'components/preview_panel.html' %}
-<div class="container-fluid">
+<div class="container-fluid legacy-project-detail">
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
             <li class="breadcrumb-item"><a href="/projects">科研项目</a></li>
@@ -19,7 +19,7 @@
     <!-- 项目信息 - 可折叠 -->
     <div class="card mb-2">
         <div class="card-header" id="info" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseProject">
-            <span><i class="bi bi-chevron-right me-2"></i> 项目信息</span>
+            <span><i class="bi bi-chevron-right me-2"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#chevron-right"></use></svg></i> 项目信息</span>
         </div>
         <div id="collapseProject" class="collapse show">
             <div class="card-body">
@@ -60,6 +60,7 @@
                     <div class="info-field">
                         <label>状态：</label>
                         <select class="form-select form-select-sm" onchange="updateProjectField('{{ project['project_id'] }}', '状态', this.value)">
+                            {% if project['status'] not in ['任务下达', '通过院内评审', '通过机关评审', '结题上报'] %}<option value="{{ project['status'] }}" selected disabled>{{ project['status'] }}</option>{% endif %}
                             <option value="任务下达" {% if project['status']=='任务下达' %}selected{% endif %}>任务下达</option>
                             <option value="通过院内评审" {% if project['status']=='通过院内评审' %}selected{% endif %}>通过院内评审</option>
                             <option value="通过机关评审" {% if project['status']=='通过机关评审' %}selected{% endif %}>通过机关评审</option>
@@ -74,7 +75,8 @@
                     {% endif %}
                     <div class="info-field">
                         <label>创建时间：</label>
-                        <span class="field-text">{{ project['created_at'] }}</span>
+                        {% set created_time = project['created_at']|string if project['created_at'] else '' %}
+                        <span class="field-text" title="{{ created_time }}">{{ created_time[:16]|replace('T', ' ') if created_time else '未记录' }}</span>
                     </div>
                 </div>
             </div>
@@ -84,24 +86,24 @@
     <!-- 设备选型 - 可折叠 -->
     <div class="card mb-2">
         <div class="card-header d-flex justify-content-between align-items-center" id="equipment" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseEquipment">
-            <span><i class="bi bi-chevron-right me-2"></i> 设备选型 ({{ project_equipment|length }})</span>
+            <span><i class="bi bi-chevron-right me-2"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#chevron-right"></use></svg></i> 设备选型 ({{ project_equipment|length }})</span>
         </div>
         <!-- 工具栏移到折叠区外部 -->
         <div class="card-header bg-light py-1 px-3 border-bottom">
             <button class="btn btn-primary btn-sm me-1" onclick="showLinkEquipment()">
-                <i class="bi bi-plus-circle"></i> 添加设备
+                <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#plus"></use></svg> 添加设备
             </button>
             <button class="btn btn-info btn-sm me-1" onclick="showRequirement('installation')">
-                <i class="bi bi-wrench"></i> 适配要求
+                <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#wrench"></use></svg> 适配要求
             </button>
             <button class="btn btn-info btn-sm me-1" onclick="showRequirement('resource')">
-                <i class="bi bi-box"></i> 资源要求
+                <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#library"></use></svg> 资源要求
             </button>
             <button class="btn btn-info btn-sm me-1" onclick="showRequirement('tech')">
-                <i class="bi bi-gear"></i> 指标要求
+                <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#book-open-check"></use></svg> 指标要求
             </button>
             <button class="btn btn-success btn-sm" onclick="exportEquipment('{{ project['project_id'] }}')">
-                <i class="bi bi-file-earmark-excel"></i> 导出Excel
+                <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#arrow-right"></use></svg> 导出Excel
             </button>
         </div>
         <div id="collapseEquipment" class="collapse show">
@@ -123,7 +125,7 @@
                     </thead>
                     <tbody>
                     {% for e in project_equipment %}
-                    <tr data-group-id="{{ e['group_id'] }}" data-installation="{{ e['installation_requirements'] or '' }}" data-resource="{{ e['resource_guarantee'] or '' }}" data-tech="{{ e['tech_index'] or '' }}">
+                    <tr data-group-id="{{ e['group_id'] }}" data-equipment-id="{{ e['id'] }}" data-quantity="{{ e['quantity'] }}" data-location="{{ e['location'] or '' }}" data-installation="{{ e['installation_requirements'] or '' }}" data-resource="{{ e['resource_guarantee'] or '' }}" data-tech="{{ e['tech_index'] or '' }}">
                         <td class="align-middle">
                             <div>{{ e['name'] }}</div>
                             <div class="text-muted small">{{ e['model'] or '' }}</div>
@@ -140,7 +142,7 @@
                         </td>
                         <td class="align-middle text-center">
                         <button class="btn btn-outline-danger btn-sm" title="移除" onclick="unlinkEquipment('{{ project['project_id'] }}', '{{ e['group_id'] }}', '{{ e['id'] }}')">
-                            <i class="bi bi-trash"></i>
+                            <i class="bi bi-trash"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#trash"></use></svg></i>
                         </button>
                         </td>
                     </tr>
@@ -158,18 +160,18 @@
     <!-- 文档管理 - 可折叠 -->
     <div class="card mb-2">
         <div class="card-header d-flex justify-content-between align-items-center" id="documents" style="cursor:pointer" data-bs-toggle="collapse" data-bs-target="#collapseDocs">
-            <span><i class="bi bi-chevron-right me-2"></i> 文档管理</span>
+            <span><i class="bi bi-chevron-right me-2"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#chevron-right"></use></svg></i> 文档管理</span>
         </div>
         <!-- 工具栏移到折叠区外部 -->
         <div class="card-header bg-light py-1 px-3 border-bottom">
             <button class="btn btn-outline-primary btn-sm" onclick="showCreateFolder('')">
-                <i class="bi bi-folder-plus"></i> 新建文件集
+                <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#plus"></use></svg> 新建文件集
             </button>
             <button class="btn btn-outline-secondary btn-sm" onclick="exportSelected()">
-                <i class="bi bi-file-zip"></i> 导出选中
+                <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#arrow-right"></use></svg> 导出选中
             </button>
             <a class="btn btn-outline-success btn-sm" href="/argumentation/{{ category }}/{{ project['project_id'] }}">
-                <i class="bi bi-file-earmark-text"></i> 方案论证
+                <svg class="app-icon app-icon-small" aria-hidden="true"><use href="{{ url_for('static', filename='icons/lucide-icons.svg') }}#book-open-check"></use></svg> 方案论证
             </a>
         </div>
         <div id="collapseDocs" class="collapse show">
@@ -204,6 +206,8 @@
         </div>
     </div>
 </div>
+
+<div id="projectUploadFeedback" class="alert d-none" role="status" aria-live="polite" style="white-space:pre-wrap"></div>
 
 <!-- 上传模态框 -->
 <div class="modal fade" id="uploadModal" tabindex="-1">
@@ -286,7 +290,7 @@
                 </div>
                 <!-- 已选设备列表 -->
                 <div class="alert alert-info mb-2 d-flex justify-content-between align-items-center">
-                    <strong>已选设备：</strong><span id="eqSelectedCount">0</span>台
+                    <strong>已选设备：</strong><span id="eqSelectedCount">0</span>种
                 </div>
                 <div class="table-responsive mb-2" id="eqSelectedTable">
                     <table class="table table-bordered table-sm table-hover" style="table-layout: fixed;">
@@ -356,6 +360,23 @@ var eqPage = 1;
 var eqTotal = {{ available_equipment_total|default(available_equipment|length) }};
 var eqSearchTimer = null;
 
+function existingProjectEquipment(id) {
+    var row = Array.from(document.querySelectorAll('#collapseEquipment tr[data-equipment-id]')).find(function(item) {
+        return item.dataset.equipmentId === String(id);
+    });
+    return row ? {quantity: row.dataset.quantity, location: row.dataset.location} : null;
+}
+
+function validEquipmentQuantity(value) {
+    if (/^[1-9]\d*$/.test(String(value).trim())) return true;
+    alert('数量必须是大于 0 的整数');
+    return false;
+}
+
+function equipmentErrorMessage(message) {
+    return String(message || '设备保存失败，请重试').replace(/\bquantity\b/g, '数量');
+}
+
 function filterEquipment() {
     clearTimeout(eqSearchTimer);
     eqSearchTimer = setTimeout(function() { loadEquipmentCandidates(false); }, 250);
@@ -419,13 +440,15 @@ function updateEqSelectedDisplay() {
     eqSelected.forEach(function(eq, idx) {
         var row = document.createElement('tr');
         row.innerHTML = '<td><input type="checkbox" checked disabled value="' + escapeEq(eq.id) + '"></td>' +
-            '<td title="' + escapeEq(eq.name) + '">' + escapeEq(eq.name.length > 20 ? eq.name.substring(0,20) + '...' : eq.name) + '</td>' +
+            '<td title="' + escapeEq(eq.name) + '">' + escapeEq(eq.name.length > 20 ? eq.name.substring(0,20) + '...' : eq.name) + (existingProjectEquipment(eq.id) ? '<small class="d-block text-secondary">已关联 · 保存将覆盖</small>' : '') + '</td>' +
             '<td title="' + escapeEq(eq.model) + '">' + escapeEq(eq.model && eq.model.length > 20 ? eq.model.substring(0,20) + '...' : (eq.model || '')) + '</td>' +
             '<td><span class="badge bg-secondary">' + escapeEq(eq.category) + '</span></td>' +
-            '<td><input type="number" class="form-control form-control-sm" value="1" min="1" style="width:60px;"></td>' +
-            '<td><input type="text" class="form-control form-control-sm" placeholder="使用位置"></td>' +
+            '<td><input type="number" class="form-control form-control-sm" value="' + escapeEq(eq.quantity) + '" min="1" style="width:60px;"></td>' +
+            '<td><input type="text" class="form-control form-control-sm" value="' + escapeEq(eq.location) + '" placeholder="使用位置"></td>' +
             '<td><button type="button" class="btn btn-sm btn-outline-danger" onclick="removeEq(' + idx + ')">移除</button></td>';
         tbody.appendChild(row);
+        row.querySelector('input[type="number"]').addEventListener('input', function() { eq.quantity = this.value; });
+        row.querySelector('input[type="text"]').addEventListener('input', function() { eq.location = this.value; });
     });
     countSpan.textContent = eqSelected.length;
     table.style.display = eqSelected.length > 0 ? '' : 'none';
@@ -446,11 +469,14 @@ function bindEquipmentCheckboxes() {
         cb.dataset.bound = '1';
         cb.addEventListener('change', function() {
             if (this.checked) {
+                var existing = existingProjectEquipment(this.value);
                 eqSelected.push({
                     id: this.value,
                     name: this.dataset.name,
                     model: this.dataset.model,
-                    category: this.dataset.category
+                    category: this.dataset.category,
+                    quantity: existing ? existing.quantity : '1',
+                    location: existing ? existing.location : ''
                 });
             } else {
                 var idx = eqSelected.findIndex(function(e) { return e.id === this.value; });
@@ -472,15 +498,19 @@ function confirmEquipment() {
         return;
     }
     var projectId = '{{ project['project_id'] }}';
-    // 逐个添加设备
+    if (!eqSelected.every(function(eq) { return validEquipmentQuantity(eq.quantity); })) return;
+    var replacements = eqSelected.filter(function(eq) { return existingProjectEquipment(eq.id); });
+    if (replacements.length) {
+        var summary = replacements.map(function(eq) {
+            var existing = existingProjectEquipment(eq.id);
+            return eq.name + '：数量 ' + existing.quantity + ' → ' + eq.quantity + '；位置 ' + (existing.location || '未填写') + ' → ' + (eq.location || '未填写');
+        }).join('\n');
+        if (!confirm('以下设备已关联，将覆盖已有数量和使用位置（不累加）：\n' + summary + '\n确定覆盖？取消后本批次均不提交。')) return;
+    }
+    // 完整校验并确认覆盖后，才提交本批次。
     var promises = eqSelected.map(function(eq) {
-        var row = Array.from(document.querySelectorAll('#eqSelectedBody tr')).find(function(r) {
-            return r.querySelector('input[value="' + eq.id + '"]');
-        });
-        var quantity = row ? row.querySelector('input[type="number"]').value : 1;
-        var location = row ? row.querySelector('input[type="text"]').value : '';
         var body = new URLSearchParams({
-            equipment_id: eq.id, quantity: quantity, location: location
+            equipment_id: eq.id, quantity: eq.quantity, location: eq.location
         });
         return fetch(projectUpdateUrl + '/link_equipment/' + encodeURIComponent(projectId), {
             method: 'POST',
@@ -493,9 +523,9 @@ function confirmEquipment() {
         if (allSuccess) {
             location.reload();
         } else {
-            alert('部分设备添加失败');
+            alert(results.filter(function(r) { return !r.success; }).map(function(r) { return equipmentErrorMessage(r.message); }).join('\n'));
         }
-    });
+    }).catch(function() { alert('设备保存失败，请检查网络后重试'); });
 }
 
 // 需求生成弹窗
@@ -568,11 +598,72 @@ function copyRequirement() {
     </div>
 </div>
 
+<dialog id="projectFileHistory" aria-labelledby="projectFileHistoryTitle" style="width:min(680px,calc(100vw - 32px));max-height:80vh;border:1px solid #ced4da;border-radius:8px;padding:20px;">
+    <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+        <h5 id="projectFileHistoryTitle" style="overflow-wrap:anywhere;">附件版本</h5>
+        <form method="dialog"><button type="submit" class="btn-close" aria-label="关闭版本历史"></button></form>
+    </div>
+    <div id="projectFileHistoryList" aria-live="polite"></div>
+</dialog>
+
 <script>
 var folderData = {{ folder_tree|tojson|safe }};
 var currentFolder = '{{ folder_types[0] if folder_types else "任务输入文件" }}';
 var projectId = {{ project.project_id | tojson }};
+var projectHistoryRequest = 0;
 
+async function showProjectFileHistory(button) {
+    var requestId = ++projectHistoryRequest;
+    var dialog = document.getElementById('projectFileHistory');
+    var list = document.getElementById('projectFileHistoryList');
+    var fileId = button.dataset.fileId;
+    var name = button.dataset.name;
+    document.getElementById('projectFileHistoryTitle').textContent = name + ' · 版本历史';
+    list.textContent = '正在加载版本…';
+    dialog.showModal();
+    var params = new URLSearchParams({objectType: 'PROJECT', objectId: projectId});
+    try {
+        var response = await fetch('/api/files/' + encodeURIComponent(fileId) + '/versions?' + params.toString());
+        var data = await response.json();
+        if (requestId !== projectHistoryRequest || !dialog.open) return;
+        if (!response.ok) throw new Error(data.message || '版本历史加载失败');
+        if (!Array.isArray(data.versions)) throw new Error('版本历史加载失败');
+        list.replaceChildren();
+        if (!data.versions.length) list.textContent = '暂无版本记录';
+        data.versions.forEach(function(version) {
+            var row = document.createElement('div');
+            row.className = 'd-flex align-items-center flex-wrap gap-2 border-bottom py-2';
+            var label = document.createElement('strong');
+            label.textContent = 'v' + version.versionNo + (version.versionNo === data.versionNo ? '（当前）' : '');
+            row.appendChild(label);
+            var meta = document.createElement('span');
+            meta.className = 'text-muted me-auto';
+            var time = document.createElement('time');
+            var rawTime = version.createdAt || '';
+            var shortTime = String(rawTime).match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+            time.textContent = shortTime ? shortTime[1] + ' ' + shortTime[2] : (rawTime || '时间未记录');
+            if (rawTime) time.title = rawTime;
+            meta.appendChild(time);
+            meta.appendChild(document.createTextNode(' · ' + (version.sizeBytes == null ? '大小未记录' : version.sizeBytes + ' B')));
+            row.appendChild(meta);
+            var downloadUrl = '/api/files/' + encodeURIComponent(fileId) + '/versions/' + encodeURIComponent(version.versionNo) + '/download?' + params.toString();
+            var preview = document.createElement('button');
+            preview.type = 'button'; preview.className = 'btn btn-outline-primary btn-sm'; preview.textContent = '预览';
+            preview.setAttribute('aria-label', '预览 v' + version.versionNo);
+            preview.addEventListener('click', function() {
+                dialog.close();
+                openControlledPreview(fileId, version.versionNo, 'PROJECT', projectId, name + ' · v' + version.versionNo, downloadUrl);
+            });
+            row.appendChild(preview);
+            var download = document.createElement('a');
+            download.className = 'btn btn-outline-primary btn-sm'; download.href = downloadUrl; download.textContent = '下载';
+            download.setAttribute('aria-label', '下载 v' + version.versionNo);
+            row.appendChild(download); list.appendChild(row);
+        });
+    } catch (error) {
+        if (requestId === projectHistoryRequest && dialog.open) list.textContent = error.message || '版本历史加载失败';
+    }
+}
 
 
 function toggleTree(el) {
@@ -613,23 +704,23 @@ function buildNode(node) {
     html += '<div class="d-flex align-items-center mb-2" style="padding-left:' + indent + 'px;">';
     
     if (hasChildren) {
-        html += '<i class="bi bi-chevron-right toggle-icon me-1" style="cursor:pointer;" onclick="event.stopPropagation(); toggleTree(this)"></i>';
+        html += '<i class="bi bi-chevron-right toggle-icon me-1" style="cursor:pointer;" onclick="event.stopPropagation(); toggleTree(this)"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#chevron-right"></use></svg></i>';
     } else {
         html += '<span class="me-2" style="width:16px;display:inline-block;"></span>';
     }
     
     // 文件夹勾选框
     html += '<input type="checkbox" class="form-check-input me-2 folder-cb" value="' + node.path + '" data-type="folder" onchange="toggleKids(this)">';
-    html += '<i class="bi bi-folder text-warning me-2"></i>';
+    html += '<i class="bi bi-folder text-warning me-2"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#folder"></use></svg></i>';
     html += '<span class="me-2">' + node.name + '</span>';
     html += '<span class="badge bg-secondary me-2">' + node.fileCount + '</span>';
     // 上传按钮 - 直接触发文件选择
-    html += '<label class="btn btn-outline-success btn-sm me-1" for="file-' + node.path + '"><i class="bi bi-upload"></i><input type="file" id="file-' + node.path + '" class="d-none" data-folder="' + node.path + '" multiple onchange="uploadFiles(this)"></label>';
+    html += '<label class="btn btn-outline-success btn-sm me-1" for="file-' + node.path + '"><i class="bi bi-upload"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#upload"></use></svg></i><input type="file" id="file-' + node.path + '" class="d-none" data-folder="' + node.path + '" multiple onchange="uploadFiles(this)"></label>';
     // 上传文件夹按钮
-    html += '<button class="btn btn-outline-info btn-sm me-1 btn-upload-folder" data-folder="' + node.path + '" title="上传文件夹"><i class="bi bi-upload"></i></button>';
-    html += '<button class="btn btn-outline-primary btn-sm me-1 btn-subfolder" data-folder="' + node.path + '"><i class="bi bi-folder-plus"></i></button>';
+    html += '<button class="btn btn-outline-info btn-sm me-1 btn-upload-folder" data-folder="' + node.path + '" title="上传文件夹"><i class="bi bi-upload"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#upload"></use></svg></i></button>';
+    html += '<button class="btn btn-outline-primary btn-sm me-1 btn-subfolder" data-folder="' + node.path + '"><i class="bi bi-folder-plus"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#folder-plus"></use></svg></i></button>';
     if (node.path !== '') {
-        html += '<button class="btn btn-outline-danger btn-sm btn-delete-folder" data-folder="' + node.path + '"><i class="bi bi-trash"></i></button>';
+        html += '<button class="btn btn-outline-danger btn-sm btn-delete-folder" data-folder="' + node.path + '"><i class="bi bi-trash"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#trash"></use></svg></i></button>';
     }
     html += '</div>';
     
@@ -645,26 +736,30 @@ function buildNode(node) {
             var downloadUrl = projectUpdateUrl + '/download/{{ project.project_id }}/' + encodeURIComponent(f.path);
             var previewArgs = f.fileId
                 ? [f.fileId, f.versionNo, 'PROJECT', '{{ project.project_id }}', f.name, downloadUrl]
-                : ['/uploads/{{ project.project_id }}/' + f.path, f.name, 'project', downloadUrl];
-            var previewCall = (f.fileId ? 'openControlledPreview(' : 'openPreview(') + previewArgs.map(function(value) {
+                : ['{{ project.project_id }}', {'/projects': 'GENERAL_RESEARCH', '/security_projects': 'SECURITY_CONFIDENTIALITY', '/crypto_projects': 'CRYPTO_APPLICATION'}[projectUpdateUrl], f.path, f.name, downloadUrl];
+            var previewCall = (f.fileId ? 'openControlledPreview(' : 'openProjectPreview(') + previewArgs.map(function(value) {
                 return JSON.stringify(value);
             }).join(',') + ')';
             f = Object.assign({}, f, {path: escapeEq(f.path), name: escapeEq(f.name)});
-            html += '<div class="d-flex align-items-center mb-1">';
+            html += '<div class="d-flex align-items-center flex-wrap gap-1 mb-1">';
             // 文件勾选框
             html += '<input type="checkbox" class="form-check-input me-2 file-cb" value="' + f.path + '" data-type="file" onchange="toggleFolder(this)">';
             {% set proj_id = project.project_id %}
             // 文件名点击预览
             html += '<a href="javascript:void(0)" onclick="' + escapeEq(previewCall) + '" class="text-decoration-none text-dark">';
-            html += '<i class="bi bi-file-text me-2"></i>';
+            html += '<i class="bi bi-file-text me-2"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#file-text"></use></svg></i>';
             html += '<span class="me-2">' + f.name + '</span>';
             html += '</a>';
             html += '<span class="text-muted me-2" style="font-size:0.8em">(' + (f.size/1024).toFixed(1) + ' KB)</span>';
+            if (f.fileId && Number.isInteger(Number(f.versionNo)) && Number(f.versionNo) > 0) {
+                html += '<span class="badge bg-secondary project-file-version">v' + Number(f.versionNo) + '</span>';
+                html += '<button type="button" class="btn btn-outline-primary btn-sm btn-file-history" data-file-id="' + escapeEq(f.fileId) + '" data-name="' + f.name + '">版本历史</button>';
+            }
             // 下载项目文件
-            html += '<a href="' + escapeEq(downloadUrl) + '" class="btn btn-outline-info btn-sm" title="下载"><i class="bi bi-download"></i></a>';
+            html += '<a href="' + escapeEq(downloadUrl) + '" class="btn btn-outline-info btn-sm" title="下载"><i class="bi bi-download"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#download"></use></svg></i></a>';
             // 重命名和删除对所有用户开放
-            html += '<button class="btn btn-outline-primary btn-sm btn-rename" data-path="' + f.path + '" data-name="' + f.name + '" data-file-id="' + escapeEq(f.fileId || '') + '"><i class="bi bi-pencil"></i></button>';
-            html += '<button class="btn btn-outline-danger btn-sm btn-del" data-path="' + f.path + '"><i class="bi bi-trash"></i></button>';
+            html += '<button class="btn btn-outline-primary btn-sm btn-rename" data-path="' + f.path + '" data-name="' + f.name + '" data-file-id="' + escapeEq(f.fileId || '') + '"><i class="bi bi-pencil"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#pencil"></use></svg></i></button>';
+            html += '<button class="btn btn-outline-danger btn-sm btn-del" data-path="' + f.path + '" data-file-id="' + escapeEq(f.fileId || '') + '"><i class="bi bi-trash"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#trash"></use></svg></i></button>';
             html += '</div>';
         });
         html += '</div>';
@@ -675,6 +770,7 @@ function buildNode(node) {
 
 function toggleKids(cb) {
     var checked = cb.checked;
+    cb.indeterminate = false;
     var parentLi = cb.closest('.folder-node');
     if (!parentLi) return;
 
@@ -691,6 +787,7 @@ function toggleKids(cb) {
     parentLi.querySelectorAll('input[type="checkbox"]').forEach(function(checkbox) {
         if (checkbox !== cb) {
             checkbox.checked = checked;
+            checkbox.indeterminate = false;
         }
     });
 
@@ -698,17 +795,20 @@ function toggleKids(cb) {
     hiddenChildren.forEach(function(childDiv) {
         childDiv.style.display = 'none';
     });
+    toggleFolder(cb, true);
 }
 
-// 勾选文件时，同步勾选所有祖先文件夹
-function toggleFolder(cb) {
-    var checked = cb.checked;
-    // 找到所有祖先folder-node中的checkbox并同步
+// 部分文件选中时仅标记父目录半选，不能扩大导出范围。
+function toggleFolder(cb, ancestorsOnly) {
     var current = cb.closest('.folder-node');
+    if (ancestorsOnly && current) current = current.parentElement.closest('.folder-node');
     while (current) {
         var folderCb = current.querySelector(':scope > div > .folder-cb');
         if (folderCb) {
-            folderCb.checked = checked;
+            var files = Array.from(current.querySelectorAll('.file-cb'));
+            var selected = files.filter(function(file) { return file.checked; }).length;
+            folderCb.checked = false;
+            folderCb.indeterminate = selected > 0;
         }
         // 继续向上查找
         current = current.parentElement.closest('.folder-node');
@@ -739,19 +839,9 @@ function setupCollapseIcons() {
 }
 
 function bindEvents() {
-    // 目录树展开/折叠事件
-    document.querySelectorAll('#folderTree .toggle-icon').forEach(function(icon) {
-        icon.addEventListener('click', function() {
-            var p = this.closest('.folder-node');
-            var child = p.querySelector('.children');
-            if (child) {
-                child.style.display = child.style.display === 'none' ? 'block' : 'none';
-                this.classList.toggle('bi-chevron-right');
-                this.classList.toggle('bi-chevron-down');
-            }
-        });
+    document.querySelectorAll('.btn-file-history').forEach(function(button) {
+        button.addEventListener('click', function() { showProjectFileHistory(this); });
     });
-    
     document.querySelectorAll('.btn-upload').forEach(function(btn) {
         btn.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -770,48 +860,11 @@ function bindEvents() {
         });
     });
     
-    // 直接上传文件（多选）
-    window.uploadFiles = function(input) {
-        var files = input.files;
-        if (!files || files.length === 0) return;
-        
-        var folder = input.dataset.folder;
-        var projectId = '{{ project['project_id'] }}';
-        
-        // 逐个上传文件
-        var uploaded = 0;
-        var total = files.length;
-        var hasError = false;
-        
-        Array.from(files).forEach(function(file) {
-            var fd = new FormData();
-            fd.append('file', file);
-            fd.append('folder', folder);
-            
-            fetch(projectUpdateUrl + '/upload/' + projectId, {method:'POST', body:fd})
-            .then(r=>r.json())
-            .then(d=>{
-                uploaded++;
-                if (!d.success) {
-                    hasError = true;
-                    alert('上传失败: ' + (d.message || '未知错误'));
-                }
-                if (uploaded === total) {
-                    if (!hasError) {
-                        alert('上传成功！');
-                    }
-                    location.reload();
-                }
-            })
-            .catch(e=>{
-                uploaded++;
-                hasError = true;
-                alert('上传失败: ' + e);
-                if (uploaded === total) {
-                    location.reload();
-                }
-            });
-        });
+    // 文件树与弹窗统一逐份提交，避免单文件接口静默忽略多选项。
+    window.uploadFiles = async function(input) {
+        if (projectUploadBusy) return;
+        await uploadProjectFiles(input.files, input.dataset.folder || '');
+        input.value = '';
     };
     
     // 上传文件夹按钮事件
@@ -836,7 +889,7 @@ function bindEvents() {
             if (confirm('确定删除文件夹 "' + folderPath + '" 及其所有内容？')) {
                 var fd = new FormData();
                 fd.append('folder_path', folderPath);
-                fetch('/projects/delete_folder/{{ project['project_id'] }}', {method:'POST', body:fd})
+                fetch(projectUpdateUrl + '/delete_folder/{{ project['project_id'] }}', {method:'POST', body:fd})
                 .then(r=>r.json())
                 .then(d=>{ 
                     if(d.success) {
@@ -857,7 +910,8 @@ function bindEvents() {
             if (confirm('确定删除此文件？')) {
                 var fd = new FormData();
                 fd.append('file_path', this.dataset.path);
-                fetch('/projects/delete_file/{{ project['project_id'] }}', {method:'POST', body:fd})
+                fd.append('expectedFileId', this.dataset.fileId || '');
+                fetch(projectUpdateUrl + '/delete_file/{{ project['project_id'] }}', {method:'POST', body:fd})
                 .then(r=>r.json())
                 .then(d=>{ 
                     if(d.success) {
@@ -910,7 +964,7 @@ function renderArchiveList(nodes, lvl) {
         var hasKids = n.children && n.children.length > 0;
         html += '<div style="padding-left:' + indent + 'px">';
         html += '<input type="checkbox" class="form-check-input me-2 archive-cb" value="' + n.path + '" name="folders" onchange="checkKids(this)">';
-        html += '<i class="bi bi-folder' + (hasKids ? '' : '-open') + ' text-warning me-2"></i>';
+        html += '<i class="bi bi-folder' + (hasKids ? '' : '-open') + ' text-warning me-2"><svg class="legacy-lucide app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#folder' + (hasKids ? '' : '-open') + '"></use></svg></i>';
         html += '<span>' + n.name + '</span></div>';
         if (hasKids) html += renderArchiveList(n.children, lvl + 1);
     });
@@ -930,12 +984,18 @@ function checkKids(cb) {
 
 function updateEquipment(pid, gid, eid, inp) {
     var row = inp.closest('tr');
+    var quantity = row.querySelector('input[type=number]').value;
+    var equipmentLocation = row.querySelector('textarea').value;
+    if (!validEquipmentQuantity(quantity)) return;
     var fd = new FormData();
-    fd.append('quantity', row.querySelector('input[type=number]').value);
-    fd.append('location', row.querySelector('textarea').value);
+    fd.append('quantity', quantity);
+    fd.append('location', equipmentLocation);
     fetch(projectUpdateUrl + '/update_equipment/' + pid + '/' + gid + '/' + eid, {method:'POST', body:fd})
     .then(r => r.json())
-    .then(d => { if (!d.success) alert('保存失败: ' + (d.message || '未知错误')); });
+    .then(d => {
+        if (!d.success) alert('保存失败: ' + equipmentErrorMessage(d.message));
+        else { row.dataset.quantity = quantity; row.dataset.location = equipmentLocation; }
+    }).catch(function() { alert('设备保存失败，请检查网络后重试'); });
 }
 
 // 更新项目字段（状态、结束日期、任务号）
@@ -960,7 +1020,7 @@ function updateProjectField(projectId, field, value) {
 document.getElementById('folderForm').onsubmit = function(e) {
     e.preventDefault();
     var fd = new FormData(this);
-    fetch('/projects/create_folder/{{ project['project_id'] }}', {method:'POST', body:fd})
+    fetch(projectUpdateUrl + '/create_folder/{{ project['project_id'] }}', {method:'POST', body:fd})
     .then(r=>r.json())
     .then(d=>{ 
         if(d.success) {
@@ -975,13 +1035,70 @@ document.getElementById('folderForm').onsubmit = function(e) {
     });
 };
 
+var projectUploadBusy = false;
+
+async function uploadProjectFiles(selectedFiles, folder) {
+    if (projectUploadBusy) return;
+    var files = Array.from(selectedFiles || []);
+    if (files.length === 0) { alert('请选择文件'); return; }
+    projectUploadBusy = true;
+    var submit = document.querySelector('#uploadForm button[type="submit"]');
+    if (submit) submit.disabled = true;
+    var feedback = document.getElementById('projectUploadFeedback');
+    var succeeded = [];
+    var failed = [];
+    var unknown = [];
+    try {
+        for (var file of files) {
+            var fd = new FormData();
+            fd.append('file', file);
+            fd.append('folder', folder || '');
+            if (feedback) {
+                feedback.className = 'alert alert-info';
+                feedback.textContent = '正在上传：' + file.name + '（共 ' + files.length + ' 个）';
+            }
+            try {
+                var response = await fetch(projectUpdateUrl + '/upload/{{ project['project_id'] }}', {method:'POST', body:fd});
+                var result = await response.json();
+                if (response.ok && result.success === true) {
+                    succeeded.push(file.name);
+                } else {
+                    failed.push(file.name + '：' + (result.message || '服务器拒绝本次上传（HTTP ' + response.status + '）'));
+                }
+            } catch (error) {
+                unknown.push(file.name + '：结果未确认，请先刷新核对是否已保存，勿直接重复上传');
+            }
+        }
+        var message = '上传结果：成功 ' + succeeded.length + '，失败 ' + failed.length + '，未确认 ' + unknown.length + '（共 ' + files.length + ' 个）。';
+        if (succeeded.length) message += '\n成功文件：' + succeeded.join('、');
+        if (failed.length) message += '\n失败文件：\n' + failed.join('\n');
+        if (unknown.length) message += '\n未确认文件：\n' + unknown.join('\n');
+        if (failed.length || unknown.length) message += '\n已成功文件不必重复上传；请核对结果后仅重新选择需要处理的文件。';
+        if (feedback) {
+            feedback.className = 'alert ' + (failed.length || unknown.length ? 'alert-warning' : 'alert-success');
+            feedback.textContent = message;
+        }
+        document.getElementById('fileInput').value = '';
+        alert(message);
+        if (!failed.length && !unknown.length) location.reload();
+    } finally {
+        projectUploadBusy = false;
+        if (submit) submit.disabled = false;
+    }
+}
+
 document.getElementById('uploadForm').onsubmit = function(e) {
     e.preventDefault();
+    if (projectUploadBusy) return;
     var fd = new FormData(this);
     var projectId = '{{ project['project_id'] }}';
     
     // 检查是否选择了文件夹上传
     var folderInput = document.getElementById('folderInput');
+    if (folderInput && folderInput.files.length && document.getElementById('fileInput').files.length) {
+        alert('请在文件和文件夹中选择一种上传方式；本次未上传任何文件。');
+        return;
+    }
     if (folderInput && folderInput.files.length > 0) {
         // 文件夹上传
         fd = new FormData();
@@ -989,43 +1106,46 @@ document.getElementById('uploadForm').onsubmit = function(e) {
         Array.from(folderInput.files).forEach(function(file) {
             fd.append('files', file, file.webkitRelativePath || file.name);
         });
+        projectUploadBusy = true;
+        var submitButton = document.querySelector('#uploadForm button[type="submit"]');
+        if (submitButton) submitButton.disabled = true;
+        var feedback = document.getElementById('projectUploadFeedback');
+        if (feedback) { feedback.className = 'alert alert-info'; feedback.textContent = '正在上传文件夹，请等待结果。'; }
         fetch(projectUpdateUrl + '/upload_folder/' + projectId, {method:'POST', body:fd})
-        .then(r=>r.json())
-        .then(d=>{ 
-            if(d.success) {
-                alert(d.message || '上传成功！');
-                location.reload(); 
-            } else {
-                alert(d.message || '上传失败');
-                if (d.uploadedCount > 0) location.reload();
-            }
+        .then(async function(response) {
+            var data = await response.json();
+            if (!response.ok) return {success:false, message:data.message || '服务器拒绝文件夹上传（HTTP ' + response.status + '）', uploadedCount:data.uploadedCount};
+            return data;
         })
-        .catch(e=>{
-            alert('上传失败: ' + e);
-        });
+        .then(function(data) {
+            var complete = data.success === true;
+            var message = data.message || (complete ? '文件夹上传成功' : '文件夹上传失败');
+            if (!complete && data.uploadedCount > 0) message += '；已有 ' + data.uploadedCount + ' 个成功，请核对列表后仅补传失败文件，勿整体重复上传。';
+            if (feedback) { feedback.className = 'alert ' + (complete ? 'alert-success' : 'alert-warning'); feedback.textContent = message; }
+            alert(message);
+            if (complete) location.reload();
+        })
+        .catch(function() {
+            var message = '文件夹上传结果未确认，请先刷新核对是否已保存，勿直接重复上传。';
+            if (feedback) { feedback.className = 'alert alert-warning'; feedback.textContent = message; }
+            alert(message);
+        })
+        .finally(function() { projectUploadBusy = false; if (submitButton) submitButton.disabled = false; });
     } else {
-        // 单个文件上传
-        fetch(projectUpdateUrl + '/upload/' + projectId, {method:'POST', body:fd})
-        .then(r=>r.json())
-        .then(d=>{ 
-            if(d.success) {
-                alert('上传成功！');
-                location.reload(); 
-            } else {
-                alert(d.message || '上传失败');
-            }
-        })
-        .catch(e=>{
-            alert('上传失败: ' + e);
-        });
+        uploadProjectFiles(document.getElementById('fileInput').files, document.getElementById('uploadFolder').value);
     }
 };
 
 document.getElementById('archiveForm').onsubmit = function(e) {
     e.preventDefault();
     var fd = new FormData(this);
-    fetch('/projects/archive/{{ project['project_id'] }}', {method:'POST', body:fd})
-    .then(r=>r.blob())
+    fetch(projectUpdateUrl + '/archive/{{ project['project_id'] }}', {method:'POST', body:fd})
+    .then(r=>{
+        if (!r.ok || !(r.headers.get('Content-Type') || '').includes('application/zip')) {
+            throw new Error('服务器未返回有效 ZIP 文件');
+        }
+        return r.blob();
+    })
     .then(b=>{
         var a = document.createElement('a');
         a.href = URL.createObjectURL(b);
@@ -1033,7 +1153,7 @@ document.getElementById('archiveForm').onsubmit = function(e) {
         a.click();
         URL.revokeObjectURL(a.href);
         bootstrap.Modal.getInstance(document.getElementById('archiveModal')).hide();
-    });
+    }).catch(function(error) { alert('导出失败: ' + error.message); });
 };
 
 function showCreateFolder(pf) {
@@ -1083,10 +1203,15 @@ function exportSelected() {
     checkedFiles.forEach(cb => paths.push(cb.value));
     
     var fd = new FormData();
-    fd.append('paths', JSON.stringify(paths));
+    paths.forEach(function(path) { fd.append('folders', path); });
     
-    fetch('/projects/archive/{{ project['project_id'] }}', {method:'POST', body:fd})
-    .then(r=>r.blob())
+    fetch(projectUpdateUrl + '/archive/{{ project['project_id'] }}', {method:'POST', body:fd})
+    .then(r=>{
+        if (!r.ok || !(r.headers.get('Content-Type') || '').includes('application/zip')) {
+            throw new Error('服务器未返回有效 ZIP 文件');
+        }
+        return r.blob();
+    })
     .then(b=>{
         if (b.size === 0) {
             alert('没有找到要导出的文件');
@@ -1114,8 +1239,6 @@ function unlinkEquipment(pid, gid, eid) {
 // 确保目录树渲染后绑定事件
 if (document.getElementById('folderTree')) {
     renderTree(folderData, document.getElementById('folderTree'));
-    // 延迟绑定事件确保DOM完全渲染
-    setTimeout(function(){ bindEvents(); }, 100);
 }
 
     setupCollapseIcons();

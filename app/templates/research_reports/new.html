@@ -1,0 +1,11 @@
+{% extends "research_reports/layout.html" %}
+{% block report_content %}
+<a href="{{ url_for('research_reports.list_page', objectType=object_type, objectId=object_id) }}">返回报告列表</a>
+<h1>新建科研报告</h1><p>关联：{{ object_id }}。保存后形成 v1；后续修改保留历史版本。</p>
+<form method="post">
+<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+<label class="form-label" for="title">报告标题</label><input class="form-control mb-3" id="title" name="title" value="{{ form.get('title', '') }}" required maxlength="200">
+<label class="form-label" for="purpose">报告用途</label><input class="form-control mb-3" id="purpose" name="purpose" value="{{ form.get('purpose', '') }}" required>
+{% include 'research_reports/fields.html' %}
+<button class="btn btn-primary" type="submit">创建并保存 v1</button>
+</form>{% endblock %}

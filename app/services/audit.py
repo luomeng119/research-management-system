@@ -32,6 +32,7 @@ EVENT_PROPERTIES = {
     "project_created_from_proposal": {"project_category", "idempotency_reused"},
     "project_status_changed": {"from_status", "to_status"},
     "project_record_added": {"record_type", "project_status"},
+    "project_record_updated": {"record_type", "project_status"},
     "expert_sensitive_accessed": {"operation", "record_count"},
     "file_operation_completed": {"operation", "file_type", "size_bucket"},
     "reference_library_operation": {"operation"},
@@ -99,11 +100,18 @@ class AuditService:
         if result == "FAILURE" and not error_code:
             raise AuditEventError("failure events require error_code")
         allowed = EVENT_PROPERTIES[event_name]
-        cleaned = {
-            key: value
-            for key, value in (properties or {}).items()
-            if key in allowed and not _sensitive(key) and _low_sensitivity_value(value)
-        }
+        cleaned = {}
+        for key, value in (properties or {}).items():
+            if key not in allowed:
+                continue
+            if event_name == "assistant_generation_completed" and key in {
+                "input_token_count", "output_token_count",
+            }:
+                # Numeric usage is not a credential; never exempt string tokens.
+                if value is None or (type(value) is int and value >= 0):
+                    cleaned[key] = value
+            elif not _sensitive(key) and _low_sensitivity_value(value):
+                cleaned[key] = value
         metadata = {
             "event_name": event_name,
             "duration_ms": int(duration_ms),

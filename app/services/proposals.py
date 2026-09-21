@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 import uuid
 from datetime import date, datetime, timezone
 
@@ -123,12 +124,21 @@ def _decision(row) -> dict:
     }
 
 
+def _trim_body_text(value: str) -> str:
+    start, end = 0, len(value)
+    while start < end and (value[start].isspace() or unicodedata.category(value[start])[0] in {"C", "Z"}):
+        start += 1
+    while end > start and (value[end - 1].isspace() or unicodedata.category(value[end - 1])[0] in {"C", "Z"}):
+        end -= 1
+    return value[start:end]
+
+
 def _validate_body(payload: dict, *, merged: dict | None = None) -> dict:
     values = dict(merged or {})
     for external, internal in BODY_FIELDS.items():
         if external in payload:
             raw = payload.get(external)
-            values[internal] = normalize_text(raw) if isinstance(raw, str) else raw
+            values[internal] = (normalize_text(raw) if external == "sourceType" else _trim_body_text(raw)) if isinstance(raw, str) else raw
     errors: dict[str, str] = {}
     for external, internal in BODY_FIELDS.items():
         value = values.get(internal)
@@ -137,6 +147,8 @@ def _validate_body(payload: dict, *, merged: dict | None = None) -> dict:
                 errors[external] = FIELD_MESSAGES[external]
         elif not has_meaningful_text(value):
             errors[external] = FIELD_MESSAGES[external]
+        elif "\x00" in value:
+            errors[external] = "字段不能包含空字符"
     if isinstance(values.get("title"), str) and len(values["title"]) > 200:
         errors["title"] = "提案名称不能超过 200 个字符"
     for external, limit in FIELD_LIMITS.items():

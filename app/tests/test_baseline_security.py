@@ -90,16 +90,38 @@ def test_factory_does_not_create_a_default_user(app_factory, monkeypatch):
     assert created_users == []
 
 
-def test_only_login_and_health_are_public(app_factory):
+def test_only_login_intro_and_health_are_public(app_factory):
     app = app_factory()
     client = app.test_client()
 
     login_response = client.get("/auth/login")
+    intro_response = client.get("/system-intro")
     health_response = client.get("/healthz")
 
     assert login_response.status_code == 200
+    assert intro_response.status_code == 200
+    assert 'data-intro-section="overview"' in intro_response.text
+    assert 'data-intro-section="workflow"' in intro_response.text
+    assert 'data-intro-section="features"' in intro_response.text
+    assert 'data-intro-section="data-flow"' in intro_response.text
+    assert 'data-intro-section="local-ai"' not in intro_response.text
+    assert 'data-intro-section="architecture"' in intro_response.text
+    assert 'data-intro-section="delivery"' in intro_response.text
+    assert 'href="/auth/login"' in intro_response.text
+    assert "http://127.0.0.1:8893/auth/login" in intro_response.text
+    assert "https://" not in intro_response.text
     assert health_response.status_code == 200
     assert health_response.get_json() == {"status": "ok"}
+
+    with client.session_transaction() as authenticated_session:
+        authenticated_session["user"] = "admin"
+    authenticated_intro = client.get("/system-intro")
+    assert authenticated_intro.status_code == 200
+    assert 'data-intro-section="overview"' in authenticated_intro.text
+    assert 'class="app-shell"' not in authenticated_intro.text
+    assert 'href="/">返回系统</a>' in authenticated_intro.text
+    with client.session_transaction() as authenticated_session:
+        authenticated_session.clear()
 
     protected_urls = (
         "/auth/register",

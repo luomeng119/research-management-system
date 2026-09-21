@@ -13,7 +13,7 @@ from alembic.config import Config
 from sqlalchemy.exc import DBAPIError
 
 
-HEAD_REVISION = "0009_equipment_import_batches"
+HEAD_REVISION = "0013_report_redaction_snapshot"
 
 CORE_TABLES = {
     "users",

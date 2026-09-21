@@ -10,6 +10,7 @@ from app.security.auth import business_required, current_identity
 from app.services.files import FileServiceError
 from app.services.proposals import ProposalServiceError, SOURCE_TYPES, STATUSES
 from app.services.projects import ProjectServiceError
+from app.web.files import business_user_required
 
 
 bp = Blueprint("proposals", __name__)
@@ -79,8 +80,23 @@ def _detail_context(business_id: str, **extra):
     decisions = _service().list_decisions(
         business_id, page=decision_page, page_size=10
     )
+    linked_project = None
+    project_service = current_app.extensions.get("project_service")
+    if proposal["status"] == "ESTABLISHED" and project_service is not None:
+        repository = project_service.repository
+        with repository.engine.connect() as connection:
+            registry, project = repository.get_project_ref_by_proposal(
+                connection, proposal["id"]
+            )
+        if registry is not None and project is not None:
+            linked_project = {
+                "id": str(registry["id"]),
+                "businessId": registry["business_id"],
+                "name": project["name"],
+            }
     return {
         "proposal": proposal,
+        "linked_project": linked_project,
         "argumentations": argumentations["items"],
         "argumentation_pagination": argumentations,
         "decisions": decisions["items"],
@@ -256,6 +272,21 @@ def decide_page(business_id: str):
             business_id, error, decision_form=form,
             idempotency_key=form.get("idempotencyKey") or uuid.uuid4().hex,
         )
+    except Exception as error:
+        if isinstance(error, HTTPException):
+            raise
+        current_app.logger.error(
+            "proposal decision request failed", exc_info=error,
+            extra={"request_id": _request_id()},
+        )
+        return _detail_error(
+            business_id,
+            ProjectServiceError(
+                "PROCESSING_FAILED", "系统处理失败，已保留填写内容，请核实当前记录后再处理。", 500
+            ),
+            decision_form=form,
+            idempotency_key=form.get("idempotencyKey") or uuid.uuid4().hex,
+        )
 
 
 @bp.post("/proposals/<business_id>/reopen")
@@ -306,6 +337,30 @@ def upload_attachment_page(business_id: str):
         )
         return redirect(url_for("proposals.detail_page", business_id=business_id))
     except (FileServiceError, ProposalServiceError) as error:
+        return _detail_error(business_id, error)
+
+
+@bp.post("/proposals/<business_id>/attachments/<file_id>/versions")
+@business_user_required
+def upload_attachment_version_page(business_id: str, file_id: str):
+    try:
+        _service().get(business_id)
+        uploaded = request.files.get("file")
+        if uploaded is None or not uploaded.filename:
+            raise FileServiceError("FILE_REQUIRED", "请选择文件")
+        try:
+            expected_version = int(request.form.get("expectedVersion", ""))
+        except ValueError:
+            raise FileServiceError("EXPECTED_VERSION_REQUIRED", "必须提供当前版本号")
+        current_app.extensions["file_service"].add_version(
+            file_id, uploaded.stream, original_name=uploaded.filename,
+            object_type="PROPOSAL", object_id=business_id, expected_version=expected_version,
+            actor_user_id=current_identity().user_id, request_id=_request_id(),
+        )
+        return redirect(url_for("proposals.detail_page", business_id=business_id))
+    except (FileServiceError, ProposalServiceError) as error:
+        if error.status_code == 404:
+            return render_template("proposals/not_found.html", message="提案或附件不存在"), 404
         return _detail_error(business_id, error)
 
 

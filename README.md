@@ -2,6 +2,8 @@
 
 > 面向科研院所的跨平台 Web 内网管理系统，覆盖科研提案、项目、专家、设备资源、通用表格和文档管理。
 
+> **2026-09-21 当前交付状态：**项目本地生成模型及下载残片不进入本次交付，AI 功能默认关闭并从界面隐藏。系统默认启动只依赖 Python、PostgreSQL 和本地文件存储，不需要启动、下载或配置本地模型。2026-09-11 文档中的 Qwen/llama.cpp/AI 演示内容是历史交付证据，已由[当前交付说明](docs/delivery/20260921/README.md)取代。
+
 ## 项目简介
 
 科研管理系统是一套本地部署的 Flask Web 应用，断网时核心业务仍可运行：
@@ -14,8 +16,8 @@
 - **经费登记**：采购相关的报销、发票、付款和附件登记；不包含预算、会计核算或审批流
 - **标准法规**：标准法规库管理
 - **方案论证**：方案论证文档管理
-- **原 AI 辅助**：保留原本地文档校对与检索代码，默认关闭，不作为 V1 核心验收项
-- **科研提案助手**：可选调用在线 DeepSeek API；未配置或断网时不影响手工提案及其他业务
+- **人工科研报告**：支持报告创建、编辑、版本、敏感词规则和 DOCX 导出
+- **AI 扩展边界**：相关实现代码仅作为未来受控扩展保留；当前交付默认不展示、不初始化、不可调用
 
 ## 技术栈
 
@@ -27,7 +29,7 @@
 | Session | Flask-Session 0.8.0 + cachelib 本地文件存储 |
 | 文档解析 | python-docx / openpyxl / pdfminer.six / PyMuPDF |
 | OCR | RapidOCR（onnxruntime） |
-| AI | 可选 DeepSeek 在线 API；原本地校对/检索代码默认关闭 |
+| AI | 当前交付无运行依赖；相关扩展代码默认关闭并隐藏 |
 | 前端 | 原生 HTML/CSS/JS + 本地化 Quill 编辑器（无外网 CDN） |
 | Python | 3.13.x |
 
@@ -36,7 +38,7 @@
 ### 环境要求
 
 - Python 3.13.x（当前已验证的项目运行基线）
-- Node.js（仅原本地校对代码或离线验收工具需要，不是核心业务运行前提）
+- Node.js（仅浏览器端到端测试和开发工具需要，不是生产运行前提）
 - 浏览器客户端：Windows、Linux、macOS 上的现代 Chromium 内核浏览器
 - 服务端核心：Python 3.13 + Waitress + PostgreSQL，不绑定单一操作系统；安装包需按目标 OS/CPU 单独构建和真机验证
 
@@ -65,7 +67,7 @@ python run.py
 
 启动后访问 `http://127.0.0.1:5001/`。非测试环境未配置 `FLASK_SECRET_KEY` 时应用会拒绝启动。
 
-> AI 是可选增强。未配置 DeepSeek API、断网或原本地模型不可用时，手工提案及其他核心业务仍可正常运行。
+默认配置 `AI_FEATURES_VISIBLE=False`、`AI_PROVIDER=DISABLED`，无需模型文件、模型端口或云端 API。当前交付中的 AI 专用入口和路由不属于可用功能；手工提案、项目管理和人工报告链路独立运行。
 
 ### 首次启动
 
@@ -81,7 +83,7 @@ python run.py
 │   ├── routes/             # 路由（20+ 个功能模块）
 │   ├── repositories/       # PostgreSQL 数据访问
 │   ├── services/           # 业务服务
-│   ├── llm/                # 本地大模型（校对/检索）
+│   ├── llm/                # 保留的 AI 扩展代码（默认不加载）
 │   ├── ocr/                # OCR 识别
 │   ├── utils/              # 工具（模糊匹配/导入进度）
 │   ├── templates/          # Jinja2 模板
@@ -89,7 +91,7 @@ python run.py
 ├── run.py                  # 启动入口
 ├── config.py               # 全局配置
 ├── requirements.txt        # Python 依赖清单
-├── inference_server.js     # Node.js 推理服务器
+├── inference_server.js     # 保留的历史推理适配器（默认不启动）
 ├── SPEC/                   # 需求文档（REQ-001 ~ REQ-020）
 ├── docs/                   # 技术文档 + 开发文档（本包新增）
 ├── migrations/             # Alembic 数据库迁移
@@ -118,6 +120,9 @@ bash scripts/test_postgres.sh postgresql://localhost/rm_v1_t10 -- \
 | `SPEC.md` | 需求池总览 |
 | `ENGINEERING_REQUIREMENTS.md` | 工程规范（数据库访问/前端/内网/文档预览等约束） |
 | `ERROR_KNOWLEDGE.md` | Bug 模式知识库（历史 bug 及修复模式） |
+| [`docs/delivery/20260921/README.md`](docs/delivery/20260921/README.md) | 2026-09-21 当前交付状态、运行边界与文档索引 |
+| [`docs/delivery/20260911/README.md`](docs/delivery/20260911/README.md) | 2026-09-11 历史产品交付文件及其被取代说明 |
+| [`docs/release/2026-09-21-no-local-model-handoff.md`](docs/release/2026-09-21-no-local-model-handoff.md) | 无本地生成模型交付说明与发布边界 |
 
 ## 版本
 

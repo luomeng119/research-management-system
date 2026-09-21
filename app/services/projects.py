@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -213,8 +214,8 @@ class ProjectService:
             raise ProjectServiceError(
                 "VALIDATION_ERROR", "立项字段类型无效", 422, fields=invalid_types
             )
-        conclusion = normalize_text(conclusion_raw)
-        basis = normalize_text(basis_raw)
+        conclusion = ProjectService._trim_process_text(conclusion_raw)
+        basis = ProjectService._trim_process_text(basis_raw)
         name = normalize_text(name_raw)
         leader = normalize_text(leader_raw)
         if category not in CATEGORIES:
@@ -257,7 +258,7 @@ class ProjectService:
                 "PROJECT"
                 if event_name in {
                     "project_created_from_proposal", "project_status_changed",
-                    "project_record_added",
+                    "project_record_added", "project_record_updated",
                 }
                 else "PROPOSAL"
             ),
@@ -491,6 +492,7 @@ class ProjectService:
             "project_created_from_proposal": "立项",
             "project_status_changed": "状态变更",
             "project_record_added": "登记记录",
+            "project_record_updated": "修改进展",
         }
         items = [{
             "timestamp": row["created_at"],
@@ -588,7 +590,7 @@ class ProjectService:
     ) -> dict:
         if category not in CATEGORIES:
             raise ProjectServiceError("VALIDATION_ERROR", "项目类别无效", 422)
-        if field not in {"actual_end_date", "status", "task_number"}:
+        if field not in {"planned_end_date", "actual_end_date", "status", "task_number"}:
             raise ProjectServiceError("VALIDATION_ERROR", "不允许修改该字段", 422)
         if not isinstance(value, str):
             raise ProjectServiceError("VALIDATION_ERROR", "字段值必须是文本", 422)
@@ -621,9 +623,10 @@ class ProjectService:
                 allow_same_status=True,
             )
             return self.get_legacy(category=category, business_id=business_id)
+        date_fields = {"planned_end_date": "plannedEndDate", "actual_end_date": "actualEndDate"}
         field_value = (
-            None if field == "actual_end_date" and not normalized
-            else _date(normalized, "actualEndDate") if field == "actual_end_date"
+            None if field in date_fields and not normalized
+            else _date(normalized, date_fields[field]) if field in date_fields
             else normalized
         )
         with self.repository.engine.begin() as connection:
@@ -632,6 +635,8 @@ class ProjectService:
             )
             if registry is None:
                 raise ProjectServiceError("NOT_FOUND", "科研项目不存在", 404)
+            if field == "planned_end_date" and registry["status"] in {"CLOSED", "TERMINATED"}:
+                raise ProjectServiceError("STATE_CONFLICT", "终态项目不能修改计划结束日期", 409)
             updated = self.repository.update_category_project(
                 connection, category=category, registry_id=registry["id"],
                 values={field: field_value},
@@ -720,6 +725,15 @@ class ProjectService:
         }[status]
 
     @staticmethod
+    def _trim_process_text(value: str) -> str:
+        start, end = 0, len(value)
+        while start < end and (value[start].isspace() or unicodedata.category(value[start])[0] in {"C", "Z"}):
+            start += 1
+        while end > start and (value[end - 1].isspace() or unicodedata.category(value[end - 1])[0] in {"C", "Z"}):
+            end -= 1
+        return value[start:end]
+
+    @staticmethod
     def _required_text(payload: dict, key: str, *, max_length: int = 5000) -> str:
         value = payload.get(key)
         if not isinstance(value, str):
@@ -727,7 +741,7 @@ class ProjectService:
                 "VALIDATION_ERROR", f"{key} 必须是文本", 422,
                 fields={key: "请填写文本"},
             )
-        normalized = normalize_text(value)
+        normalized = normalize_text(value) if key in {"changeType", "outputType"} else ProjectService._trim_process_text(value)
         if not has_meaningful_text(normalized):
             raise ProjectServiceError(
                 "VALIDATION_ERROR", f"请填写 {key}", 422,
@@ -750,7 +764,7 @@ class ProjectService:
                 "VALIDATION_ERROR", f"{key} 必须是文本", 422,
                 fields={key: "请填写文本"},
             )
-        normalized = normalize_text(value)
+        normalized = ProjectService._trim_process_text(value)
         if len(normalized) > max_length:
             raise ProjectServiceError(
                 "VALIDATION_ERROR", f"{key} 过长", 422,
@@ -828,36 +842,14 @@ class ProjectService:
     def add_progress(
         self, registry_id, payload: dict, *, actor_user_id: int, request_id: str
     ) -> dict:
-        status = payload.get("status")
-        if status not in PROGRESS_STATUSES:
-            raise ProjectServiceError(
-                "VALIDATION_ERROR", "进展状态无效", 422,
-                fields={"status": "请选择正常、有风险或受阻"},
-            )
-        summary = self._required_text(payload, "summary")
-        risk_level = payload.get("riskLevel")
-        if risk_level not in (None, "") and risk_level not in RISK_LEVELS:
-            raise ProjectServiceError(
-                "VALIDATION_ERROR", "风险等级无效", 422,
-                fields={"riskLevel": "请选择有效风险等级"},
-            )
-        recorded_at = _datetime(payload.get("recordedAt"), "recordedAt")
+        fields = self._progress_values(payload)
         expected_version = self._expected_version(payload)
         now = _now()
         values = {
-            "id": uuid.uuid4(),
-            "project_registry_id": registry_id,
-            "recorded_at": recorded_at,
-            "status": status,
-            "summary": summary,
-            "risk_level": risk_level or None,
-            "issues": self._optional_text(payload, "issues", max_length=10000),
-            "next_actions": self._optional_text(payload, "nextActions", max_length=10000),
-            "created_at": now,
-            "updated_at": now,
-            "created_by": actor_user_id,
-            "updated_by": actor_user_id,
-            "version": 1,
+            **fields,
+            "id": uuid.uuid4(), "project_registry_id": registry_id,
+            "created_at": now, "updated_at": now,
+            "created_by": actor_user_id, "updated_by": actor_user_id, "version": 1,
         }
         with self.repository.engine.begin() as connection:
             registry, _ = self._project_rows(connection, registry_id, lock=True)
@@ -867,6 +859,75 @@ class ProjectService:
                 request_id=request_id,
             )
         return {**_progress(values), "projectVersion": new_version}
+
+    def _progress_values(self, payload: dict) -> dict:
+        status = payload.get("status")
+        if not isinstance(status, str) or status not in PROGRESS_STATUSES:
+            raise ProjectServiceError(
+                "VALIDATION_ERROR", "进展状态无效", 422,
+                fields={"status": "请选择正常、有风险或受阻"},
+            )
+        risk_level = payload.get("riskLevel")
+        if risk_level not in (None, "") and (
+            not isinstance(risk_level, str) or risk_level not in RISK_LEVELS
+        ):
+            raise ProjectServiceError(
+                "VALIDATION_ERROR", "风险等级无效", 422,
+                fields={"riskLevel": "请选择有效风险等级"},
+            )
+        return {
+            "recorded_at": _datetime(payload.get("recordedAt"), "recordedAt"),
+            "status": status,
+            "summary": self._required_text(payload, "summary"),
+            "risk_level": risk_level or None,
+            "issues": self._optional_text(payload, "issues", max_length=10000),
+            "next_actions": self._optional_text(payload, "nextActions", max_length=10000),
+        }
+
+    def update_progress(
+        self, registry_id, progress_id, payload: dict, *, actor_user_id: int,
+        request_id: str,
+    ) -> dict:
+        if not isinstance(payload, dict) or set(payload) - {
+            "recordedAt", "status", "summary", "riskLevel", "issues", "nextActions", "version"
+        }:
+            raise ProjectServiceError("VALIDATION_ERROR", "进展字段无效", 422)
+        if type(payload.get("version")) is not int:
+            raise ProjectServiceError("VERSION_REQUIRED", "必须提供当前项目版本", 422)
+        expected_version = self._expected_version(payload)
+        values = {**self._progress_values(payload), "updated_by": actor_user_id, "updated_at": _now()}
+        with self.repository.engine.begin() as connection:
+            registry, _ = self._project_rows(connection, registry_id, lock=True)
+            try:
+                row = self.repository.get_progress(
+                    connection, registry_id=registry_id, progress_id=progress_id,
+                )
+            except (TypeError, ValueError):
+                row = None
+            if row is None:
+                raise ProjectServiceError("NOT_FOUND", "项目进展不存在", 404)
+            if registry["status"] in {"CLOSED", "TERMINATED"}:
+                raise ProjectServiceError("STATE_CONFLICT", "终态项目不能修改过程记录", 409)
+            if registry["version"] != expected_version:
+                raise ProjectServiceError("VERSION_CONFLICT", "项目已被其他操作修改", 409)
+            try:
+                record_version = self.repository.update_progress(
+                    connection, registry_id=registry_id, progress_id=progress_id,
+                    expected_version=row["version"], values=values,
+                )
+                project_version = self.repository.transition_registry(
+                    connection, registry_id=registry["id"], expected_version=expected_version,
+                    values={"updated_by": actor_user_id},
+                )
+            except OptimisticLockConflict as error:
+                raise ProjectServiceError("VERSION_CONFLICT", "项目已被其他操作修改", 409) from error
+            self._audit(
+                connection, event_name="project_record_updated", actor_user_id=actor_user_id,
+                request_id=request_id, object_id=registry["business_id"],
+                properties={"record_type": "PROGRESS", "project_status": registry["status"]},
+            )
+            updated = {**dict(row), **values, "version": record_version}
+        return {**_progress(updated), "projectVersion": project_version}
 
     def list_progress(self, registry_id) -> list[dict]:
         with self.repository.engine.connect() as connection:
@@ -1229,6 +1290,7 @@ class ProjectService:
     def research_path(self, registry_id) -> dict:
         with self.repository.engine.connect() as connection:
             registry, project = self._project_rows(connection, registry_id)
+            source_proposal = self.repository.get_proposal_by_id(connection, registry['proposal_id']) if registry.get('proposal_id') else None
             progress = self.repository.list_process_records(
                 connection, record_type="PROGRESS", registry_id=registry_id,
                 limit=191,
@@ -1238,6 +1300,8 @@ class ProjectService:
             "CLOSING": "active", "CLOSED": "done", "TERMINATED": "terminated",
         }
         stage_keys = ["PENDING", "ACTIVE", "CLOSING", "CLOSED"]
+        state_labels = {"PENDING": "待启动", "ACTIVE": "执行中", "PAUSED": "已暂停", "CLOSING": "结题中", "CLOSED": "已结题", "TERMINATED": "已终止"}
+        category_labels = {"GENERAL_RESEARCH": "一般科研项目", "SECURITY_CONFIDENTIALITY": "安全保密项目", "CRYPTO_APPLICATION": "密码应用项目"}
         current_index = {
             "PENDING": 0, "ACTIVE": 1, "PAUSED": 1,
             "CLOSING": 2, "CLOSED": 3, "TERMINATED": 0,
@@ -1262,6 +1326,7 @@ class ProjectService:
                     "period": "项目阶段",
                     "source": "项目状态记录",
                     "summary": f"当前项目状态：{registry['status']}",
+                    "summaryDisplay": f"当前项目状态：{state_labels.get(registry['status'], registry['status'])}",
                     "next": "状态仅通过项目详情中的受控动作变更。",
                 },
             })
@@ -1275,8 +1340,12 @@ class ProjectService:
                     "title": item["summary"][:24],
                     "status": {"NORMAL": "done", "RISK": "risk", "BLOCKED": "blocked"}[item["status"]],
                     "owner": f"记录人账号 {item['createdBy']}" if item["createdBy"] is not None else "未记录",
+                    "ownerId": item["createdBy"], "ownerLabel": "记录人",
                     "period": item["recordedAt"],
+                    "periodDisplay": item["recordedAt"].replace("T", " ")[:16] if item["recordedAt"] else "未记录",
+                    "periodLabel": "记录时间",
                     "source": f"进展记录 {item['id']}",
+                    "sourceDisplay": "进展记录",
                     "summary": item["summary"],
                     "issues": item.get("issues"),
                     "next": item.get("nextActions") or "如需调整，请回到进展记录表单登记新的业务事实。",
@@ -1298,6 +1367,9 @@ class ProjectService:
                     if project_ref["sourceProposalId"] else "历史项目"
                 ),
                 "summary": f"{project_ref['category']} · {project_ref['status']}",
+                "summaryDisplay": f"{category_labels.get(project_ref['category'], project_ref['category'])} · {state_labels.get(project_ref['status'], project_ref['status'])}",
+                "periodLabel": "项目日期",
+                "sourceDisplay": (f"来源提案 {source_proposal['business_id']} · {source_proposal['title']}" if source_proposal else ("来源提案（记录未找到）" if project_ref['sourceProposalId'] else "历史项目")),
                 "next": "查看阶段与进展记录。",
             },
             "children": [

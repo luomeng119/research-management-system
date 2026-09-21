@@ -5,8 +5,6 @@
 """
 import os
 import io
-import re
-import json
 import logging
 import uuid as _uuid
 from decimal import Decimal
@@ -16,9 +14,8 @@ from flask import Blueprint, current_app, render_template, request, jsonify, ses
 from app.expense_db import (
     get_reimbursement_by_id,
     create_reimbursement, update_reimbursement, delete_reimbursement,
-    toggle_reimbursement_paid,
-    add_invoice, get_invoice_by_id, update_invoice, delete_invoice,
-    add_payment, get_payment_by_id, update_payment, delete_payment,
+    get_invoice_by_id, update_invoice, delete_invoice,
+    get_payment_by_id, update_payment, delete_payment,
     get_reimbursement_children,
     recalculate_reimbursement_total,
     get_expense_stats, find_duplicate_invoice, find_duplicate_payment,
@@ -163,6 +160,7 @@ def _handle_upload(reimbursement_id=None):
             fields = recognized.get('fields', {}) if isinstance(recognized, dict) else {}
             amount = parse_amount(fields.get('amount', '0'))
             inv_date = fields.get('date', '')
+            manual_required = manual_required or not (amount > 0 and inv_date)
             existing = find_duplicate_invoice(str(amount), inv_date, fields.get('invoice_no', '')) if amount > 0 and inv_date else None
             if existing:
                 return jsonify({'success': False, 'error': '相同金额、日期和发票号的发票已存在', 'duplicate': True, 'existing_id': existing['id']}), 200
@@ -197,6 +195,7 @@ def _handle_upload(reimbursement_id=None):
         fields = recognized if isinstance(recognized, dict) else {}
         amount = parse_amount(fields.get('amount', '0'))
         pay_date = fields.get('pay_date', '')
+        manual_required = manual_required or not (amount > 0 and pay_date)
         existing = find_duplicate_payment(str(amount), pay_date) if amount > 0 and pay_date else None
         if existing:
             return jsonify({'success': False, 'error': '相同金额和日期的支付记录已存在', 'duplicate': True, 'existing_id': existing['id']}), 200
@@ -334,7 +333,16 @@ def api_reimbursement_toggle_type(rid):
     if 'user' not in session:
         return jsonify({'success': False, 'error': '未登录'}), 401
     try:
-        new_type = _service().toggle_type(rid)
+        raw_body = request.get_data(cache=True)
+        data = request.get_json(silent=True) if request.is_json else None
+        if data is not None:
+            if not isinstance(data, dict) or set(data) != {'reimbursement_type'} or data['reimbursement_type'] not in ('采购报销', '出差报销'):
+                return jsonify({'success': False, 'error': '报销类型无效', 'code': 'INVALID_TYPE'}), 400
+            new_type = _service().toggle_type(rid, reimbursement_type=data['reimbursement_type'])
+        elif raw_body or request.form or request.files or request.content_length:
+            return jsonify({'success': False, 'error': '报销类型无效', 'code': 'INVALID_TYPE'}), 400
+        else:
+            new_type = _service().toggle_type(rid)
         return jsonify({'success': True, 'reimbursement_type': new_type})
     except Exception as e:
         logging.error(f"[Expense] 切换报销类型失败: {e}")

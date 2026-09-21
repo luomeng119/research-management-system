@@ -1,0 +1,113 @@
+<section class="proposal-panel p-3 mb-3" id="wording-tools" data-url="{{ url_for('research_reports.selection_suggestions', report_id=report.id) }}" data-draft-id="{{ draft.id if draft is defined else '' }}">
+{% set active_snapshot = draft.redactionSnapshot|default(none) if draft is defined else current.redactionSnapshot|default(none) %}
+<input type="hidden" name="dictionaryVersion" value="{{ form.get('dictionaryVersion', active_snapshot.version if active_snapshot else '') }}">
+<h2 class="h5"><span class="ai-action-badge">AI</span>选区措辞建议</h2><p>在正文框选文字后获取本地建议。数字、单位及显式否定和状态词须保留；判断强度和科研事实仍需人工核对。</p>
+<p id="wording-processor" class="text-muted">建议沿用当前报告的固定词库；历史未记录词库时选定当前版本，并在采用后随保存请求携带。</p>
+<button type="button" class="btn btn-outline-primary" id="wording-request"><span class="ai-action-badge">AI</span>获取选区建议</button>
+<button type="button" class="btn btn-outline-secondary" id="wording-cancel" disabled>取消建议</button>
+<button type="button" class="btn btn-outline-secondary" id="wording-undo" disabled>撤销本次替换</button>
+<p id="wording-status" role="status" aria-live="polite"></p><div id="wording-candidates"></div>
+</section>
+<script>
+// Text offsets stay in JavaScript UTF-16; the server receives exact prefix/text/suffix.
+window.ResearchSelectionState = function (textarea, version, dictionary = {value:''}) {
+  let editRevision = 0, lastUndo = null;
+  return {
+    edited() { editRevision += 1; },
+    snapshot() {
+      const body = textarea.value, start = textarea.selectionStart, end = textarea.selectionEnd;
+      return {body, start, end, selectedText: body.slice(start, end), prefix: body.slice(0, start), suffix: body.slice(end), version: version.value, dictionaryVersion:dictionary.value, revision: editRevision};
+    },
+    current(s) {
+      return textarea.value === s.body && textarea.selectionStart === s.start && textarea.selectionEnd === s.end && version.value === s.version && dictionary.value === s.dictionaryVersion && editRevision === s.revision;
+    },
+    apply(s, text, dictionaryVersion = s.dictionaryVersion) {
+      if (!this.current(s)) return false;
+      const after = s.prefix + text + s.suffix;
+      textarea.value = after;
+      dictionary.value = String(dictionaryVersion);
+      textarea.setSelectionRange(s.start, s.start + text.length);
+      editRevision += 1;
+      lastUndo = {before:s.body, after, start:s.start, end:s.end, version:s.version, beforeDictionary:s.dictionaryVersion, afterDictionary:dictionary.value, revision:editRevision};
+      return true;
+    },
+    undo() {
+      if (!lastUndo || textarea.value !== lastUndo.after || version.value !== lastUndo.version || dictionary.value !== lastUndo.afterDictionary || editRevision !== lastUndo.revision) return false;
+      textarea.value = lastUndo.before;
+      dictionary.value = lastUndo.beforeDictionary;
+      textarea.setSelectionRange(lastUndo.start, lastUndo.end);
+      lastUndo = null;
+      editRevision += 1;
+      return true;
+    }
+  };
+};
+(function () {
+  const root = document.getElementById('wording-tools'), body = document.getElementById('body');
+  if (!root || !body) return;
+  const form = body.form, version = form.querySelector('[name="baseVersion"]');
+  if (!version) return;
+  const dictionary = form.querySelector('[name="dictionaryVersion"]');
+  const state = window.ResearchSelectionState(body, version, dictionary);
+  const requestButton = document.getElementById('wording-request'), cancelButton = document.getElementById('wording-cancel'), undoButton = document.getElementById('wording-undo');
+  const status = document.getElementById('wording-status'), candidates = document.getElementById('wording-candidates'), processor = document.getElementById('wording-processor');
+  let serial = 0, active = null;
+  const csrf = () => form.querySelector('[name="_csrf_token"]').value;
+  const preserveSelection = button => button.addEventListener('mousedown', event => event.preventDefault());
+  [requestButton, cancelButton, undoButton].forEach(preserveSelection);
+  body.addEventListener('input', () => { state.edited(); undoButton.disabled = true; });
+  cancelButton.addEventListener('click', () => {
+    serial += 1;
+    candidates.replaceChildren();
+    requestButton.disabled = false; cancelButton.disabled = true;
+    status.textContent = '已取消建议，正文保持不变。';
+    if (active) {
+      const operation = active; active = null;
+      operation.controller.abort();
+      fetch(root.dataset.url + '/cancel', {method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()}, body:JSON.stringify({operationId:operation.id})})
+        .then(response => response.json()).then(result => {
+          if (serial === operation.serial + 1 && !result.data?.cancelled) status.textContent = '已取消采用，正文保持不变；模型请求可能仍在结束中。';
+        }).catch(() => { if (serial === operation.serial + 1) status.textContent = '已取消采用，正文保持不变；未确认模型请求已停止。'; });
+    }
+  });
+  undoButton.addEventListener('click', () => {
+    if (state.undo()) { status.textContent = '已精确恢复替换前正文，尚未保存新版本。'; candidates.replaceChildren(); body.focus(); }
+    else status.textContent = '正文或版本已变化，为避免覆盖，未执行撤销。';
+    undoButton.disabled = true;
+  });
+  requestButton.addEventListener('click', async () => {
+    const snapshot = state.snapshot();
+    if (!snapshot.selectedText.trim() || Array.from(snapshot.selectedText).length > 2000) { status.textContent = '请在正文中框选 1 至 2000 字符。'; return; }
+    const requestSerial = ++serial, operationId = crypto.randomUUID(), controller = new AbortController();
+    active = {id:operationId, controller, serial:requestSerial};
+    requestButton.disabled = true; cancelButton.disabled = false; candidates.replaceChildren();
+    status.textContent = '正在获取本地措辞建议…';
+    try {
+      const response = await fetch(root.dataset.url, {method:'POST', signal:controller.signal, headers:{'Content-Type':'application/json','X-CSRF-Token':csrf()}, body:JSON.stringify({operationId,draftId:root.dataset.draftId || undefined,dictionaryVersion:snapshot.dictionaryVersion === '' ? undefined : Number(snapshot.dictionaryVersion),baseVersion:Number(snapshot.version),body:snapshot.body,prefix:snapshot.prefix,selectedText:snapshot.selectedText,suffix:snapshot.suffix})});
+      const result = await response.json();
+      if (serial !== requestSerial) return;
+      if (!response.ok) throw new Error(result.error?.message || '本地建议暂不可用');
+      if (!state.current(snapshot)) { status.textContent = '正文、选区或版本已变化，本次建议作废，请重新框选。'; return; }
+      const suggestions = result.data?.suggestions;
+      if (!Array.isArray(suggestions) || suggestions.length < 1 || suggestions.length > 3 || suggestions.some(item => typeof item.text !== 'string' || !item.text.trim() || typeof item.reason !== 'string')) throw new Error('模型建议格式无效');
+      processor.textContent = Number.isInteger(result.data.dictionaryVersion) ? '本次建议使用词库 v' + result.data.dictionaryVersion + ' 处理选区、上下文和候选；采用后将在保存时沿用此词库版本。' : '本次使用测试注入处理器，词库版本留存待集成。';
+      suggestions.forEach(item => {
+        const panel = document.createElement('article'), text = document.createElement('p'), reason = document.createElement('p'), adopt = document.createElement('button');
+        panel.className = 'border rounded p-3 mt-2'; text.textContent = item.text; text.style.whiteSpace = 'pre-wrap'; reason.textContent = item.reason;
+        adopt.type = 'button'; adopt.className = 'btn btn-sm btn-primary'; adopt.textContent = '采用此建议'; preserveSelection(adopt);
+        adopt.addEventListener('click', () => {
+          if (serial !== requestSerial || !state.apply(snapshot, item.text, Number.isInteger(result.data.dictionaryVersion) ? result.data.dictionaryVersion : snapshot.dictionaryVersion)) { status.textContent = '正文、选区或版本已变化，未执行替换。'; candidates.replaceChildren(); return; }
+          serial += 1; candidates.replaceChildren(); cancelButton.disabled = true; undoButton.disabled = false;
+          status.textContent = '仅替换了选中文字，尚未保存新版本；可撤销或继续编辑。'; body.focus();
+        });
+        panel.append(text, reason, adopt); candidates.append(panel);
+      });
+      status.textContent = '请核对建议后选择采用，或取消保留原文。';
+    } catch (error) {
+      if (serial === requestSerial && error.name !== 'AbortError') status.textContent = (error.message || '本地建议失败') + '，原文保持不变。';
+    } finally {
+      if (serial === requestSerial) { requestButton.disabled = false; active = null; if (!candidates.childElementCount) cancelButton.disabled = true; }
+    }
+  });
+})();
+</script>

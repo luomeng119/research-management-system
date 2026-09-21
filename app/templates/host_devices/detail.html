@@ -80,22 +80,26 @@ let selectedDevices = [];
 let currentHostId = '{{ host.host_id }}';
 
 function openRelationModal() {
-    loadDeviceList('', '', 1);
+    modalSearch();
     let modal = new bootstrap.Modal(document.getElementById('relationModal'));
     modal.show();
 }
 
+function modalSearch() {
+    loadDeviceList(document.getElementById('modal-keyword').value, document.getElementById('modal-category').value, 1);
+}
+
 function loadDeviceList(keyword, category, page) {
-    let url = `/equipment/api/hosts/search?keyword=${encodeURIComponent(keyword)}&category=${encodeURIComponent(category)}&page=${page}`;
+    let url = `{{ url_for('api.equipment_hosts_search') }}?keyword=${encodeURIComponent(keyword)}&category=${encodeURIComponent(category)}&page=${page}`;
     fetch(url, { credentials: 'same-origin' })
         .then(r => r.json())
         .then(res => {
             if (res.code !== 0) return;
-            renderDeviceList(res.data, res.total, res.page, res.total_pages);
+            renderDeviceList(res.data, res.total, res.page, res.total_pages, keyword, category);
         });
 }
 
-function renderDeviceList(devices, total, page, totalPages) {
+function renderDeviceList(devices, total, page, totalPages, keyword, category) {
     let tbody = document.getElementById('modal-device-list');
     tbody.innerHTML = devices.map(d => `
         <tr>
@@ -115,9 +119,12 @@ function renderDeviceList(devices, total, page, totalPages) {
     let pagination = document.getElementById('modal-pagination');
     pagination.innerHTML = `
         <span class="me-3">第 ${page}/${totalPages} 页，共 ${total} 条</span>
-        ${page > 1 ? `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadDeviceList('${keyword}', '${category}', ${page-1})">&lt;</button>` : ''}
-        ${page < totalPages ? `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadDeviceList('${keyword}', '${category}', ${page+1})">&gt;</button>` : ''}
+        ${page > 1 ? `<button type="button" class="btn btn-sm btn-outline-secondary" data-page="${page-1}">&lt;</button>` : ''}
+        ${page < totalPages ? `<button type="button" class="btn btn-sm btn-outline-secondary" data-page="${page+1}">&gt;</button>` : ''}
     `;
+    pagination.querySelectorAll('button[data-page]').forEach(button => {
+        button.addEventListener('click', () => loadDeviceList(keyword, category, Number(button.dataset.page)));
+    });
 }
 
 function confirmRelation() {
@@ -156,8 +163,5 @@ function removeRelation(device_id, host_id) {
     });
 }
 
-document.getElementById('relationModal').addEventListener('shown.bs.modal', function() {
-    loadDeviceList('', '', 1);
-});
 </script>
 {% endblock %}

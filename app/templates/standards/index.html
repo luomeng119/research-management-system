@@ -51,8 +51,8 @@
                                 <td>{{ s['name'] }}</td>
                                 <td><span class="badge bg-info">{{ s['category'] }}</span></td>
                                 <td>{{ s['file_type'] }}</td>
-                                <td>{{ s['uploader'] }}</td>
-                                <td>{{ s['upload_time'] }}</td>
+                                <td>{{ uploader_names.get(s['uploader']|string, s['uploader']) or '未记录' }}</td>
+                                <td>{% if s['upload_time'] %}<time title="{{ s['upload_time'] }}">{{ s['upload_time'].strftime('%Y-%m-%d %H:%M') if s['upload_time'].strftime is defined else s['upload_time'] }}</time>{% else %}未记录{% endif %}</td>
                                 <td>
                                     <button class="btn btn-sm btn-outline-primary standard-preview" title="预览">
                                         <i class="bi bi-eye"></i>

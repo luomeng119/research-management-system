@@ -19,6 +19,39 @@ import sqlalchemy as sa
 SCRIPT = Path(__file__).resolve().parents[1] / "verify_offline.py"
 
 
+@pytest.mark.parametrize("damage", ["missing", "changed"])
+def test_recoverable_folder_material_is_sealed_and_restore_damage_rejected(tmp_path, damage):
+    module = _load_module()
+    runtime = tmp_path / "runtime"
+    archive = runtime / "data" / "legacy-folder-archive" / "recovery-001"
+    history = archive / "payload" / ".history"
+    history.mkdir(parents=True)
+    (archive / "recovery.json").write_text('{"projectId":"KY-1","folder":"资料"}', encoding="utf-8")
+    (archive / "payload" / "old.txt").write_bytes(b"retained current")
+    (history / "old_v1.txt").write_bytes(b"retained first")
+    engine = sa.create_engine(_create_contract_database(tmp_path / "contract.sqlite"))
+    try:
+        snapshot = module.create_snapshot(engine, runtime)
+        assert {(entry["root"], entry["path"]) for entry in snapshot["files"]} == {
+            ("data/legacy-folder-archive", "recovery-001/recovery.json"),
+            ("data/legacy-folder-archive", "recovery-001/payload/old.txt"),
+            ("data/legacy-folder-archive", "recovery-001/payload/.history/old_v1.txt"),
+        }
+        restored = tmp_path / "restored"
+        shutil.copytree(runtime, restored)
+        module.verify_snapshot(engine, restored, snapshot)
+        target = restored / "data" / "legacy-folder-archive" / "recovery-001" / "payload" / ".history" / "old_v1.txt"
+        if damage == "missing":
+            target.unlink()
+        else:
+            target.write_bytes(b"tampered first")
+        with pytest.raises(module.VerificationError, match="file manifest"):
+            module.verify_snapshot(engine, restored, snapshot)
+        assert (history / "old_v1.txt").read_bytes() == b"retained first"
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.skipif(not os.environ.get("T02_ISOLATED_POSTGRES_ROOT"), reason="requires owned PostgreSQL harness")
 def test_restore_adapter_native_arguments_write_the_selected_database(tmp_path):
     """Execute the adapter's native argv, not PowerShell itself, on owned PG."""
@@ -142,6 +175,10 @@ def test_real_dump_uses_snapshot_database_despite_conflicting_pg_environment(tmp
         assert port == int(os.environ["T02_ISOLATED_POSTGRES_PORT"])
         runtime = tmp_path / "runtime"
         runtime.mkdir()
+        recovery = runtime / "data" / "legacy-folder-archive" / "backup-check"
+        (recovery / "payload" / ".history").mkdir(parents=True)
+        (recovery / "recovery.json").write_text('{"projectId":"KY-1","folder":"资料"}', encoding="utf-8")
+        (recovery / "payload" / ".history" / "old_v1.txt").write_bytes(b"real backup retained history")
         package = tmp_path / "package"
         shutil.copytree(runtime, package / "payload")
         monkeypatch.setenv("PGHOST", "127.0.0.1")
@@ -153,6 +190,10 @@ def test_real_dump_uses_snapshot_database_despite_conflicting_pg_environment(tmp
             engine, runtime, package, package / "manifest.json", Path(shutil.which("pg_dump")), dump,
         )
         module.verify_package(package, manifest)
+        assert {entry["path"] for entry in manifest["files"] if entry["root"] == "data/legacy-folder-archive"} == {
+            "backup-check/recovery.json", "backup-check/payload/.history/old_v1.txt",
+        }
+        module.verify_snapshot(engine, package / "payload", manifest)
         listed = subprocess.run([shutil.which("pg_restore"), "--list", str(dump)], capture_output=True, text=True, check=True)
         assert "TABLE DATA public proposals" in listed.stdout
         assert manifest["database"]["relations"]["project_registry_to_category_table"] == 0
@@ -199,7 +240,7 @@ def _create_contract_database(path: Path) -> str:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(sa.text(statement))
-        connection.execute(sa.text("INSERT INTO alembic_version VALUES ('0009_equipment_import_batches')"))
+        connection.execute(sa.text("INSERT INTO alembic_version VALUES ('0011_research_report_drafts')"))
         connection.execute(sa.text("INSERT INTO proposals VALUES ('proposal-1', 'PROP-1')"))
         connection.execute(sa.text("INSERT INTO project_registry VALUES ('registry-1', 'GENERAL_RESEARCH', 'PRJ-1', 'proposal-1')"))
         connection.execute(sa.text("INSERT INTO projects VALUES ('PRJ-1', 'registry-1')"))
@@ -271,7 +312,7 @@ def test_snapshot_and_verify_compare_database_relations_and_all_business_file_ha
         "APP_DATA_ROOT",
     }
     assert manifest["fileRoots"] == [
-        "data/files", "uploads", "documents", "data/documents", "data/templates"
+        "data/files", "uploads", "documents", "data/documents", "data/templates", "data/legacy-folder-archive"
     ]
     assert "data/research.db" in manifest["singleFiles"]
 

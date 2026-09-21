@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone
 import hashlib
 import codecs
@@ -18,11 +18,12 @@ from xml.parsers import expat
 
 from sqlalchemy.sql.dml import Insert, Update
 from sqlalchemy.sql.selectable import Select
+from app.repositories.files import PROJECT_PATH_PREFIX
 
 
 ALLOWED_EXTENSIONS = {
     ".txt", ".md", ".csv", ".json", ".xml", ".yml", ".yaml", ".log",
-    ".pdf", ".docx", ".xlsx", ".pptx", ".zip", ".rar",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar",
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
 }
 DANGEROUS_SUFFIXES = {
@@ -206,6 +207,35 @@ def validate_file_content(path: Path, extension: str) -> str:
         valid = prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP"
     elif extension == ".rar":
         valid = prefix.startswith((b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00"))
+    elif extension in {".doc", ".xls", ".ppt"}:
+        import olefile
+
+        try:
+            with olefile.OleFileIO(str(path), raise_defects=olefile.DEFECT_INCORRECT) as document:
+                required_groups = {
+                    ".doc": (("WordDocument",), ("0Table", "1Table")),
+                    ".xls": (("Workbook", "Book"),),
+                    ".ppt": (("PowerPoint Document",),),
+                }[extension]
+                physical_size = path.stat().st_size
+                valid = True
+                for group in required_groups:
+                    candidates = [name for name in group
+                                  if document.get_type(name) == olefile.STGTY_STREAM]
+                    if not candidates:
+                        valid = False
+                        break
+                    name = candidates[0]
+                    size = document.get_size(name)
+                    if not 0 < size <= physical_size:
+                        valid = False
+                        break
+                    with document.openstream(name) as stream:
+                        if len(stream.read(size + 1)) != size:
+                            valid = False
+                            break
+        except (OSError, ValueError, IndexError):
+            valid = False
     elif extension in {".zip", ".docx", ".xlsx", ".pptx"}:
         try:
             valid = office_archive_is_safe(path)
@@ -239,6 +269,13 @@ def validate_file_content(path: Path, extension: str) -> str:
             valid = False
     if not valid:
         raise FileServiceError("UNSUPPORTED_MEDIA_TYPE", "文件内容与类型不匹配", 415)
+    legacy_media_type = {
+        ".doc": "application/msword",
+        ".xls": "application/vnd.ms-excel",
+        ".ppt": "application/vnd.ms-powerpoint",
+    }.get(extension)
+    if legacy_media_type:
+        return legacy_media_type
     return mimetypes.guess_type("file" + extension)[0] or "application/octet-stream"
 
 
@@ -489,11 +526,14 @@ class FileService:
     def _upload_staged(
         self, staged: _StagedFile, *, object_type: str, object_id: str,
         actor_user_id: int, request_id: str, create_metadata=None, project_path=None,
+        legacy_sources=None,
     ) -> dict:
         relative_path, final_path = self._destination(staged.extension)
         file_id = uuid.uuid4()
         started = time.monotonic()
         moved = False
+        legacy_staged = []
+        legacy_moved = []
         version_no = 1
         try:
             with self.repository.engine.begin() as connection:
@@ -517,6 +557,25 @@ class FileService:
                     ):
                         raise FileServiceError("VERSION_CONFLICT", "文件版本已变化", 409)
                 else:
+                    if (legacy_sources is not None and project_path is not None
+                            and project_path[len(PROJECT_PATH_PREFIX):] not in
+                            self.repository.list_deleted_project_paths(connection, project_id=str(object_id))):
+                        for source in legacy_sources(staged.original_name):
+                            before = source.lstat()
+                            if not stat.S_ISREG(before.st_mode):
+                                raise FileServiceError("LEGACY_FILE_CONFLICT", "旧附件不是普通文件", 409)
+                            descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                            with os.fdopen(descriptor, "rb") as stream:
+                                opened = os.fstat(stream.fileno())
+                                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                                    raise FileServiceError("LEGACY_FILE_CONFLICT", "旧附件已变化", 409)
+                                old = self._stage(stream, staged.original_name)
+                                legacy_staged.append(old)
+                                after = os.fstat(stream.fileno())
+                                if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+                                    raise FileServiceError("LEGACY_FILE_CONFLICT", "旧附件已变化", 409)
+                            if old.media_type != staged.media_type:
+                                raise FileServiceError("FILE_TYPE_MISMATCH", "旧版本文件类型不一致", 415)
                     self.repository.create_file(
                         connection,
                         file_id=file_id,
@@ -525,6 +584,19 @@ class FileService:
                         media_type=staged.media_type,
                         actor_user_id=actor_user_id,
                     )
+                    for number, old in enumerate(legacy_staged, start=1):
+                        old_relative, old_final = self._destination(old.extension)
+                        self.repository.create_version(
+                            connection, version_id=uuid.uuid4(), file_id=file_id, version_no=number,
+                            storage_path=old_relative, sha256=old.sha256, size_bytes=old.size_bytes,
+                            media_type=old.media_type, actor_user_id=actor_user_id,
+                        )
+                        if not self.repository.bump_file(connection, file_id=file_id,
+                                                         expected_version=number, actor_user_id=actor_user_id):
+                            raise FileServiceError("VERSION_CONFLICT", "文件版本已变化", 409)
+                        os.replace(old.path, old_final)
+                        legacy_moved.append(old_final)
+                    version_no = len(legacy_staged) + 1
                 self.repository.create_version(
                     connection,
                     version_id=uuid.uuid4(),
@@ -550,7 +622,7 @@ class FileService:
                 moved = True
                 self._audit(
                     connection,
-                    operation="ADD_VERSION" if existing is not None else "UPLOAD",
+                    operation="ADOPT_LEGACY" if legacy_staged else ("ADD_VERSION" if existing is not None else "UPLOAD"),
                     staged=staged,
                     file_id=str(file_id),
                     actor_user_id=actor_user_id,
@@ -559,14 +631,20 @@ class FileService:
                 )
             return self._result(str(file_id), staged, relative_path, version_no)
         except FileServiceError:
+            for path in legacy_moved:
+                path.unlink(missing_ok=True)
             if moved:
                 final_path.unlink(missing_ok=True)
             raise
         except Exception as exc:
+            for path in legacy_moved:
+                path.unlink(missing_ok=True)
             if moved:
                 final_path.unlink(missing_ok=True)
             raise FileServiceError("FILE_OPERATION_FAILED", "文件操作失败", 500) from exc
         finally:
+            for old in legacy_staged:
+                old.path.unlink(missing_ok=True)
             staged.path.unlink(missing_ok=True)
 
     def upload(self, stream, *, original_name: str, object_type: str, object_id: str, actor_user_id: int, request_id: str) -> dict:
@@ -577,6 +655,109 @@ class FileService:
             staged, object_type=object_type, object_id=str(object_id),
             actor_user_id=actor_user_id, request_id=request_id,
         )
+
+    def list_deleted_project_paths(self, project_id: str) -> list[str]:
+        self._validate_object("PROJECT", str(project_id))
+        with self.repository.engine.connect() as connection:
+            return self.repository.list_deleted_project_paths(connection, project_id=project_id)
+
+    def delete_project_path(self, project_id: str, filepath: str, *, expected_file_id: str,
+                            actor_user_id: int, request_id: str) -> dict:
+        started = time.monotonic()
+        try:
+            with self.repository.engine.begin() as connection:
+                self._lock_object_write(connection, "PROJECT", str(project_id))
+                row = self.repository.get_project_path_file(
+                    connection, project_id=project_id, purpose=PROJECT_PATH_PREFIX + filepath,
+                )
+                if row is None or str(row["id"]) != expected_file_id:
+                    raise FileServiceError("FILE_IDENTITY_CONFLICT", "文件已变化，请刷新后重试", 409)
+                row = self.repository.get_linked_file(connection, file_id=expected_file_id,
+                                                      object_type="PROJECT", object_id=project_id, lock=True)
+                if row is None or row["status"] != "ACTIVE":
+                    raise FileServiceError("FILE_IDENTITY_CONFLICT", "文件已变化，请刷新后重试", 409)
+                self.repository.delete_project_path(connection, project_id=project_id,
+                                                    file_id=expected_file_id, filepath=filepath,
+                                                    actor_user_id=actor_user_id)
+                if not self.repository.has_live_links(connection, file_id=expected_file_id):
+                    if not self.repository.archive_file(connection, file_id=expected_file_id,
+                                                        expected_version=int(row["version"]), actor_user_id=actor_user_id):
+                        raise FileServiceError("VERSION_CONFLICT", "文件版本已变化", 409)
+                self._audit(connection, operation="DELETE", staged=None, file_id=expected_file_id,
+                            actor_user_id=actor_user_id, request_id=request_id, started=started)
+            return {"fileId": expected_file_id, "path": filepath}
+        except FileServiceError:
+            raise
+        except Exception as exc:
+            raise FileServiceError("FILE_OPERATION_FAILED", "文件删除失败", 500) from exc
+
+    def delete_legacy_project_file(self, project_id: str, filepath: str, *, physical_file,
+                                   actor_user_id: int, request_id: str) -> dict:
+        started = time.monotonic()
+        try:
+            with ExitStack() as recovery:
+                with self.repository.engine.begin() as connection:
+                    self._lock_object_write(connection, "PROJECT", str(project_id))
+                    if (self.repository.get_project_path_file(
+                            connection, project_id=project_id, purpose=PROJECT_PATH_PREFIX + filepath) is not None
+                            or filepath in self.repository.list_deleted_project_paths(connection, project_id=project_id)):
+                        raise FileServiceError("FILE_IDENTITY_CONFLICT", "文件已变化，请刷新后重试", 409)
+                    recovery_id = recovery.enter_context(physical_file())
+                    self.audit_service.record(
+                        connection, event_name="file_operation_completed", user_id=actor_user_id,
+                        object_type="PROJECT", object_id=project_id, result="SUCCESS", request_id=request_id,
+                        duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+                        properties={"operation": "DELETE_LEGACY_FILE", "file_type": "legacy", "size_bucket": "N/A"},
+                    )
+            return {"recoveryId": recovery_id}
+        except FileServiceError:
+            raise
+        except Exception as exc:
+            raise FileServiceError("FILE_OPERATION_FAILED", "文件删除失败，请检查后重试", 500) from exc
+
+    def delete_project_folder(self, project_id: str, folder: str, *, physical_directory,
+                              actor_user_id: int, request_id: str) -> dict:
+        """Detach a directory's links together; keep bytes for recovery."""
+        started = time.monotonic()
+        prefix = PROJECT_PATH_PREFIX + folder + "/"
+        try:
+            # The filesystem context outlives commit so commit errors restore
+            # the quarantined legacy directory as well as rolling back rows.
+            with ExitStack() as recovery:
+                with self.repository.engine.begin() as connection:
+                    self._lock_object_write(connection, "PROJECT", str(project_id))
+                    rows = [row for row in self.repository.list_project_paths(connection, project_id=project_id)
+                            if row["purpose"].startswith(prefix)]
+                    moved = recovery.enter_context(physical_directory())
+                    if not moved and not rows:
+                        raise FileServiceError("FOLDER_NOT_FOUND", "文件夹不存在", 404)
+                    for item in sorted(rows, key=lambda row: str(row["id"])):
+                        file_id = str(item["id"])
+                        row = self.repository.get_linked_file(connection, file_id=file_id,
+                                                              object_type="PROJECT", object_id=project_id, lock=True)
+                        if row is None or row["status"] != "ACTIVE":
+                            raise FileServiceError("FILE_IDENTITY_CONFLICT", "文件已变化，请刷新后重试", 409)
+                        self.repository.delete_project_path(
+                            connection, project_id=project_id, file_id=file_id,
+                            filepath=item["purpose"][len(PROJECT_PATH_PREFIX):], actor_user_id=actor_user_id,
+                        )
+                        if not self.repository.has_live_links(connection, file_id=file_id):
+                            if not self.repository.archive_file(connection, file_id=file_id,
+                                                                expected_version=int(row["version"]), actor_user_id=actor_user_id):
+                                raise FileServiceError("VERSION_CONFLICT", "文件版本已变化", 409)
+                        self._audit(connection, operation="DELETE", staged=None, file_id=file_id,
+                                    actor_user_id=actor_user_id, request_id=request_id, started=started)
+                    self.audit_service.record(
+                        connection, event_name="file_operation_completed", user_id=actor_user_id,
+                        object_type="PROJECT", object_id=project_id, result="SUCCESS", request_id=request_id,
+                        duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+                        properties={"operation": "DELETE_FOLDER", "file_type": "directory", "size_bucket": "N/A"},
+                    )
+            return {"deletedFileCount": len(rows)}
+        except FileServiceError:
+            raise
+        except Exception as exc:
+            raise FileServiceError("FILE_OPERATION_FAILED", "目录删除失败，请检查后重试", 500) from exc
 
     def rename_project_path(self, project_id: str, filepath: str, new_name: str,
                             *, expected_file_id: str, actor_user_id: int, request_id: str) -> dict | None:
@@ -600,6 +781,8 @@ class FileService:
                 if extension != Path(row["original_name"]).suffix.lower():
                     raise FileServiceError("FILE_TYPE_MISMATCH", "不能通过改名改变文件类型", 415)
                 if new_path != filepath:
+                    if new_path in self.repository.list_deleted_project_paths(connection, project_id=project_id):
+                        raise FileServiceError("FILE_NAME_CONFLICT", "文件路径存在历史记录", 409)
                     if self.repository.has_multiple_links(connection, file_id=str(row["id"])):
                         raise FileServiceError("FILE_SHARED", "文件被多处引用，不能在单个项目内改名", 409)
                     if self.repository.get_project_path_file(
@@ -633,7 +816,7 @@ class FileService:
 
     def upload_project_path(
         self, stream, *, original_name: str, folder: str, project_id: str,
-        actor_user_id: int, request_id: str,
+        actor_user_id: int, request_id: str, legacy_sources=None,
     ) -> dict:
         """Append to a logical project file while retaining every controlled version."""
         parts = folder.split("/") if isinstance(folder, str) and folder else []
@@ -649,6 +832,7 @@ class FileService:
             staged, object_type="PROJECT", object_id=str(project_id),
             actor_user_id=actor_user_id, request_id=request_id,
             project_path="PROJECT_TREE:" + "/".join([*parts, staged.original_name]),
+            legacy_sources=legacy_sources,
         )
 
     def upload_new_object(
@@ -991,6 +1175,28 @@ class FileService:
         except (OSError, ValueError, NotImplementedError) as exc:
             raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404) from exc
 
+    def list_versions(self, file_id: str, *, object_type: str, object_id: str) -> dict:
+        object_type = str(object_type or "").upper()
+        with self.repository.engine.connect() as connection:
+            if not self.repository.object_exists(connection, object_type, str(object_id)):
+                raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+            file_row = self.repository.get_linked_file(
+                connection, file_id=file_id, object_type=object_type, object_id=str(object_id),
+            )
+            if not file_row:
+                raise FileServiceError("FILE_NOT_FOUND", "文件不存在", 404)
+            if file_row["status"] != "ACTIVE":
+                raise FileServiceError("FILE_ARCHIVED", "文件已归档", 409)
+            versions = self.repository.list_versions(connection, file_id=file_id)
+        return {
+            "fileId": str(file_row["id"]), "originalName": file_row["original_name"],
+            "versionNo": int(file_row["version"]),
+            "versions": [{"versionNo": int(row["version_no"]),
+                          "createdAt": row["created_at"].isoformat() if row.get("created_at") else None,
+                          "sizeBytes": int(row["size_bytes"]), "mediaType": row["media_type"]}
+                         for row in versions],
+        }
+
     def list_for_object(self, *, object_type: str, object_id: str) -> list[dict]:
         object_type = str(object_type or "").upper()
         self._validate_object(object_type, str(object_id))
@@ -1004,6 +1210,7 @@ class FileService:
                 "mediaType": row["media_type"],
                 "versionNo": int(row["version"]),
                 "status": row["status"],
+                "createdAt": row["created_at"].isoformat() if row.get("created_at") else None,
             }
             for row in rows
         ]

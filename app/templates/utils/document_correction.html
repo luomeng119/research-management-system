@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}文档校对 - 辅助工具 - 科研管理系统{% endblock %}
+{% block title %}文档校对 - 辅助工具 - 科研创新管理{% endblock %}
 
 {% block content %}
 <div class="container mt-4">
@@ -29,7 +29,7 @@
                         <input type="file" class="form-control" id="fileInput" accept=".txt,.md,.docx,.pdf">
                         <div class="form-text">支持 .txt, .md, .docx, .pdf，最大 10MB</div>
                     </div>
-                    <button class="btn btn-primary" onclick="uploadAndCorrect()">
+                    <button class="btn btn-primary text-tool-action" onclick="uploadAndCorrect()">
                         <i class="bi bi-upload"></i> 上传并校对
                     </button>
                 </div>
@@ -45,9 +45,10 @@
                         <textarea class="form-control" id="textInput" rows="10" placeholder="请输入需要校对的文本..."></textarea>
                         <div class="form-text">单次校对上限 2000 字符</div>
                     </div>
-                    <button class="btn btn-primary" onclick="correctText()">
+                    <button class="btn btn-primary text-tool-action" onclick="correctText()">
                         <i class="bi bi-check-circle"></i> 校对
                     </button>
+                    <button class="btn btn-outline-primary text-tool-action" onclick="summarizeText()">生成摘要</button>
                 </div>
             </div>
         </div>
@@ -79,7 +80,10 @@
 </div>
 
 <script>
+let latestTextResult = "";
+let textToolBusy = false;
 function uploadAndCorrect() {
+    if (textToolBusy) return;
     const fileInput = document.getElementById('fileInput');
     if (!fileInput.files.length) {
         showError('请先选择文件');
@@ -101,7 +105,7 @@ function uploadAndCorrect() {
     .then(data => {
         showLoading(false);
         if (data.success) {
-            showResult(data.filename || '文件', data.original || '', data.corrected || '', data.original_full_length || 0);
+            showResult(data.filename || '文件', data.original || '', data.corrected || '', data.original_full_length || 0, data.truncated);
         } else {
             showError(data.error || '校对失败');
         }
@@ -113,6 +117,7 @@ function uploadAndCorrect() {
 }
 
 function correctText() {
+    if (textToolBusy) return;
     const text = document.getElementById('textInput').value.trim();
     if (!text) {
         showError('请输入文本');
@@ -134,7 +139,7 @@ function correctText() {
     .then(data => {
         showLoading(false);
         if (data.success) {
-            showResult('文本', data.original || '', data.corrected || '', 0);
+            showResult('文本', data.original || '', data.corrected || '', 0, data.truncated);
         } else {
             showError(data.error || '校对失败');
         }
@@ -145,39 +150,56 @@ function correctText() {
     });
 }
 
-function showResult(title, original, corrected, fullLength) {
+function showResult(title, original, corrected, fullLength, truncated, inputLimit = 2000) {
+    latestTextResult = corrected;
     const resultDiv = document.getElementById('result');
     const contentDiv = document.getElementById('resultContent');
     const resultTitle = document.getElementById('resultTitle');
 
-    resultTitle.textContent = title + ' 的校对结果';
+    resultTitle.textContent = title === '摘要建议' ? '摘要建议' : title + ' 的校对结果';
     
     let diffHtml = '';
-    if (corrected !== original) {
-        diffHtml = '<div class="mb-3"><h6 class="text-warning">✨ 校对后：</h6><div class="p-3" style="background:rgba(0,255,0,0.05); border-radius:8px; white-space:pre-wrap; line-height:1.8;">' + escapeHtml(corrected) + '</div></div>';
+    const comparedOriginal = truncated ? Array.from(original).slice(0, inputLimit).join('') : original;
+    if (corrected !== comparedOriginal) {
+        diffHtml = '<div class="mb-3"><h6 class="text-warning">' + (title === '摘要建议' ? '摘要建议：' : '校对建议：') + '</h6><div class="p-3" style="background:rgba(0,255,0,0.05); border-radius:8px; white-space:pre-wrap; line-height:1.8;">' + escapeHtml(corrected) + '</div></div>';
     } else {
-        diffHtml = '<div class="alert alert-success mb-0"><i class="bi bi-check-circle"></i> 未发现错误，文本已保持原样。</div>';
+        diffHtml = '<div class="alert alert-success mb-0"><i class="bi bi-check-circle"></i> 模型未提出修改，请人工复核。</div>';
     }
 
     contentDiv.innerHTML = 
         '<div class="mb-3"><h6 class="text-info">📝 原文：</h6><div class="p-3" style="background:rgba(255,255,255,0.05); border-radius:8px; white-space:pre-wrap; line-height:1.8;">' + escapeHtml(original) + '</div></div>' +
         diffHtml +
+        (truncated ? '<div class="alert alert-warning">本次仅处理前 ' + inputLimit + ' 字符，其余内容尚未处理，请分段处理。原文件未修改。</div>' : '') +
         (fullLength > 5000 ? '<div class="text-muted small">* 原文共 ' + fullLength + ' 字符，已截断显示前5000字符</div>' : '');
 
     resultDiv.style.display = 'block';
 }
 
 function copyResult() {
-    const contentDiv = document.getElementById('resultContent');
-    const corrected = contentDiv.querySelector('.text-warning + div');
-    if (corrected) {
-        navigator.clipboard.writeText(corrected.textContent).then(() => {
-            alert('已复制到剪贴板');
-        });
-    }
+    navigator.clipboard.writeText(latestTextResult).then(() => {
+        alert('已复制到剪贴板');
+    }).catch(() => showError('复制失败，请手工选择并复制结果。'));
+}
+
+function summarizeText() {
+    if (textToolBusy) return;
+    const text = document.getElementById('textInput').value.trim();
+    if (!text) { showError('请输入文本'); return; }
+    showLoading(true); hideResult(); hideError();
+    fetch('/api/summarize', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: text, max_length: 100})
+    }).then(r => r.json()).then(data => {
+        if (data.code === 0) {
+            showResult('摘要建议', text, data.data.summary || '', text.length, data.data.truncated, 1500);
+        } else { showError(data.msg || '摘要未完成，请人工整理'); }
+    }).catch(() => showError('摘要请求失败，请人工整理'))
+      .finally(() => showLoading(false));
 }
 
 function showLoading(show) {
+    textToolBusy = show;
+    document.querySelectorAll('.text-tool-action').forEach(button => { button.disabled = show; });
     document.getElementById('loading').style.display = show ? 'block' : 'none';
 }
 

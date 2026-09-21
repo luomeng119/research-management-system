@@ -1,0 +1,8 @@
+{% extends "research_reports/layout.html" %}
+{% block report_content %}
+<a href="{{ url_for('research_reports.detail_page', report_id=report.id) }}">返回当前报告</a>
+<h1>{{ version.title|default(report.title) }} · v{{ version.versionNo }}</h1><p>历史版本 · 只读</p>{% if version.redactionSnapshot %}<p>词库 v{{ version.redactionSnapshot.version }}</p>{% else %}<p>未记录词库</p>{% endif %}<p>{{ version.purpose|default(report.purpose) }}</p><p>{{ version.createdAt }} · 作者：{{ version.createdByName or '姓名未记录' }}</p><p>修改说明：{{ version.note or '未填写' }}</p>
+<a href="{{ url_for('research_reports.export_version', report_id=report.id, version_no=version.versionNo) }}">导出此版 DOCX</a>
+	{% if config.get('AI_FEATURES_VISIBLE') %}{% if version.draftId %}<p class="mt-3"><a href="{{ url_for('research_reports.model_draft_page', report_id=report.id, version_no=version.versionNo) }}">回查本版采用前的模型原稿</a>（只读，与下方人工保存正文分开）</p>{% else %}<p class="mt-3">本版没有关联模型原稿。</p>{% endif %}{% endif %}
+<pre class="proposal-panel p-3 mt-3" style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit">{{ version.body }}</pre>
+{% set sources = version.sources|default([]) %}{% include 'research_reports/sources.html' %}{% endblock %}

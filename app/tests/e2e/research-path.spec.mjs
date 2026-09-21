@@ -114,5 +114,6 @@ test('项目详情可读取设备、设备组和项目之间的真实关系', as
   await page.goto('/equipment/groups/?project_id=KY-2026-001');
   const groupRow = page.locator('tbody tr').filter({ hasText: '便携式保障设备适配研究' });
   await expect(groupRow).toContainText('KY-2026-001');
-  await expect(groupRow).toContainText('1 台');
+  // server.py creates one equipment member with quantity=2; count units, not rows.
+  await expect(groupRow).toContainText('2 台');
 });

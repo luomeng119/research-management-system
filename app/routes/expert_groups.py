@@ -8,6 +8,8 @@ bp = Blueprint('expert_groups', __name__, url_prefix='/experts/groups')
 
 
 def _xlsx_cell(value):
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.isoformat()
     if isinstance(value, str) and value.startswith(('=', '+', '-', '@')):
         return "'" + value
     return value
@@ -193,7 +195,7 @@ def export(group_id):
     
     ws.append(['专家组名称', _xlsx_cell(group['meeting_name'])])
     ws.append(['创建人', _xlsx_cell(group['creator'])])
-    ws.append(['创建时间', group['created_at']])
+    ws.append(['创建时间', _xlsx_cell(group['created_at'])])
     ws.append([])
     ws.append(['序号', '姓名', '单位', '职务', '专业领域', '手机', '银行卡号', '开户行', '挑选人', '挑选时间'])
     

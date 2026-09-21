@@ -7,10 +7,12 @@ import os
 import re
 import io
 import json
+from copy import deepcopy
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from datetime import datetime
 from docx import Document
+from docx.oxml.ns import qn
 
 
 def _cn_number(amount):
@@ -165,8 +167,89 @@ class DocumentFiller:
                     field_id = f"T{table_i}[{row_i},{col_i}]"
                     if field_id in field_values:
                         val = field_values[field_id]
+                        # 列表由需要重复行的模板单独处理，不能写成 Python 列表文本。
+                        if isinstance(val, (list, tuple, dict)):
+                            continue
                         if val is not None and str(val).strip():
                             cell.text = str(val)
+
+    @staticmethod
+    def _purchase_items(field_values, context=None):
+        """Return normalized purchase rows from explicit Web fields or invoice items."""
+        context = context or {}
+        keys = {
+            'name': 'T0[3,1]', 'spec': 'T0[4,1]', 'quantity': 'T0[4,3]',
+            'unit_price': 'T0[4,5]', 'amount': 'T0[4,7]',
+        }
+
+        if any(isinstance(field_values.get(key), (list, tuple)) for key in keys.values()):
+            arrays = {
+                name: list(field_values.get(key) or [])
+                if isinstance(field_values.get(key), (list, tuple))
+                else [field_values.get(key) or '']
+                for name, key in keys.items()
+            }
+            count = max((len(values) for values in arrays.values()), default=0)
+            return [
+                {name: str(values[index] if index < len(values) and values[index] is not None else '')
+                 for name, values in arrays.items()}
+                for index in range(count)
+                if any(str(values[index] if index < len(values) and values[index] is not None else '').strip()
+                       for values in arrays.values())
+            ]
+
+        invoice_items = []
+        for invoice in context.get('invoices', []):
+            for item in invoice.get('items') or []:
+                invoice_items.append({
+                    'name': str(item.get('name') or ''),
+                    'spec': str(item.get('spec') or ''),
+                    'quantity': str(item.get('quantity') or ''),
+                    'unit_price': str(item.get('unit_price') or ''),
+                    'amount': str(item.get('amount') or ''),
+                })
+        if invoice_items:
+            return invoice_items
+
+        row = {name: str(field_values.get(key) or '') for name, key in keys.items()}
+        return [row] if any(value.strip() for value in row.values()) else []
+
+    @staticmethod
+    def _set_purchase_cell(cell, value):
+        cell.text = str(value or '')
+        for paragraph in cell.paragraphs:
+            paragraph.paragraph_format.space_before = 0
+            paragraph.paragraph_format.space_after = 0
+            for run in paragraph.runs:
+                run.font.name = 'Noto Sans CJK SC'
+                run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Noto Sans CJK SC')
+
+    def _fill_purchase_items(self, doc, field_values, context=None):
+        """Expand the generic two-row item block and fill every purchase line."""
+        items = self._purchase_items(field_values, context)
+        if not items or not doc.tables:
+            return
+        table = doc.tables[0]
+        if len(table.rows) < 5:
+            raise ValueError('科研物资采购申请单模板结构无效')
+
+        anchor = table.rows[4]._tr
+        for _ in range(1, len(items)):
+            name_row = deepcopy(table.rows[3]._tr)
+            detail_row = deepcopy(table.rows[4]._tr)
+            anchor.addnext(name_row)
+            name_row.addnext(detail_row)
+            anchor = detail_row
+
+        rows = table.rows
+        for index, item in enumerate(items):
+            name_row = rows[3 + index * 2]
+            detail_row = rows[4 + index * 2]
+            self._set_purchase_cell(name_row.cells[1], item['name'])
+            self._set_purchase_cell(detail_row.cells[1], item['spec'])
+            self._set_purchase_cell(detail_row.cells[3], item['quantity'])
+            self._set_purchase_cell(detail_row.cells[5], item['unit_price'])
+            self._set_purchase_cell(detail_row.cells[7], item['amount'])
 
     def resolve_auto_fields(self, meta, field_values, context=None):
         """
@@ -299,6 +382,9 @@ class DocumentFiller:
 
         # 填充单元格
         self.fill(doc, resolved, table_index=table_index)
+
+        if doc_type == '科研物资采购申请单':
+            self._fill_purchase_items(doc, resolved, context)
 
         buf = io.BytesIO()
         doc.save(buf)

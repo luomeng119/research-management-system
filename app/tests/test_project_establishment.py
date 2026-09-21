@@ -100,15 +100,16 @@ def _schema(engine):
             sa.Column("created_at", sa.DateTime(timezone=True)),
             sa.Column("task_number", sa.Text),
         )
-    lifecycle_common = lambda: (
-        sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("project_registry_id", sa.String(36), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True)),
-        sa.Column("updated_at", sa.DateTime(timezone=True)),
-        sa.Column("created_by", sa.Integer),
-        sa.Column("updated_by", sa.Integer),
-        sa.Column("version", sa.Integer, nullable=False, default=1),
-    )
+    def lifecycle_common():
+        return (
+            sa.Column("id", sa.String(36), primary_key=True),
+            sa.Column("project_registry_id", sa.String(36), nullable=False),
+            sa.Column("created_at", sa.DateTime(timezone=True)),
+            sa.Column("updated_at", sa.DateTime(timezone=True)),
+            sa.Column("created_by", sa.Integer),
+            sa.Column("updated_by", sa.Integer),
+            sa.Column("version", sa.Integer, nullable=False, default=1),
+        )
     sa.Table(
         "project_progress", metadata, *lifecycle_common(),
         sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
@@ -775,3 +776,20 @@ def test_postgresql_concurrent_establishment_is_atomic_and_idempotent():
         race_results = list(executor.map(competing, ("key-a", "key-b")))
     assert sorted(race_results) == ["CREATED", "STATE_CONFLICT"]
     pg_engine.dispose()
+
+
+def test_establishment_conclusion_and_basis_preserve_body_on_save_and_readback(service, engine):
+    conclusion = '合成验证：立项开展终端样机改进与复测，不代表科研指标已验收。\n保留Ａ²、㎏和\t制表符'
+    basis = '立项依据：资料原文（演练），面积10 m²。\r\n第二行；参数x₂。'
+    payload = _payload()
+    payload.update(conclusion='\u200b\u3000' + conclusion + '\ufeff ', basis='\u3000' + basis + '\u200b')
+    result = service.establish_from_proposal(
+        'TA-2026-0001', payload, idempotency_key='establishment-body-fidelity',
+        expected_version=2, actor_user_id=7, request_id='req-fidelity',
+    )
+    assert result['decision']['conclusion'] == conclusion
+    assert result['decision']['basis'] == basis
+    with engine.connect() as connection:
+        stored = connection.execute(sa.text('SELECT conclusion, basis FROM proposal_decisions')).mappings().one()
+    assert stored['conclusion'] == conclusion
+    assert stored['basis'] == basis

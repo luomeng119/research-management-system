@@ -72,7 +72,7 @@ def evaluate(records: list[dict], annotations: dict | None = None) -> dict:
     if not records or "FAKE" in provider_kinds:
         return {**base, "status": "NOT_RUN", "reason": "真实模型未运行，Fake Adapter 不计入模型质量"}
     if (
-        provider_kinds != {"DEEPSEEK"}
+        provider_kinds not in ({"DEEPSEEK"}, {"LOCAL"})
         or len(records) != 20
         or set(record.get("sampleId") for record in records) != set(by_id)
     ):

@@ -18,6 +18,7 @@ itsdangerous==2.2.0
 click==8.3.3
 openpyxl==3.1.5
 python-docx==1.2.0
+olefile==0.47
 pdfminer.six==20260107
 Pillow==12.2.0
 PyYAML==6.0.3

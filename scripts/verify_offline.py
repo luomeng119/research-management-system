@@ -35,6 +35,7 @@ BUSINESS_FILE_ROOTS = (
     "documents",
     "data/documents",
     "data/templates",
+    "data/legacy-folder-archive",
 )
 BUSINESS_SINGLE_FILES = (
     "data/research.db",

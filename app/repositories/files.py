@@ -5,6 +5,8 @@ import uuid
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
+PROJECT_PATH_PREFIX = "PROJECT_TREE:"
+DELETED_PROJECT_PATH_PREFIX = "PROJECT_TREE_DELETED:"
 
 OBJECT_TABLES = {
     "PROPOSAL": ("proposals", "business_id"),
@@ -233,8 +235,39 @@ class FilesRepository:
     def has_multiple_links(self, connection: Connection, *, file_id: str) -> bool:
         rows = connection.execute(sa.select(self.links.c.id).where(
             self.links.c.file_id == self._id(connection, file_id),
+            self.live_link_condition(),
         ).limit(2)).all()
         return len(rows) > 1
+
+    def live_link_condition(self):
+        return sa.or_(self.links.c.object_type != "PROJECT", self.links.c.purpose.is_(None),
+                      ~self.links.c.purpose.startswith(DELETED_PROJECT_PATH_PREFIX, autoescape=True))
+
+    def list_deleted_project_paths(self, connection: Connection, *, project_id: str):
+        purposes = connection.execute(sa.select(self.links.c.purpose).where(
+            self.links.c.object_type == "PROJECT", self.links.c.object_id == str(project_id),
+            self.links.c.purpose.startswith(DELETED_PROJECT_PATH_PREFIX, autoescape=True),
+        ).distinct()).scalars()
+        return [value[len(DELETED_PROJECT_PATH_PREFIX):] for value in purposes]
+
+    def delete_project_path(self, connection: Connection, *, project_id: str, file_id: str,
+                            filepath: str, actor_user_id: int):
+        values = {"purpose": DELETED_PROJECT_PATH_PREFIX + filepath,
+                  "updated_by": actor_user_id, "version": self.links.c.version + 1}
+        if "updated_at" in self.links.c:
+            values["updated_at"] = sa.func.now()
+        result = connection.execute(self.links.update().where(
+            self.links.c.object_type == "PROJECT", self.links.c.object_id == str(project_id),
+            self.links.c.file_id == self._id(connection, file_id),
+            self.links.c.purpose == PROJECT_PATH_PREFIX + filepath,
+        ).values(**values))
+        if result.rowcount != 1:
+            raise RuntimeError("project file link changed during delete")
+
+    def has_live_links(self, connection: Connection, *, file_id: str):
+        return connection.execute(sa.select(self.links.c.id).where(
+            self.links.c.file_id == self._id(connection, file_id), self.live_link_condition(),
+        ).limit(1)).first() is not None
 
     def rename_project_path(self, connection: Connection, *, project_id: str,
                             file_id: str, purpose: str, new_purpose: str,
@@ -276,6 +309,7 @@ class FilesRepository:
             self.links.c.object_type == "PROJECT",
             self.links.c.object_id == str(project_id),
             self.links.c.purpose == purpose,
+            self.files.c.status == "ACTIVE",
         )
         return connection.execute(statement).mappings().one_or_none()
 
@@ -295,6 +329,7 @@ class FilesRepository:
                 self.files.c.id == self._id(connection, file_id),
                 self.links.c.object_type == object_type,
                 self.links.c.object_id == str(object_id),
+                self.live_link_condition(),
             )
         )
         if lock and connection.dialect.name == "postgresql":
@@ -307,6 +342,12 @@ class FilesRepository:
             self.versions.c.version_no == version_no,
         )
         return connection.execute(statement).mappings().first()
+
+    def list_versions(self, connection: Connection, *, file_id: str):
+        statement = sa.select(self.versions).where(
+            self.versions.c.file_id == self._id(connection, file_id)
+        ).order_by(self.versions.c.version_no.desc())
+        return list(connection.execute(statement).mappings())
 
     def count_versions(self, connection: Connection, *, file_id: str) -> int:
         statement = sa.select(sa.func.count()).select_from(self.versions).where(
@@ -365,6 +406,7 @@ class FilesRepository:
                 self.links.c.object_type == object_type,
                 self.links.c.object_id == str(object_id),
                 self.files.c.status == "ACTIVE",
+                self.live_link_condition(),
             )
             .order_by(self.files.c.business_id)
         )

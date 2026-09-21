@@ -45,9 +45,9 @@
                         {% set display_name = session.get('name') or session.get('user') or '用户' %}
                         <button class="user-menu dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"><span class="avatar" aria-hidden="true">{{ display_name[:1] }}</span><span>{{ display_name }}</span></button>
                         <ul class="dropdown-menu dropdown-menu-end">
-                            {% if session.get('role') == 'SYSTEM_MAINTAINER' %}<li><a class="dropdown-item" href="{{ url_for('users.index') }}">用户管理</a></li><li><hr class="dropdown-divider"></li>{% endif %}
+                            {% if session.get('role') == 'SYSTEM_MAINTAINER' %}<li><a class="dropdown-item" href="{{ url_for('users.index') }}">用户管理</a></li>{% if config.get('SENSITIVE_TERMS_AVAILABLE') %}<li><a class="dropdown-item" href="{{ url_for('sensitive_terms.manage') }}">敏感词库维护</a></li>{% endif %}<li><hr class="dropdown-divider"></li>{% endif %}
                             <li><a class="dropdown-item" href="{{ url_for('users.change_password') }}">修改密码</a></li>
-                            <li><span class="dropdown-item-text">角色：{{ session.get('role') }}</span></li>
+                            <li><span class="dropdown-item-text">角色：{{ {'SYSTEM_MAINTAINER': '管理员', 'BUSINESS_USER': '业务用户'}.get(session.get('role'), '未识别') }}</span></li>
                             <li><hr class="dropdown-divider"></li>
                             <li><form method="post" action="{{ url_for('auth.logout') }}" class="m-0"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><button class="dropdown-item" type="submit">退出登录</button></form></li>
                         </ul>

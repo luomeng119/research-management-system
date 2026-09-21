@@ -570,7 +570,7 @@ class EquipmentResourcesRepository:
     def list_equipment_groups(self, connection, *, page, page_size, project_id=None):
         counts = sa.select(
             self.equipment_group_members.c.group_id,
-            sa.func.count().label("member_count"),
+            sa.func.sum(self.equipment_group_members.c.quantity).label("member_count"),
         ).group_by(self.equipment_group_members.c.group_id).subquery()
         statement = sa.select(
             self.equipment_groups,

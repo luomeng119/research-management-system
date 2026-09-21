@@ -79,11 +79,16 @@ def index():
     result = _service().list_equipment_groups(
         page=page, page_size=20, project_id=project_id
     )
+    users = current_app.extensions.get('users_repository')
+    creator_names = {
+        account['username']: account.get('name') or account['username']
+        for account in users.list_accounts()
+    } if users is not None else {}
     total_pages = max(1, (result['total'] + 19) // 20)
     return render_template(
         'equipment/groups.html', groups=result['items'],
         filter_project_id=project_id, page=page, total_pages=total_pages,
-        total=result['total'],
+        total=result['total'], creator_names=creator_names,
     )
 
 @bp.route('/new', methods=['GET', 'POST'])
@@ -219,12 +224,12 @@ def export(group_id):
     
     ws.append(['项目名称', group['project_name']])
     ws.append(['创建人', group['creator']])
-    ws.append(['创建时间', group['created_at']])
+    ws.append(['创建时间', str(group['created_at'] or '')])
     ws.append([])
     ws.append(['序号', '设备名称', '型号', '分类', '形态', '单价', '功能技术指标', '技术状态', '研制单位', '主要用途', '曾用名', '资源保障', '加装要求', '数量', '挑选人', '挑选时间'])
     
     for i, m in enumerate(group['members'], 1):
-        ws.append([i, m['name'], m['model'], m['category'], m['form'], m['price'], m.get('tech_index') or '', m.get('tech_status') or '', m.get('manufacturer') or '', m.get('main_purpose') or '', m.get('former_name') or '', m.get('resource_guarantee') or '', m.get('installation_requirements') or '', m['quantity'], m['selected_by'], m['selected_at']])
+        ws.append([i, m['name'], m['model'], m['category'], m['form'], m['price'], m.get('tech_index') or '', m.get('tech_status') or '', m.get('manufacturer') or '', m.get('main_purpose') or '', m.get('former_name') or '', m.get('resource_guarantee') or '', m.get('installation_requirements') or '', m['quantity'], m['selected_by'], str(m['selected_at'] or '')])
     
     workbook.save(output)
     output.seek(0)

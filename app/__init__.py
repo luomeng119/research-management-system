@@ -7,10 +7,41 @@ import time
 import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, request, session, url_for
+from flask import Flask, abort, jsonify, redirect, request, session, url_for
 
-PUBLIC_ENDPOINTS = frozenset({"auth.login", "health_live", "health_ready", "healthz", "static"})
+PUBLIC_ENDPOINTS = frozenset({
+    "auth.login", "leadership.system_intro", "health_live", "health_ready", "healthz", "static",
+})
 PASSWORD_CHANGE_ENDPOINTS = frozenset({"auth.logout", "users.change_password", "static"})
+AI_ONLY_ENDPOINTS = frozenset({
+    "api.llm_status",
+    "api.llm_reload",
+    "api.correct_text",
+    "api.summarize_text",
+    "api.ai_search",
+    "utils.document_correction",
+    "utils.model_config",
+    "utils.api_models_list",
+    "utils.api_models_create",
+    "utils.api_models_update",
+    "utils.api_models_delete",
+    "utils.api_models_activate",
+    "utils.monitor",
+    "utils.api_monitor_status",
+    "utils.api_monitor_restart",
+    "utils.api_correct",
+    "utils.api_upload_and_correct",
+    "utils.api_local_model_load",
+    "utils.api_local_model_unload",
+    "assistant.generate",
+    "assistant.cancel",
+    "assistant.apply",
+    "research_reports.generate_page",
+    "research_reports.draft_page",
+    "research_reports.model_draft_page",
+    "research_reports.selection_suggestions",
+    "research_reports.cancel_selection_suggestions",
+})
 
 
 def create_app(test_config=None):
@@ -28,9 +59,10 @@ def create_app(test_config=None):
         if "FILE_STORAGE_ROOT" not in test_config:
             app.config["FILE_STORAGE_ROOT"] = os.path.join(app.config["DATA_DIR"], "files")
 
-    from app.ai.settings import validate_assistant_settings
+    if app.config.get("AI_FEATURES_VISIBLE") is True:
+        from app.ai.settings import validate_assistant_settings
 
-    validate_assistant_settings(app.config)
+        validate_assistant_settings(app.config)
 
     if not app.config.get("TESTING"):
         secret_key = os.environ.get("FLASK_SECRET_KEY")
@@ -239,27 +271,91 @@ def create_app(test_config=None):
     if expense_service is not None:
         app.extensions["expense_service"] = expense_service
 
-    assistant_service = app.config.get("ASSISTANT_SERVICE")
+    sensitive_term_set_service = app.config.get("SENSITIVE_TERM_SET_SERVICE")
+    if sensitive_term_set_service is None and engine is not None and audit_service is not None:
+        import sqlalchemy as sa
+
+        term_inspector = sa.inspect(engine)
+        if all(term_inspector.has_table(name) for name in (
+            "sensitive_term_sets", "sensitive_term_set_versions", "users",
+        )):
+            from app.repositories.sensitive_terms import SensitiveTermSetsRepository
+            from app.services.sensitive_term_sets import SensitiveTermSetService
+
+            sensitive_term_set_service = SensitiveTermSetService(
+                SensitiveTermSetsRepository(engine), audit_service
+            )
+    if sensitive_term_set_service is not None:
+        app.extensions["sensitive_term_set_service"] = sensitive_term_set_service
+    app.config["SENSITIVE_TERMS_AVAILABLE"] = sensitive_term_set_service is not None
+
+    research_report_service = app.config.get("RESEARCH_REPORT_SERVICE")
+    if research_report_service is None and engine is not None and audit_service is not None:
+        import sqlalchemy as sa
+
+        inspector = sa.inspect(engine)
+        if all(inspector.has_table(name) for name in (
+            "research_reports", "research_report_versions",
+            "proposals", "project_registry", "users",
+        )):
+            from app.repositories.research_reports import ResearchReportsRepository
+            from app.services.research_reports import ResearchReportService
+
+            research_report_service = ResearchReportService(
+                ResearchReportsRepository(engine), audit_service,
+                sensitive_term_service=sensitive_term_set_service,
+            )
+    if research_report_service is not None:
+        app.extensions["research_report_service"] = research_report_service
+    app.config["RESEARCH_REPORTS_AVAILABLE"] = research_report_service is not None
+
+    ai_features_visible = app.config.get("AI_FEATURES_VISIBLE") is True
+    research_report_draft_service = (
+        app.config.get("RESEARCH_REPORT_DRAFT_SERVICE") if ai_features_visible else None
+    )
+    if (research_report_draft_service is None and engine is not None
+            and research_report_service is not None and file_service is not None
+            and sensitive_term_set_service is not None
+            and ai_features_visible
+            and str(app.config.get("AI_PROVIDER", "DISABLED")).upper() == "LOCAL"):
+        import sqlalchemy as sa
+
+        inspector = sa.inspect(engine)
+        if (inspector.has_table("research_report_drafts")
+                and inspector.has_table("research_report_versions")
+                and {"draft_id", "redaction_snapshot"} <= {column["name"] for column in inspector.get_columns("research_report_versions")}
+                and "redaction_snapshot" in {column["name"] for column in inspector.get_columns("research_report_drafts")}):
+            from functools import partial
+            from app.ai.local_report import LocalReportAssistant
+            from app.ai.local_vision import LocalVisionAssistant
+            from app.services.local_model_runtime import make_assistant
+            from app.repositories.research_report_drafts import ResearchReportDraftsRepository
+            from app.services.research_report_drafts import ResearchReportDraftService
+            from app.services.research_report_sources import extract_report_source
+
+            research_report_draft_service = ResearchReportDraftService(
+                ResearchReportDraftsRepository(engine), research_report_service, file_service,
+                make_assistant(LocalReportAssistant, app.config),
+                partial(extract_report_source, vision_assistant=make_assistant(
+                    LocalVisionAssistant, app.config, required_capability='image',
+                )), sensitive_term_service=sensitive_term_set_service,
+            )
+    if research_report_draft_service is not None:
+        app.extensions["research_report_draft_service"] = research_report_draft_service
+    app.config["RESEARCH_REPORT_GENERATION_AVAILABLE"] = research_report_draft_service is not None
+
+    assistant_service = app.config.get("ASSISTANT_SERVICE") if ai_features_visible else None
     if assistant_service is None and engine is not None and audit_service is not None:
         import sqlalchemy as sa
 
         provider_kind = str(app.config.get("AI_PROVIDER", "DISABLED")).upper()
         inspector = sa.inspect(engine)
-        if provider_kind != "DISABLED" and inspector.has_table("proposal_ai_drafts"):
-            if provider_kind == "DEEPSEEK":
-                api_key = app.config.get("DEEPSEEK_API_KEY")
-                model = app.config.get("DEEPSEEK_MODEL")
-                if api_key and model:
-                    from app.ai.deepseek import DeepSeekProposalAssistant
+        if (ai_features_visible and provider_kind != "DISABLED"
+                and inspector.has_table("proposal_ai_drafts")):
+            from app.ai.local_model import LocalProposalAssistant
 
-                    provider = DeepSeekProposalAssistant(
-                        api_key=api_key,
-                        model=model,
-                    )
-                else:
-                    provider = None
-            else:
-                provider = None
+            from app.services.local_model_runtime import make_assistant
+            provider = make_assistant(LocalProposalAssistant, app.config)
             if provider is not None:
                 from app.repositories.assistant import AssistantRepository
                 from app.services.assistant import AssistantService
@@ -280,7 +376,7 @@ def create_app(test_config=None):
     from app.routes import api, auth, projects, equipment, standards, users, templates
     from app.routes import crypto_projects, security_projects, crypto_logs, security_logs
     from app.routes import experts, expert_groups, equipment_groups
-    from app.routes import utils, expense, documents, host_devices, research_units
+    from app.routes import utils, expense, documents, host_devices, research_units, leadership
     from app.routes.generic_tables import bp as generic_tables_bp
     from app.routes.generic_tables import bp2 as generic_tables_api_bp
     from app.routes.preview import bp as preview_bp
@@ -290,6 +386,8 @@ def create_app(test_config=None):
     from app.web.proposals import bp as proposals_bp
     from app.web.assistant import bp as assistant_bp
     from app.web.projects import bp as project_registry_bp
+    from app.web.research_reports import bp as research_reports_bp
+    from app.web.sensitive_terms import bp as sensitive_terms_bp
 
     for blueprint in (
         api.bp, auth.bp, projects.bp, equipment.bp, standards.bp, users.bp,
@@ -301,10 +399,44 @@ def create_app(test_config=None):
         proposals_bp,
         assistant_bp,
         project_registry_bp,
+        research_reports_bp,
+        sensitive_terms_bp,
+        leadership.bp,
     ):
         app.register_blueprint(blueprint)
     app.register_blueprint(argumentation_bp, url_prefix="/argumentation")
     app.register_blueprint(template_bp)
+
+    @app.before_request
+    def hide_ai_only_endpoints():
+        if (app.config.get("AI_FEATURES_VISIBLE") is not True
+                and request.endpoint in AI_ONLY_ENDPOINTS):
+            abort(404)
+
+    @app.errorhandler(413)
+    def upload_too_large(error):
+        from flask import render_template
+
+        message = "上传内容超过大小限制，请缩小文件或分批上传后重试。"
+        legacy_project_upload = (request.endpoint or "").split(".", 1)[0] in {
+            "projects", "security_projects", "crypto_projects",
+        }
+        if legacy_project_upload:
+            return jsonify({
+                "success": False, "message": message, "code": "PAYLOAD_TOO_LARGE",
+            }), 413
+        if "/api/" in request.path or request.is_json:
+            return jsonify({"error": {
+                "code": "PAYLOAD_TOO_LARGE", "message": message,
+                "requestId": getattr(request, "request_id", None),
+            }}), 413
+        limit = app.config.get("MAX_CONTENT_LENGTH")
+        if isinstance(limit, int) and limit > 0:
+            unit, divisor = ("MiB", 1024 ** 2) if limit >= 1024 ** 2 else ("KiB", 1024)
+            limit_label = f"{limit / divisor:g} {unit}"
+        else:
+            limit_label = None
+        return render_template("errors/upload_too_large.html", message=message, limit_label=limit_label), 413
 
     @app.route("/healthz")
     def healthz():

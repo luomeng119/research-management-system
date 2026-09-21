@@ -207,4 +207,4 @@ if __name__ == '__main__':
     test_regression_not_dict()
     test_no_parent_category_filter()
     test_candidates_are_strings_not_dicts()
-    print(f"\n✅ 所有 10 个测试通过 — match_subclass() 返回值类型契约保持正确")
+    print("\n✅ 所有 10 个测试通过 — match_subclass() 返回值类型契约保持正确")

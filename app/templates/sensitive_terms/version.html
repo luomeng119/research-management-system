@@ -1,0 +1,3 @@
+{% extends 'base.html' %}
+{% block title %}词库版本 v{{ snapshot.version }}{% endblock %}
+{% block content %}<main class="container py-4"><a href="{{ url_for('sensitive_terms.manage') }}">返回当前词库</a><h1>词库版本 v{{ snapshot.version }}</h1><p>只读历史 · {{ snapshot.createdByName or '空词库' }} · {{ snapshot.createdAt or '' }}</p><p>{{ snapshot.note }}</p><div class="table-responsive"><table class="table table-bordered"><thead><tr><th scope="col">规则编号</th><th scope="col">原词</th><th scope="col">代称</th><th scope="col">状态</th></tr></thead><tbody>{% for rule in snapshot.rules %}<tr><td>{{ rule.id }}</td><td>{{ rule.source }}</td><td>{{ rule.replacement }}</td><td>{{ '启用' if rule.enabled else '禁用' }}</td></tr>{% endfor %}</tbody></table></div></main>{% endblock %}

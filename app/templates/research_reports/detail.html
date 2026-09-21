@@ -1,0 +1,13 @@
+{% extends "research_reports/layout.html" %}
+{% block report_content %}
+<a href="{{ url_for('research_reports.list_page', objectType=report.objectType, objectId=report.objectId) }}">返回报告列表</a>
+<h1>{{ current.title|default(report.title) }}</h1><p>{{ current.purpose|default(report.purpose) }}</p><p>已保存 v{{ current.versionNo }} · {{ current.createdAt }} · 作者：{{ current.createdByName or '姓名未记录' }}</p>
+{% if conflict %}<p role="alert">你的输入仍保留在下方。请先复制未保存内容，<a target="_blank" rel="noopener" href="{{ url_for('research_reports.version_page', report_id=report.id, version_no=current.versionNo) }}">在新窗口核对当前版本</a>，再重新打开编辑页合并修改。此次没有覆盖已保存版本。</p>{% endif %}
+<form method="post" action="{{ url_for('research_reports.detail_page', report_id=report.id) }}">
+<input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="baseVersion" value="{{ form.get('baseVersion', '') }}">
+	{% include 'research_reports/fields.html' %}{% if config.get('AI_FEATURES_VISIBLE') %}{% include 'research_reports/wording.html' %}{% endif %}<button class="btn btn-primary" type="submit">保存新版本</button>
+	{% if config.get('AI_FEATURES_VISIBLE') %}{% include 'research_reports/selection.html' %}{% endif %}</form>
+<h2 class="mt-4">版本历史</h2>
+{% for item in history['items'] %}<article class="proposal-panel p-3 mb-2"><a href="{{ url_for('research_reports.version_page', report_id=report.id, version_no=item.versionNo) }}">查看 v{{ item.versionNo }}</a> · {{ item.createdAt }} · 作者：{{ item.createdByName or '姓名未记录' }}<p>{{ item.note or '未填写修改说明' }}</p><a href="{{ url_for('research_reports.export_version', report_id=report.id, version_no=item.versionNo) }}">导出此版 DOCX</a></article>{% endfor %}
+<nav aria-label="版本分页">{% if history.page > 1 %}<a href="{{ url_for('research_reports.detail_page', report_id=report.id, page=history.page-1) }}">上一页</a>{% endif %} {% if history.page * history.pageSize < history.total %}<a href="{{ url_for('research_reports.detail_page', report_id=report.id, page=history.page+1) }}">下一页</a>{% endif %}</nav>
+{% endblock %}

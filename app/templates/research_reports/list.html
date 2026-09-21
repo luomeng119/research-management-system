@@ -1,0 +1,7 @@
+{% extends "research_reports/layout.html" %}
+{% block report_content %}
+<h1>科研报告</h1><p>关联{{ '提案' if object_type == 'PROPOSAL' else '项目' }}：{{ object_id }}</p>
+<a class="btn btn-primary mb-3" href="{{ url_for('research_reports.new_page', objectType=object_type, objectId=object_id) }}">新建报告</a>
+{% for item in result['items'] %}<article class="proposal-panel p-3 mb-3"><h2><a href="{{ url_for('research_reports.detail_page', report_id=item.id) }}">{{ item.title }}</a></h2><p>{{ item.purpose }}</p><p>当前 v{{ item.currentVersion }} · {{ item.updatedAt }}</p></article>{% else %}<p>尚无科研报告。可创建报告并保存正文版本。</p>{% endfor %}
+<nav aria-label="报告分页">{% if result.page > 1 %}<a href="{{ url_for('research_reports.list_page', objectType=object_type, objectId=object_id, page=result.page-1) }}">上一页</a>{% endif %} {% if result.page * result.pageSize < result.total %}<a href="{{ url_for('research_reports.list_page', objectType=object_type, objectId=object_id, page=result.page+1) }}">下一页</a>{% endif %}</nav>
+{% endblock %}

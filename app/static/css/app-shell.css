@@ -4,7 +4,8 @@ body { margin: 0; overflow-x: hidden; color: var(--ink); background: var(--bg); 
 button, input, select, textarea { font: inherit; }
 a { color: inherit; }
 a:hover { color: inherit; }
-button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 3px solid rgba(11, 93, 89, 0.22); outline-offset: 2px; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible,
+.app-shell :is(button, a, input, select, textarea, [tabindex]):focus-visible { outline: 3px solid var(--brand); outline-offset: 2px; }
 .app-icon { width: 18px; height: 18px; display: inline-block; flex: 0 0 auto; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1.85; stroke-linecap: round; stroke-linejoin: round; vertical-align: -0.2em; }
 .app-icon-small { width: 15px; height: 15px; }
 
@@ -58,7 +59,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .directory-heading small { color: var(--subtle); font-size: 11px; }
 .directory-resizer { width: 5px; flex: 0 0 auto; cursor: col-resize; background: var(--bg); border-right: 1px solid transparent; transition: background var(--transition-fast); }
 .directory-resizer:hover, .directory-resizer:focus-visible { background: var(--brand-soft); border-color: var(--brand); }
-.directory-collapsed .directory-sidebar, .directory-collapsed .directory-resizer { width: 0 !important; min-width: 0; overflow: hidden; border: 0; }
+.directory-collapsed .directory-sidebar, .directory-collapsed .directory-resizer { width: 0 !important; min-width: 0; overflow: hidden; border: 0; visibility: hidden; }
 .content { min-width: 0; max-width: 1560px; flex: 1; padding: 24px; }
 .tree-loading, .tree-error { padding: 24px 14px; color: var(--muted); text-align: center; }
 .tree-error { color: var(--danger); }
@@ -106,7 +107,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dashboard-empty-icon { width: 38px; height: 38px; display: grid; place-items: center; flex: 0 0 auto; color: var(--brand); background: var(--brand-soft); border-radius: 9px; }
 .dashboard-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 20px 20px; }
 .dashboard-work-list { padding: 0 8px; }
-.dashboard-work-row { min-height: 62px; display: grid; grid-template-columns: 42px minmax(160px, 1fr) 72px 80px; align-items: center; gap: 9px; padding: 8px 12px; border-top: 1px solid #EDF1F0; text-decoration: none; }
+.dashboard-work-row { min-height: 62px; display: grid; grid-template-columns: 42px minmax(0, 1fr) 72px 80px; align-items: center; gap: 9px; padding: 8px 12px; border-top: 1px solid #EDF1F0; text-decoration: none; }
 .dashboard-work-row:hover { background: var(--brand-faint); }
 .dashboard-kind { width: 36px; height: 36px; display: grid; place-items: center; color: var(--brand-deep); background: var(--brand-soft); border-radius: 9px; font-size: 11px; font-weight: 700; }
 .dashboard-work-main { min-width: 0; display: flex; flex-direction: column; }
@@ -139,6 +140,171 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .resource-links small { margin-top: 3px; overflow: hidden; color: var(--subtle); text-overflow: ellipsis; white-space: nowrap; }
 .resource-links > a > .app-icon { color: var(--brand); }
 
+/* Legacy document forms still emit dark-theme inline styles. Keep these
+   compatibility overrides local to the dialog, including generated rows. */
+#newDocModal .modal-content {
+    color: var(--ink);
+    background: var(--surface) !important;
+    border-color: var(--border-strong) !important;
+    box-shadow: var(--shadow) !important;
+}
+#newDocModal .modal-header, #newDocModal hr { border-color: var(--border) !important; }
+#newDocModal .text-white, #newDocModal .text-light { color: var(--ink) !important; }
+#newDocModal .text-secondary, #newDocModal .text-muted { color: var(--muted) !important; }
+#newDocModal .btn-close-white { filter: none; }
+#newDocModal .template-card { background: var(--surface-soft) !important; }
+#newDocModal .template-card:hover { background: var(--brand-soft) !important; }
+#newDocModal .form-control {
+    color: var(--ink) !important;
+    background: var(--surface) !important;
+    border-color: var(--border-strong) !important;
+}
+#newDocModal .form-control::placeholder { color: var(--muted); opacity: 1; }
+#newDocModal .form-control:focus { border-color: var(--brand) !important; box-shadow: 0 0 0 3px var(--brand-soft); }
+#newDocModal .table-responsive { overflow-x: auto !important; border-color: var(--border) !important; }
+#newDocModal #itemsTable { min-width: 600px; background: var(--surface) !important; }
+#newDocModal #itemsTable th, #newDocModal #itemsTable td { color: var(--ink) !important; border-color: var(--border) !important; }
+#newDocModal #itemsTable th { background: var(--surface-soft); }
+
+/* Preserve every expert field and keep row actions reachable with both
+   navigation panels open. The table, not the page, owns overflow. */
+#expertTable > .card-body { overflow-x: auto; padding: 0; }
+#expertTable .table { min-width: 1040px; margin-bottom: 0; }
+#expertTable col:nth-child(2) { width: 140px !important; }
+#expertTable col:last-child { width: 130px !important; }
+#expertTable th, #expertTable td { padding: 12px 8px; vertical-align: middle; overflow-wrap: anywhere; }
+#expertTable th:last-child, #expertTable td:last-child:not([colspan]) {
+    position: sticky;
+    right: 0;
+    z-index: 1;
+    background: var(--surface);
+    white-space: nowrap;
+    box-shadow: -1px 0 0 var(--border);
+}
+
+/* The retained tool landing page uses a light surface, including disabled tools. */
+#mainContent:has(h2 > .bi-tools) .card-text.text-light { color: var(--muted) !important; }
+
+/* Equipment details share space with two navigation panels. Size the fields
+   from their available content width, not the full browser breakpoint. */
+#mainContent:has(#hostModal) > .container-fluid { container: equipment-detail / inline-size; }
+#mainContent:has(#hostModal) > .container-fluid > .row {
+    display: grid;
+    grid-template-columns: 160px minmax(0, 1fr);
+    gap: 16px;
+    margin: 0;
+    align-items: start;
+}
+#mainContent:has(#hostModal) > .container-fluid > .row > div { width: 100%; min-width: 0; padding: 0; }
+#mainContent:has(#hostModal) .card-body > .row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+    gap: 12px 16px;
+    margin: 0;
+}
+#mainContent:has(#hostModal) .card-body > .row > div { width: auto; min-width: 0; padding: 0; overflow-wrap: anywhere; }
+#mainContent:has(#hostModal) .card-body > .row > :is(:nth-child(9), :nth-child(10), :nth-child(13), .col-12) { grid-column: 1 / -1; }
+#mainContent:has(#hostModal) .card-body pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 4px 0 0; }
+#mainContent:has(#hostModal) .badge:is(.bg-info, .bg-warning) { color: var(--ink); }
+#mainContent:has(#hostModal) .col-md-4 .row > .col-6:only-child { width: 100%; }
+#mainContent:has(#hostModal) .equipment-image { width: 100%; max-height: 240px; object-fit: contain; }
+@container equipment-detail (max-width: 480px) {
+    #mainContent:has(#hostModal) > .container-fluid > .row { grid-template-columns: minmax(0, 1fr); }
+    #mainContent:has(#hostModal) .equipment-image { width: auto; max-width: min(100%, 240px); }
+}
+
+/* Project names may wrap, but dates, people and actions should not become
+   one-character columns when both navigation panels are expanded. */
+#projectAccordion .accordion-body { overflow-x: auto; padding: 0; }
+#projectAccordion .table { min-width: 1150px; table-layout: fixed; margin-bottom: 0; }
+#projectAccordion th, #projectAccordion td { padding: 12px 8px; vertical-align: middle; overflow-wrap: anywhere; }
+#projectAccordion th:nth-child(1) { width: 44px !important; }
+#projectAccordion th:nth-child(2) { width: 180px; }
+#projectAccordion th:nth-child(3) { width: 240px; }
+#projectAccordion th:nth-child(4) { width: 88px; }
+#projectAccordion th:nth-child(5), #projectAccordion th:nth-child(6) { width: 112px; }
+#projectAccordion th:nth-child(7) { width: 100px; }
+#projectAccordion th:last-child { width: 174px; }
+#projectAccordion td:nth-child(3) > a { display: block; }
+#projectAccordion th:last-child, #projectAccordion td:last-child {
+    position: sticky;
+    right: 0;
+    z-index: 1;
+    background: var(--surface);
+    white-space: nowrap;
+    box-shadow: -1px 0 0 var(--border);
+}
+
+/* Match retained project/expert controls to the approved palette. Status
+   badges and destructive buttons retain their distinct semantic colors. */
+#mainContent:has(:is(#projectAccordion, #expertTable, .lifecycle-page, #collapseCategory, a[href^="/equipment/groups/new"])) .btn-primary {
+    color: var(--surface); background: var(--brand); border-color: var(--brand);
+}
+#mainContent:has(:is(#projectAccordion, #expertTable, .lifecycle-page, #collapseCategory, a[href^="/equipment/groups/new"])) .btn-primary:is(:hover, :active) {
+    color: var(--surface); background: var(--brand-deep); border-color: var(--brand-deep);
+}
+#mainContent:has(:is(#projectAccordion, #expertTable)) :is(.btn-success, .btn-info, .btn-outline-primary) {
+    color: var(--brand-deep); background: var(--surface); border-color: var(--border-strong);
+}
+#mainContent:has(:is(#projectAccordion, #expertTable)) :is(.btn-success, .btn-info, .btn-outline-primary):is(:hover, :active) {
+    color: var(--brand-deep); background: var(--brand-soft); border-color: var(--brand);
+}
+#projectAccordion .accordion-button:not(.collapsed) {
+    color: var(--brand-deep); background: var(--brand-soft);
+}
+
+/* Keep lifecycle form actions visible while long fields scroll internally. */
+#mainContent .lifecycle-form { max-height: calc(100dvh - 3.5rem); }
+#mainContent .lifecycle-form > .modal-body { min-height: 0; overflow-y: auto; }
+
+/* Let equipment filters wrap at their available content width. Keep both
+   submit and reset together, without changing the retained query fields. */
+#mainContent form:has(#categoryFilter) { gap: 12px; margin: 0 0 16px; }
+#mainContent form:has(#categoryFilter) > div { flex: 1 1 140px; width: auto; min-width: 0; margin: 0; padding: 0; }
+#mainContent form:has(#categoryFilter) > .position-relative { flex-basis: 340px; }
+#mainContent form:has(#categoryFilter) > div:last-child { flex: 0 0 auto; display: flex; gap: 8px; align-items: start; }
+#mainContent:has(#equipmentTableWrap) > .container-fluid > .d-flex { flex-wrap: wrap; gap: 12px; }
+#mainContent:has(#equipmentTableWrap) > .container-fluid > .d-flex > div { display: flex; flex-wrap: wrap; gap: 8px; }
+#mainContent:has(#equipmentTableWrap) .btn-primary { background: var(--brand); border-color: var(--brand); }
+#mainContent:has(#equipmentTableWrap) .btn-primary:hover { background: var(--brand-deep); border-color: var(--brand-deep); }
+#mainContent:has(#equipmentTableWrap) > .container-fluid > .d-flex :is(.btn-info, .btn-warning, .btn-outline-success, .btn-outline-primary) { color: var(--brand-deep); background: var(--surface); border-color: var(--border-strong); }
+#mainContent:has(#equipmentTableWrap) > .container-fluid > .d-flex :is(.btn-info, .btn-warning, .btn-outline-success, .btn-outline-primary):hover { background: var(--brand-soft); border-color: var(--brand); }
+
+/* Equipment-group filters use available content width, not narrow grid columns. */
+#mainContent:has(#equipmentForm) form:has(#searchInput) { gap: 12px; margin: 0 0 16px; }
+#mainContent:has(#equipmentForm) form:has(#searchInput) > div { flex: 1 1 140px; width: auto; min-width: 0; margin: 0; padding: 0; }
+#mainContent:has(#equipmentForm) form:has(#searchInput) > div:first-child { flex-basis: 200px; }
+#mainContent:has(#equipmentForm) form:has(#searchInput) > div:has(button, input[type="number"]) { flex: 0 0 auto; }
+#mainContent:has(#equipmentForm) form:has(#searchInput) .btn { white-space: nowrap; }
+#mainContent:has(#equipmentForm) form:has(#searchInput) .btn-primary { background: var(--brand); border-color: var(--brand); }
+#mainContent:has(#equipmentForm) form:has(#searchInput) .btn-primary:hover { background: var(--brand-deep); border-color: var(--brand-deep); }
+
+/* Retain template actions without squeezing Chinese labels into vertical
+   fragments beside the native file input. Scope this to the template tree. */
+#templateTree .d-flex { flex-wrap: wrap; gap: 8px 4px; }
+#templateTree .d-flex > .btn,
+#templateTree .d-flex > .badge { flex-shrink: 0; white-space: nowrap; }
+#templateTree input[type="file"] { flex: 1 1 220px; width: auto; min-width: 0; max-width: 100%; }
+#templateTree .d-flex.mb-1 > span { overflow-wrap: anywhere; min-width: 0; }
+#mainContent:has(#templateTree) .btn-link { color: var(--brand-deep); text-decoration: none; }
+#mainContent:has(#templateTree) :is(.btn-outline-primary, .btn-outline-info, .btn-outline-warning) {
+    color: var(--brand-deep); background: var(--surface); border-color: var(--border-strong);
+}
+#mainContent:has(#templateTree) :is(.btn-outline-primary, .btn-outline-info, .btn-outline-warning):is(:hover, :active) {
+    color: var(--brand-deep); background: var(--brand-soft); border-color: var(--brand);
+}
+
+/* Retained generic-table actions share the shell palette. Keep row colors
+   and the editable/read-only version badges semantically distinct. */
+#mainContent:has(#versionSelect) > .toolbar > span:not([class]) { color: var(--brand-deep) !important; }
+#mainContent:has(#versionSelect) > .stats-bar { color: var(--brand-deep); background: var(--brand-soft); border-color: var(--border); }
+#mainContent:has(#versionSelect) .toolbar :is(.btn-outline-primary, .btn-outline-success) {
+    color: var(--brand-deep); background: var(--surface); border-color: var(--border-strong);
+}
+#mainContent:has(#versionSelect) .toolbar :is(.btn-outline-primary, .btn-outline-success):is(:hover, :active) {
+    color: var(--brand-deep); background: var(--brand-soft); border-color: var(--brand);
+}
+
 @media (max-width: 1279px) {
     .app-shell { --active-sidebar-width: 64px; }
     .brand { padding-inline: 9px; }
@@ -155,3 +321,88 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* Keep standard names readable when both navigation columns are expanded. */
+/* Keep reimbursement summary controls on one line; nested details retain wrapping. */
+#mainContent table:has(> tbody#recordsBody) { min-width: 800px; }
+#mainContent table:has(> tbody#recordsBody) > thead > tr > th,
+#mainContent #recordsBody > tr > td:not([colspan]),
+#mainContent #recordsBody > tr > td:not([colspan]) .btn { white-space: nowrap; }
+
+/* Keep maintenance account labels readable without widening the page. */
+#mainContent .container-fluid:has(#pendingTable) .card-body { overflow-x: auto; }
+#mainContent .container-fluid:has(#pendingTable) .table { min-width: 840px; }
+#mainContent .container-fluid:has(#pendingTable) .table :is(th, td) {
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+/* Expert import review must keep fields readable inside its existing scroll area. */
+#mainContent form[action="/experts/import/commit"] .table-responsive { overflow-x: auto; }
+#mainContent form[action="/experts/import/commit"] #previewTable { min-width: 100rem; }
+#mainContent form[action="/experts/import/commit"] #previewTable input[type="text"] { min-width: 10rem; }
+#mainContent form[action="/experts/import/commit"] #previewTable td:nth-child(2) { white-space: nowrap; }
+
+#mainContent .table:has(a[href^="/standards/download/"]) { min-width: 800px; table-layout: fixed; }
+#mainContent .table:has(a[href^="/standards/download/"]) :is(th, td) { vertical-align: middle; }
+#mainContent .table:has(a[href^="/standards/download/"]) :is(th, td):nth-child(1) { width: 180px; overflow-wrap: anywhere; }
+#mainContent .table:has(a[href^="/standards/download/"]) :is(th, td):nth-child(2) { width: 240px; overflow-wrap: anywhere; }
+#mainContent .table:has(a[href^="/standards/download/"]) :is(th, td):nth-child(n+3) { width: 76px; white-space: nowrap; }
+#mainContent .table:has(a[href^="/standards/download/"]) :is(th, td):last-child { width: 140px; }
+
+/* Equipment log summaries and filters use the established shell palette. */
+.equipment-logs-page .log-summary { row-gap: 12px; }
+.equipment-logs-page .log-summary-card { background: var(--surface); color: var(--ink); border-color: var(--border); }
+.equipment-logs-page .log-summary-card .card-title { font-size: 15px; color: var(--muted); margin-bottom: 8px; }
+.equipment-logs-page .log-summary-card h2 { font-size: 28px; color: var(--brand-deep); margin-bottom: 0; }
+.equipment-logs-page .log-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 16px; align-items: end; }
+.equipment-logs-page .log-filters > div { width: auto; min-width: 0; }
+.equipment-logs-page .log-filters .form-label { color: var(--muted); font-size: 14px; margin-bottom: 6px; }
+.equipment-logs-page .log-filters :is(.form-control, .form-select, .btn) { min-height: 38px; }
+.equipment-logs-page .log-filters .btn-primary { color: var(--surface); background: var(--brand); border-color: var(--brand); }
+.equipment-logs-page .log-filters .btn-primary:hover { background: var(--brand-deep); border-color: var(--brand-deep); }
+.equipment-logs-page table { min-width: 720px; }
+.equipment-logs-page table :is(th, td) { vertical-align: middle; }
+.equipment-logs-page table :is(th, td):nth-child(-n+3) { white-space: nowrap; }
+.equipment-logs-page table :is(th, td):nth-child(n+4) { overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+    .equipment-logs-page .log-filters { grid-template-columns: 1fr; }
+}
+
+/* Equipment groups retain readable names/counts while their existing table
+   scrolls locally; keep all three row actions within reach. */
+#mainContent .table:has(a[href^="/equipment/groups/edit/"]) { min-width: 800px; table-layout: fixed; }
+#mainContent .table:has(a[href^="/equipment/groups/edit/"]) :is(th, td) { vertical-align: middle; overflow-wrap: anywhere; }
+#mainContent .table:has(a[href^="/equipment/groups/edit/"]) :is(th, td):nth-child(1) { width: 200px; }
+#mainContent .table:has(a[href^="/equipment/groups/edit/"]) :is(th, td):nth-child(2) { width: 130px; }
+#mainContent .table:has(a[href^="/equipment/groups/edit/"]) :is(th, td):nth-child(3) { width: 64px; white-space: nowrap; }
+#mainContent .table:has(a[href^="/equipment/groups/edit/"]) :is(th, td):nth-child(4) { width: 70px; }
+#mainContent .table:has(a[href^="/equipment/groups/edit/"]) :is(th, td):nth-child(5) { width: 136px; }
+#mainContent .table:has(a[href^="/equipment/groups/edit/"]) .badge {
+    max-width: 100%; white-space: normal; overflow-wrap: anywhere; line-height: 1.4;
+    color: var(--brand-deep); background-color: var(--brand-soft) !important;
+}
+#mainContent .table:has(a[href^="/equipment/groups/edit/"]) :is(th, td):last-child {
+    width: 158px; position: sticky; right: 0; z-index: 1;
+    white-space: nowrap; background: var(--surface); box-shadow: -1px 0 0 var(--border);
+}
+/* Generic table version chrome: preserve table row color/diff semantics. */
+#mainContent:has(#versionSelect) .table-version-card { background: var(--surface); border-color: var(--border); }
+#mainContent:has(#versionSelect) .table-version-card > .card-header { color: var(--brand-deep); background: var(--brand-soft); border-color: var(--border); }
+#mainContent:has(#versionSelect) .table-version-card .btn-success { color: var(--surface); background: var(--brand); border-color: var(--brand); }
+#mainContent:has(#versionSelect) .table-version-card .btn-success:hover { background: var(--brand-deep); border-color: var(--brand-deep); }
+#mainContent:has(#versionSelect) .toolbar .badge.bg-success { color: var(--brand-deep); background: var(--brand-soft) !important; }
+#mainContent:has(#versionSelect) .toolbar .badge.bg-warning { color: var(--ink) !important; background: var(--surface-soft) !important; border: 1px solid var(--border-strong); }
+#mainContent:has(#versionSelect) #paginationWrap .page-link { color: var(--brand-deep); }
+#mainContent:has(#versionSelect) #paginationWrap .active > .page-link { color: var(--surface); background: var(--brand); border-color: var(--brand); }
+
+/* Legacy project detail only; keep destructive actions and row semantics intact. */
+#mainContent:has(.legacy-project-detail) .btn-primary { color: var(--surface); background: var(--brand); border-color: var(--brand); }
+#mainContent:has(.legacy-project-detail) .btn-primary:is(:hover, :active) { background: var(--brand-deep); border-color: var(--brand-deep); }
+#mainContent:has(.legacy-project-detail) :is(.btn-info, .btn-success, .btn-outline-primary, .btn-outline-info, .btn-outline-success) { color: var(--brand-deep); background: var(--surface); border-color: var(--border-strong); }
+#mainContent:has(.legacy-project-detail) :is(.btn-info, .btn-success, .btn-outline-primary, .btn-outline-info, .btn-outline-success):is(:hover, :active) { color: var(--brand-deep); background: var(--brand-soft); border-color: var(--brand); }
+#mainContent:has(.legacy-project-detail) .badge.bg-info { color: var(--brand-deep); background: var(--brand-soft) !important; }
+#mainContent:has(.legacy-project-detail) .card-header { color: var(--ink); background: var(--surface-soft); border-color: var(--border); }
+#mainContent:has(.legacy-project-detail) .info-field .field-text { color: var(--ink); }
+.legacy-project-detail .bi:has(> .legacy-lucide)::before { content: none; }
+.legacy-project-detail .bi-chevron-down > .legacy-lucide { transform: rotate(90deg); }

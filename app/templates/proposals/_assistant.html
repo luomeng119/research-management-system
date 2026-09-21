@@ -1,11 +1,11 @@
-<aside class="proposal-panel proposal-assistant" id="proposal-assistant"
+<aside class="proposal-panel proposal-assistant" id="proposal-assistant" aria-label="科研提案助手" hidden
        data-proposal-id="{{ proposal.businessId }}" data-proposal-version="{{ proposal.version }}">
   <div class="proposal-assistant-head">
-    <div class="proposal-assistant-title"><span class="proposal-assistant-mark"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#sparkles"></use></svg></span><div><strong>科研提案助手</strong><small>整理，不替你决定</small></div></div>
-    <span class="proposal-status proposal-status-draft">辅助整理</span>
+    <div class="proposal-assistant-title"><span class="proposal-assistant-mark"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#sparkles"></use></svg></span><div><strong><span class="ai-action-badge">AI</span>科研提案助手</strong><small>整理，不替你决定</small></div></div>
+    <button class="proposal-assistant-close" id="assistant-close" type="button" aria-label="关闭提案助手"><svg class="app-icon" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#x"></use></svg></button>
   </div>
   <div class="proposal-assistant-body">
-    <p>系统本地部署；AI 是可选的在线整理服务，不作立项判断，断网时不影响手工业务。</p>
+    <p>系统与 AI 均在本机运行，无需联网。AI 仅提供整理建议，不作立项判断；模型不可用时仍可手工填写和保存。</p>
     {% if not config.get('AI_ASSISTANT_AVAILABLE') %}<div class="proposal-alert proposal-alert-info small py-2" role="status"><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#circle-alert"></use></svg><span>当前未连接 AI，您仍可正常手工填写和保存。</span></div>{% endif %}
     <label class="form-label small" for="assistant-source">待整理文字</label>
     <textarea class="form-control" id="assistant-source" rows="6" maxlength="6000" placeholder="可在左侧原始依据中选择并复制到这里"></textarea>
@@ -22,7 +22,7 @@
       <label class="form-check-label small" for="assistant-sanitized">我确认本次输入文字和勾选附件允许发送，且已完成必要脱敏</label>
     </div>{% endif %}
     <div class="d-flex gap-2 mt-3">
-      <button class="proposal-button proposal-button-primary proposal-button-sm" type="button" id="assistant-generate" {% if not config.get('AI_ASSISTANT_AVAILABLE') %}disabled{% endif %}><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#sparkles"></use></svg>生成建议</button>
+      <button class="proposal-button proposal-button-primary proposal-button-sm" type="button" id="assistant-generate" {% if not config.get('AI_ASSISTANT_AVAILABLE') %}disabled{% endif %}><span class="ai-action-badge">AI</span><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#sparkles"></use></svg>生成建议</button>
       <button class="proposal-button proposal-button-secondary proposal-button-sm d-none" type="button" id="assistant-cancel"><svg class="app-icon app-icon-small" aria-hidden="true"><use href="/static/icons/lucide-icons.svg#x"></use></svg>取消</button>
     </div>
     <div class="small mt-3" id="assistant-message" role="status" aria-live="polite"></div>
@@ -87,7 +87,7 @@
       result.classList.remove('d-none'); showMessage('建议已生成，只有勾选并确认的字段会写入。');
       document.getElementById('assistant-apply').addEventListener('click', applySelected);
     } catch (error) {
-      if (error.name !== 'AbortError') showMessage(`${error.message}，您仍可继续手工填写。`, true);
+      if (error.name !== 'AbortError') showMessage(error.message.includes('手工填写') ? error.message : `${error.message}，您仍可继续手工填写。`, true);
     } finally {
       generate.disabled = false; cancel.classList.add('d-none'); controller = null;
     }

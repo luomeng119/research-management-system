@@ -2,9 +2,9 @@
   "template_id": "tpl_caigou",
   "doc_type": "科研物资采购申请单",
   "docx_filename": "模板.docx",
-  "table_index": 3,
-  "version": "1.0.0",
-  "note": "商品明细字段使用 item_0, item_1 等索引，自动填充时会根据实际发票商品条数生成动态行",
+  "table_index": 0,
+  "version": "1.1.0",
+  "note": "系统通用采购申请单；Web端支持一至多条物品明细，生成DOCX时按实际条数扩展明细行",
   "fields": [
     {
       "field_id": "T0[1,1]",

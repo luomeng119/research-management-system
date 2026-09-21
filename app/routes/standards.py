@@ -39,10 +39,19 @@ def index():
     try:
         category_filter = request.args.get("category", "").strip()
         standards = _service().list_standards(category_filter)
+        users = current_app.extensions.get("users_repository")
+        uploader_names = {}
+        accounts = users.list_accounts() if users is not None else []
+        for account in accounts:
+            name = account.get("name") or account["username"]
+            uploader_names[account["username"]] = name
+        # New uploads persist an ID; it takes precedence over legacy usernames.
+        for account in accounts:
+            uploader_names[str(account["id"])] = account.get("name") or account["username"]
         category_groups = {}
         for standard in standards:
             category_groups.setdefault(standard.get("category") or "未分类", []).append(standard)
-        return render_template("standards/index.html", standards=standards, category_groups=category_groups, category_filter=category_filter)
+        return render_template("standards/index.html", standards=standards, category_groups=category_groups, category_filter=category_filter, uploader_names=uploader_names)
     except ReferenceLibraryError as error:
         return _error(error)
 

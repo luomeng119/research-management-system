@@ -4,6 +4,9 @@ from datetime import datetime
 from app.models import CryptoProjectModel
 from app.routes._shared import build_folder_tree, RESEARCH_FOLDER_TYPES
 from app.routes._project_bridge import (
+    controlled_project_archive,
+    delete_controlled_project_file,
+    delete_project_folder,
     legacy_page, safe_project_documents_path, safe_project_path, upload_project_file,
     merge_project_files, controlled_project_download, upload_project_folder,
     rename_controlled_project_file,
@@ -63,7 +66,8 @@ def index():
             service, category='CRYPTO_APPLICATION', page=page, page_size=per_page,
             status=status_filter, keyword=search_keyword,
         )
-        projects_page = result['items']; total = result['total']
+        projects_page = result['items']
+        total = result['total']
         total_pages = (total + per_page - 1) // per_page if total else 1
         partial = request.args.get('partial') == '1'
         template = 'projects/partial_table.html' if partial else 'projects/index.html'
@@ -206,6 +210,12 @@ def create_folder(project_id):
         )
     except ValueError:
         return jsonify({'success': False, 'message': '非法路径'}), 400
+    try:
+        current_app.extensions['project_service'].get_legacy(
+            category='CRYPTO_APPLICATION', business_id=project_id,
+        )
+    except ProjectServiceError as error:
+        return jsonify(success=False, message=error.message, code=error.code), error.status_code
     os.makedirs(project_dir, exist_ok=True)
     
     if os.path.exists(new_path):
@@ -235,6 +245,9 @@ def download_file(project_id, filepath):
 @bp.route('/preview/<project_id>/<path:filepath>')
 def preview_file(project_id, filepath):
     """文件预览接口"""
+    controlled = controlled_project_download(project_id, "CRYPTO_APPLICATION", filepath, preview=True)
+    if controlled is not None:
+        return controlled
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     try:
@@ -247,26 +260,13 @@ def preview_file(project_id, filepath):
 
 @bp.route('/delete_folder/<project_id>', methods=['POST'])
 def delete_folder(project_id):
-    if 'user' not in session:
-        return jsonify({'success': False, 'message': '未登录'})
-    folderpath = request.form.get('folder_path', '').strip()
-    if not folderpath:
-        return jsonify({'success': False, 'message': '文件夹路径不能为空'})
-    try:
-        full_path = safe_project_path(current_app.config['UPLOAD_DIR'], project_id, folderpath)
-    except ValueError:
-        return jsonify({'success': False, 'message': '非法路径'}), 400
-    if not os.path.exists(full_path):
-        return jsonify({'success': False, 'message': '文件夹不存在'})
-    try:
-        import shutil
-        shutil.rmtree(full_path)
-        return jsonify({'success': True, 'message': '删除成功'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
+    return delete_project_folder(project_id, "CRYPTO_APPLICATION")
 
 @bp.route('/delete_file/<project_id>', methods=['POST'])
 def delete_file(project_id):
+    controlled = delete_controlled_project_file(project_id, "CRYPTO_APPLICATION")
+    if controlled is not None:
+        return controlled
     if 'user' not in session:
         return jsonify({'success': False, 'message': '未登录'})
     filepath = request.form.get('file_path', '').strip()
@@ -278,11 +278,7 @@ def delete_file(project_id):
         return jsonify({'success': False, 'message': '非法路径'}), 400
     if not os.path.exists(full_path):
         return jsonify({'success': False, 'message': '文件不存在'})
-    try:
-        os.remove(full_path)
-        return jsonify({'success': True, 'message': '删除成功'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
+    return jsonify(success=False, message='文件服务不可用，未删除文件'), 503
 
 @bp.route('/rename_file/<project_id>', methods=['POST'])
 def rename_file(project_id):
@@ -320,6 +316,9 @@ def rename_file(project_id):
 
 @bp.route('/archive/<project_id>', methods=['POST'])
 def archive_project(project_id):
+    controlled = controlled_project_archive(project_id, "CRYPTO_APPLICATION")
+    if controlled is not None:
+        return controlled
     if 'user' not in session:
         return redirect(url_for('auth.login'))
     project = _get_project(project_id)
@@ -328,7 +327,6 @@ def archive_project(project_id):
         return redirect(url_for('crypto_projects.index'))
     
     # 支持两种方式：1. form表单的folders数组 2. JSON的paths数组
-    import json
     selected_folders = request.form.getlist('folders')
     if not selected_folders:
         # 尝试从JSON body中获取
@@ -336,7 +334,7 @@ def archive_project(project_id):
             data = request.get_json(silent=True)
             if data and 'paths' in data:
                 selected_folders = data['paths']
-        except:
+        except Exception:
             pass
     
     try:
@@ -490,6 +488,7 @@ def update_project_field(project_id):
     
     # 字段映射
     field_map = {
+        '计划结束日期': 'planned_end_date',
         '实际结束日期': 'actual_end_date',
         '状态': 'status',
         '任务号': 'task_number'
@@ -511,7 +510,7 @@ def update_project_field(project_id):
         except ProjectServiceError as error:
             return jsonify({'success': False, 'message': error.message}), error.status_code
     
-    if field_map[field] == 'status':
+    if field_map[field] in {'status', 'planned_end_date'}:
         return jsonify({'success': False, 'message': '项目状态服务暂不可用，未执行修改'}), 503
 
     project = CryptoProjectModel().get_by_id(project_id)

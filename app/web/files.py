@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-from functools import wraps
 from itertools import islice
 from pathlib import Path
 
 from flask import Blueprint, current_app, jsonify, request, send_file, url_for
 
-from app.security.auth import BUSINESS_USER, business_required, current_identity
+from app.security.auth import business_required, current_identity
 from app.services.files import (
     FileServiceError,
     TEXT_EXTENSIONS,
@@ -29,21 +28,8 @@ def _take_text(value, budget):
 
 
 def business_user_required(function):
-    protected = business_required(function)
-
-    @wraps(function)
-    def decorated(*args, **kwargs):
-        identity = current_identity()
-        if identity is None:
-            return protected(*args, **kwargs)
-        if identity.role != BUSINESS_USER:
-            return jsonify({"error": {
-                "code": "FORBIDDEN", "message": "无权访问业务附件",
-                "requestId": getattr(request, "request_id", None),
-            }}), 403
-        return function(*args, **kwargs)
-
-    return decorated
+    """Retain existing imports while sharing the canonical formal-role policy."""
+    return business_required(function)
 
 
 def _error(error: FileServiceError):
@@ -54,8 +40,27 @@ def _service():
     return current_app.extensions["file_service"]
 
 
-def _record_event(operation: str, *, result: str, error_code: str | None = None, file_id: str | None = None, opened: dict | None = None):
+def _record_event(operation: str, *, result: str, error_code: str | None = None, file_id: str | None = None, opened: dict | None = None, legacy_project_id: str | None = None):
     identity = current_identity()
+    project_id = legacy_project_id or (opened or {}).get("legacyProjectId")
+    if project_id:
+        service = _service()
+        properties = {"operation": operation}
+        if opened:
+            properties.update(file_type=Path(opened["originalName"]).suffix.lstrip("."),
+                              size_bucket=service._size_bucket(opened["sizeBytes"]))
+        try:
+            with service.repository.engine.begin() as connection:
+                service.audit_service.record(
+                    connection, event_name="file_operation_completed", user_id=identity.user_id,
+                    object_type="PROJECT", object_id=project_id, result=result,
+                    duration_ms=0,
+                    request_id=getattr(request, "request_id", "unknown"), error_code=error_code,
+                    properties=properties,
+                )
+            return
+        except Exception as exc:
+            raise FileServiceError("FILE_OPERATION_FAILED", "文件审计失败", 500) from exc
     _service().record_event(
         operation=operation,
         actor_user_id=identity.user_id,
@@ -68,9 +73,10 @@ def _record_event(operation: str, *, result: str, error_code: str | None = None,
     )
 
 
-def _record_failure(operation: str, error: FileServiceError, *, file_id: str | None = None):
+def _record_failure(operation: str, error: FileServiceError, *, file_id: str | None = None, opened: dict | None = None, legacy_project_id: str | None = None):
     try:
-        _record_event(operation, result="FAILURE", error_code=error.code, file_id=file_id)
+        _record_event(operation, result="FAILURE", error_code=error.code, file_id=file_id,
+                      opened=opened, legacy_project_id=legacy_project_id)
     except FileServiceError:
         current_app.logger.warning("file failure audit unavailable")
 
@@ -138,6 +144,17 @@ def add_version(file_id: str):
         return _error(error)
 
 
+@bp.get("/<file_id>/versions")
+@business_user_required
+def list_versions(file_id: str):
+    try:
+        object_type, object_id = _object_reference()
+        return jsonify(_service().list_versions(file_id, object_type=object_type, object_id=object_id))
+    except FileServiceError as error:
+        _record_failure("LIST", error, file_id=file_id)
+        return _error(error)
+
+
 @bp.post("/<file_id>/archive")
 @business_user_required
 def archive_file(file_id: str):
@@ -185,7 +202,7 @@ def download_file(file_id: str, version_no: int):
         return _error(error)
 
 
-def _preview_unavailable(file_id: str, version_no: int, opened: dict | None = None):
+def _preview_unavailable(file_id: str, version_no: int, opened: dict | None = None, *, download_url=None):
     if opened is not None:
         if not opened["stream"].closed:
             opened["stream"].close()
@@ -196,7 +213,7 @@ def _preview_unavailable(file_id: str, version_no: int, opened: dict | None = No
     query = {"objectType": request.args.get("objectType"), "objectId": request.args.get("objectId")}
     response, status = _error(FileServiceError("PREVIEW_UNAVAILABLE", "该类型暂不支持在线预览，请下载查看", 409))
     payload = response.get_json()
-    payload["downloadUrl"] = url_for("files.download_file", file_id=file_id, version_no=version_no, **query)
+    payload["downloadUrl"] = download_url or url_for("files.download_file", file_id=file_id, version_no=version_no, **query)
     response.set_data(json.dumps(payload, ensure_ascii=False))
     response.content_type = "application/json; charset=utf-8"
     return response, status
@@ -205,19 +222,26 @@ def _preview_unavailable(file_id: str, version_no: int, opened: dict | None = No
 @bp.get("/<file_id>/versions/<int:version_no>/preview")
 @business_user_required
 def preview_file(file_id: str, version_no: int):
+    return render_file_preview(lambda: _opened(file_id, version_no), file_id=file_id, version_no=version_no)
+
+
+def render_file_preview(opener, *, file_id=None, version_no=1, download_url=None, legacy_project_id=None):
+    """Render an authorized stream; callers own object binding, never raw paths."""
     opened = None
+    def unavailable():
+        return _preview_unavailable(file_id, version_no, opened, download_url=download_url)
     try:
-        opened = _opened(file_id, version_no)
+        opened = opener()
         extension = Path(opened["originalName"]).suffix.lower()
         if opened["sizeBytes"] > _service().preview_max_bytes:
-            return _preview_unavailable(file_id, version_no, opened)
+            return unavailable()
         if extension in {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}:
             response = _send(opened, attachment=False)
             _record_event("PREVIEW", result="SUCCESS", file_id=file_id, opened=opened)
             return response
         if extension in TEXT_EXTENSIONS:
             if opened["sizeBytes"] > TEXT_PREVIEW_MAX_BYTES:
-                return _preview_unavailable(file_id, version_no, opened)
+                return unavailable()
             content = opened["stream"].read(TEXT_PREVIEW_MAX_BYTES + 1).decode("utf-8")
             opened["stream"].close()
             response = jsonify({"success": True, "type": "text", "filename": opened["originalName"], "content": content})
@@ -227,7 +251,7 @@ def preview_file(file_id: str, version_no: int):
             try:
                 from docx import Document
                 if not office_archive_is_preview_safe(opened["stream"]):
-                    return _preview_unavailable(file_id, version_no, opened)
+                    return unavailable()
                 opened["stream"].seek(0)
                 document = Document(opened["stream"])
                 budget = [OFFICE_PREVIEW_CHARACTER_BUDGET]
@@ -245,13 +269,16 @@ def preview_file(file_id: str, version_no: int):
                 response = jsonify({"success": True, "type": "word", "filename": opened["originalName"], "paragraphs": paragraphs, "tables": tables})
                 _record_event("PREVIEW", result="SUCCESS", file_id=file_id, opened=opened)
                 return response
+            except FileServiceError:
+                raise
             except Exception:
-                return _preview_unavailable(file_id, version_no, opened)
+                return unavailable()
         if extension == ".xlsx":
+            workbook = None
             try:
                 import openpyxl
                 if not office_archive_is_preview_safe(opened["stream"]):
-                    return _preview_unavailable(file_id, version_no, opened)
+                    return unavailable()
                 opened["stream"].seek(0)
                 workbook = openpyxl.load_workbook(opened["stream"], data_only=True, read_only=True)
                 sheets = []
@@ -264,12 +291,20 @@ def preview_file(file_id: str, version_no: int):
                 response = jsonify({"success": True, "type": "excel", "filename": opened["originalName"], "sheets": sheets})
                 _record_event("PREVIEW", result="SUCCESS", file_id=file_id, opened=opened)
                 return response
+            except FileServiceError:
+                raise
             except Exception:
-                return _preview_unavailable(file_id, version_no, opened)
-        return _preview_unavailable(file_id, version_no, opened)
+                return unavailable()
+            finally:
+                if workbook is not None:
+                    workbook.close()
+        return unavailable()
     except (FileServiceError, ValueError, OSError) as raw_error:
         error = raw_error if isinstance(raw_error, FileServiceError) else FileServiceError("FILE_OPERATION_FAILED", "文件预览失败", 500)
         if opened and not opened["stream"].closed:
             opened["stream"].close()
-        _record_failure("PREVIEW", error, file_id=file_id)
+        _record_failure("PREVIEW", error, file_id=file_id, opened=opened,
+                        legacy_project_id=legacy_project_id)
+        if download_url and error.code == "PREVIEW_UNAVAILABLE":
+            return _preview_unavailable(file_id, version_no, download_url=download_url)
         return _error(error)
