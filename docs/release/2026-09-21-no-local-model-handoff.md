@@ -6,6 +6,8 @@
 
 人工科研报告、版本、敏感词规则和 DOCX 导出属于当前业务能力。仓库中保留的 AI 相关实现代码是未来扩展代码，不代表当前功能已启用或已验收。
 
+源码已通过公开仓库 [luomeng119/research-management-system](https://github.com/luomeng119/research-management-system) 交付。无需邀请即可克隆；推送仍需个人 GitHub 身份和仓库写权限。GitHub 可见性、默认分支、远端提交和禁用凭据助手后的匿名 fresh clone 已作为阶段 7 交付证据复核。
+
 ## 文档优先级
 
 1. [2026-09-21 当前交付说明](../delivery/20260921/README.md)是当前状态与启动依据。
@@ -18,4 +20,4 @@
 - 排除模型权重与下载分片、环境密钥、数据库、上传资料、会话、日志、本机证据、缓存和构建产物。
 - 保留 `app/tests/fixtures/**` 源码测试夹具和 `docs/delivery/**` 必需交付材料。
 - `docs/delivery/20260911` 仅包含产品材料 `00`—`13`；`14`—`25` 的 dev-workflow 技能材料不得进入产品仓库。
-- 发布前仍需以 Git 跟踪清单和 secret/体积扫描复核实际提交内容；`.gitignore` 不是已提交历史的清理证明。
+- 已以 Git 跟踪清单、当前树与历史高置信 secret 扫描、体积扫描及匿名 fresh clone 复核实际提交内容；`.gitignore` 仍不作为已提交历史的清理证明。

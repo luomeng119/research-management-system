@@ -45,6 +45,8 @@
 | 发布排除样例 | 12 个样例覆盖模型/分片、`.env`、secrets、数据库、uploads、sessions、logs、evidence、cache 和 build，均被忽略，PASS |
 | 必需保留样例 | `app/tests/fixtures/**` 与 `docs/delivery/**` 均不被忽略，PASS |
 | 文本差异格式 | `git diff --check` 通过 |
+| 公开远端 | `luomeng119/research-management-system` 为 `PUBLIC`，默认分支 `main`，PASS |
+| 匿名 fresh clone | 禁用本机凭据助手及 GitHub token 环境后克隆成功，远端与本地提交一致，PASS |
 
 ## 边界
 
