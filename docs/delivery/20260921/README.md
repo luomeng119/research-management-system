@@ -33,6 +33,7 @@ python run.py
 | [实施计划](../../plans/2026-09-21-remove-local-model-refactor.md) | 定义门禁、资产清理、文档、验证与发布顺序 |
 | [设计实现基线](../../design-to-code/2026-09-21-ai-hidden-fidelity-baseline.md) | 固化 AI 隐藏后的页面与交互契约 |
 | [发布交接](../../release/2026-09-21-no-local-model-handoff.md) | 当前发布边界、历史材料说明和检查入口 |
+| [回滚说明](../../release/2026-09-21-no-local-model-rollback.md) | 代码、模型能力、数据和GitHub发布的恢复边界 |
 | [仓库卫生验证](../../release/2026-09-21-repository-hygiene-verification.md) | 记录复制完整性、链接、忽略规则和发布文件检查结果 |
 | [2026-09-11 历史交付](../20260911/README.md) | 保留 `00`—`13` 原始产品材料，不作为当前模型/AI 状态说明 |
 
